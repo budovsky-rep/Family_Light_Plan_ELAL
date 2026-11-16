@@ -125,15 +125,15 @@
               <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;">
                 <strong>${child.child_name_he || 'ילד/ה #' + (idx + 1)}</strong>
                 <span class="score-pill" dir="ltr">${classifyFareByAge(child.child_age_years)}</span>
-                <button type="button" class="btn-secondary" data-remove-child="${idx}" style="min-height: 30px; padding: 2px 8px; font-size: 0.75rem;">הסר</button>
+                <button type="button" class="btn-secondary" data-remove-child="${idx}" style="min-height: 30px; padding: 2px 8px; font-size: 0.75rem;">${state.locale === 'he' ? 'הסר' : 'Remove'}</button>
               </div>
-              <div class="form-grid" style="margin-block-end: 4px; margin-block-start: 6px;">
+              <div class="form-grid form-grid-2" style="margin-block-end: 4px; margin-block-start: 6px;">
                 <div class="form-field">
-                  <label>גיל הילד/ה (0–18):</label>
+                  <label>${state.locale === 'he' ? 'גיל הילד/ה (0–18):' : 'Child Age (0–18):'}</label>
                   <input type="number" min="0" max="18" value="${child.child_age_years}" data-child-age="${idx}" dir="ltr" />
                 </div>
                 <div class="form-field">
-                  <label>מסגרת חינוכית (${isOptionalMode ? 'אופציונלי / Optional' : 'לפי משרד החינוך'}):</label>
+                  <label>${state.locale === 'he' ? 'מסגרת חינוכית (' + (isOptionalMode ? 'אופציונלי / Optional' : 'לפי משרד החינוך') + '):' : 'MoE Framework (' + (isOptionalMode ? 'Optional / אופציונלי' : 'MoE Calendar') + '):'}</label>
                   <select data-child-fw="${idx}">
                     ${fwOptions}
                   </select>
@@ -155,17 +155,17 @@
           }).join('');
           return `
             <div class="proposal-card" style="padding: 10px; margin-block-end: 8px; border-inline-start-color: #d97706;">
-              <div class="form-grid" style="margin-block-end: 0;">
+              <div class="form-grid form-grid-3" style="margin-block-end: 0;">
                 <div class="form-field">
-                  <label>נוסע (${w.passenger_id}):</label>
+                  <label>${state.locale === 'he' ? 'נוסע' : 'Passenger'} (${w.passenger_id}):</label>
                   <input type="text" value="${w.passenger_name}" data-wallet-name="${idx}" />
                 </div>
                 <div class="form-field">
-                  <label>מועדון תעופה:</label>
+                  <label>${state.locale === 'he' ? 'מועדון תעופה:' : 'Loyalty Club:'}</label>
                   <select data-wallet-prog="${idx}">${progOptions}</select>
                 </div>
                 <div class="form-field">
-                  <label>נקודות זמינות לנוסע:</label>
+                  <label>${state.locale === 'he' ? 'נקודות זמינות לנוסע:' : 'Available Points:'}</label>
                   <input type="number" min="0" step="1000" value="${w.available_points}" data-wallet-pts="${idx}" dir="ltr" />
                 </div>
               </div>
@@ -411,7 +411,38 @@
           document.documentElement.setAttribute('lang', 'he');
           btnToggleLocale.textContent = 'EN / LTR';
         }
+        const isHe = state.locale === 'he';
+        const headerTitle = document.getElementById('header-title');
+        if (headerTitle) {
+          headerTitle.textContent = isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner';
+        }
+        const zSearch = document.getElementById('zone-search-title');
+        if (zSearch) {
+          zSearch.textContent = isHe
+            ? '1. בחירת מצב תאריכים, חברת תעופה ויעד'
+            : '1. Select Date Mode, Airline & Destination';
+        }
+        const zProfile = document.getElementById('zone-profile-title');
+        if (zProfile) {
+          zProfile.textContent = isHe
+            ? '2. פרופיל משפחה, גילאי ומסגרות ילדים ונקודות מועדונים'
+            : '2. Family Profile, Children Frameworks & Loyalty Wallets';
+        }
+        const zCalendar = document.getElementById('zone-calendar-title');
+        if (zCalendar) {
+          zCalendar.textContent = isHe
+            ? '3. לוח חופשות משרד החינוך וחפיפה רב-גילאית (מתעדכן אוטומטית כל שנה)'
+            : '3. MoE Multi-Child Vacation Calendar & Annual Auto-Updater';
+        }
+        const zResults = document.getElementById('zone-results-title');
+        if (zResults) {
+          zResults.textContent = isHe
+            ? '4. דירוג חופשות מומלצות וניצול כרטיסי בונוס (CTOS / VUS / FBVS)'
+            : '4. Ranked Vacation Proposals & Bonus Fulfillment (CTOS / VUS / FBVS)';
+        }
         renderProfileControls();
+        renderCalendarTable();
+        renderProposals();
       });
     }
 
@@ -548,6 +579,16 @@
         }
       });
     }
+
+    document.querySelectorAll('.desktop-nav-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.desktop-nav-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const zoneId = btn.getAttribute('data-desktop-zone');
+        const el = document.getElementById(zoneId);
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      });
+    });
 
     document.querySelectorAll('.mobile-nav-btn').forEach((btn) => {
       btn.addEventListener('click', () => {

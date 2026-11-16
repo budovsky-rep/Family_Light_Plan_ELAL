@@ -1,7 +1,7 @@
 /**
  * AppShell Component (`frontend/src/components/layout/AppShell.tsx`)
- * Implements the 4-Zone Desktop Dashboard (`1280px+`) and Mobile Bottom-Nav
- * Tabbed Workspace (`360px–430px`) with Hebrew RTL (`dir="rtl"`) and English LTR toggle.
+ * Implements the Desktop-First 4-Zone Multi-Column Workspace (`1280px+` / `1440px+`, `max-width: 1600px`)
+ * with Hebrew RTL (`dir="rtl"`) and English LTR (`dir="ltr"`) bidirectional toggle.
  */
 
 import type { FamilyProfile, FlightSearchQuery } from '../../types/domain';

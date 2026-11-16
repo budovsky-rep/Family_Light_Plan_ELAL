@@ -1,7 +1,7 @@
 /*
- * Family Vacation Planner — Mobile-First Responsive BiDi/RTL & LTR Stylesheet (`frontend/src/styles/app.css`)
- * Uses CSS Logical Properties (`inset-inline`, `margin-inline`, `padding-inline`, `border-inline-start`)
- * and responsive breakpoints (`360px`, `430px`, `640px`, `1024px`, `1280px`).
+ * Family Vacation Planner — Desktop-First BiDi/RTL & LTR Stylesheet (`frontend/src/styles/app.css`)
+ * Uses CSS Logical Properties (`inset-inline`, `margin-inline`, `padding-inline`, `border-inline-start`, `border-inline-end`, `text-align: start`)
+ * and desktop multi-column workspace layout (`1280px`, `1440px+`, `max-width: 1600px`).
  */
 
 :root {
@@ -44,7 +44,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Header & Navigation */
+/* Desktop Header & Zone Quick-Navigation */
 .app-header {
   position: sticky;
   top: 0;
@@ -52,12 +52,12 @@ body {
   background: linear-gradient(135deg, var(--bg-header), var(--elal-navy));
   color: #ffffff;
   padding-block: 14px;
-  padding-inline: 20px;
+  padding-inline: 32px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.2);
 }
 
@@ -69,7 +69,7 @@ body {
 
 .header-brand h1 {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: 1.25rem;
   font-weight: 700;
 }
 
@@ -81,6 +81,33 @@ body {
   border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 600;
+}
+
+.desktop-zone-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.desktop-nav-btn {
+  min-height: 36px;
+  padding-block: 6px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.desktop-nav-btn:hover,
+.desktop-nav-btn.active {
+  background: rgba(255, 255, 255, 0.26);
+  border-color: rgba(255, 255, 255, 0.55);
 }
 
 .header-summary-pills {
@@ -99,20 +126,28 @@ body {
   font-weight: 600;
 }
 
-/* Touch-Friendly Buttons & Inputs */
+/* Desktop-Proportioned Buttons & Inputs */
 button,
 select,
 input[type="text"],
 input[type="number"],
 input[type="date"] {
-  min-height: 44px;
-  padding-block: 8px;
-  padding-inline: 12px;
+  min-height: 38px;
+  min-width: 0;
+  padding-block: 6px;
+  padding-inline: 10px;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  font-size: 0.92rem;
+  font-size: 0.9rem;
   background-color: var(--bg-surface);
   color: var(--text-primary);
+}
+
+select,
+input[type="text"],
+input[type="number"],
+input[type="date"] {
+  width: 100%;
 }
 
 .btn-primary {
@@ -146,18 +181,29 @@ input[type="date"] {
   font-weight: 600;
 }
 
-/* Main 4-Zone Dashboard Grid */
+/* Main 4-Zone Desktop Multi-Column Workspace */
 .dashboard-shell {
-  max-width: 1480px;
+  width: 100%;
+  max-width: 1600px;
   margin-inline: auto;
-  padding-block: 18px 88px;
-  padding-inline: 16px;
+  padding-block: 24px 36px;
+  padding-inline: 32px;
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 18px;
+  grid-template-columns: 500px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.sidebar-column,
+.content-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .zone-card {
+  min-width: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -183,22 +229,24 @@ input[type="date"] {
   color: var(--elal-navy);
 }
 
-/* Segmented Mode Tabs */
+/* Desktop 3-Column Segmented Mode Tabs */
 .mode-tabs {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 8px;
-  margin-block-end: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-block-end: 16px;
 }
 
 .mode-tab-btn {
+  min-width: 0;
   text-align: start;
   padding-block: 10px;
-  padding-inline: 14px;
+  padding-inline: 12px;
   border-radius: var(--radius-md);
   border: 2px solid var(--border-subtle);
   background: var(--bg-elevated);
   cursor: pointer;
+  font-size: 0.85rem;
   font-weight: 600;
 }
 
@@ -208,15 +256,24 @@ input[type="date"] {
   color: #0369a1;
 }
 
-/* Form Grids */
+/* Desktop Multi-Column Form Grids */
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
   gap: 12px;
   margin-block-end: 14px;
 }
 
+.form-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .form-field {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -228,9 +285,19 @@ input[type="date"] {
   color: var(--text-secondary);
 }
 
-/* Sticky RTL Multi-Child Calendar Heatmap Table */
+.search-actions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Sticky BiDi (RTL/LTR) Multi-Child Calendar Heatmap Table */
 .calendar-scroll-wrapper {
+  min-width: 0;
   overflow-x: auto;
+  max-height: 380px;
+  overflow-y: auto;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
@@ -250,6 +317,13 @@ input[type="date"] {
   white-space: nowrap;
 }
 
+.calendar-heatmap-table thead th {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-elevated);
+  z-index: 3;
+}
+
 .calendar-heatmap-table th.sticky-col,
 .calendar-heatmap-table td.sticky-col {
   position: sticky;
@@ -258,6 +332,11 @@ input[type="date"] {
   z-index: 2;
   font-weight: 700;
   border-inline-end: 2px solid var(--border-subtle);
+}
+
+.calendar-heatmap-table thead th.sticky-col {
+  background-color: var(--bg-elevated);
+  z-index: 4;
 }
 
 .badge-vacation {
@@ -278,14 +357,16 @@ input[type="date"] {
   font-weight: 600;
 }
 
-/* Vacation Proposals List & Swipeable Cards */
+/* Desktop Vacation Proposals Grid & Cards */
 .proposals-grid {
+  min-width: 0;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
   gap: 16px;
 }
 
 .proposal-card {
+  min-width: 0;
   border: 1px solid var(--border-subtle);
   border-inline-start: 5px solid var(--brand-primary);
   border-radius: var(--radius-md);
@@ -313,7 +394,6 @@ input[type="date"] {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  scroll-snap-type: x mandatory;
 }
 
 .score-pill {
@@ -324,7 +404,6 @@ input[type="date"] {
   border-radius: 8px;
   font-size: 0.8rem;
   font-weight: 600;
-  scroll-snap-align: start;
 }
 
 .allocations-table {
@@ -342,23 +421,13 @@ input[type="date"] {
   text-align: start;
 }
 
-/* Mobile Bottom Navigation Bar */
+/* Legacy Mobile Bottom Navigation Bar — Hidden in Desktop Layout */
 .mobile-bottom-nav {
-  position: fixed;
-  bottom: 0;
-  inset-inline: 0;
-  z-index: 50;
-  background: var(--bg-surface);
-  border-block-start: 1px solid var(--border-subtle);
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  padding-block: 6px;
-  padding-inline: 8px;
-  box-shadow: 0 -2px 10px rgba(15, 23, 42, 0.08);
+  display: none !important;
 }
 
 .mobile-nav-btn {
-  min-height: 44px;
+  min-height: 38px;
   border: none;
   background: transparent;
   font-size: 0.78rem;
@@ -367,43 +436,19 @@ input[type="date"] {
   cursor: pointer;
 }
 
-.mobile-nav-btn.active {
-  color: var(--brand-primary);
-}
-
-/* Responsive Breakpoints: Mobile (360px - 430px - 640px) & Desktop (1024px - 1280px+) */
-@media (max-width: 430px) {
-  .app-header {
-    padding-inline: 12px;
-  }
-  .header-brand h1 {
-    font-size: 1rem;
-  }
-  .dashboard-shell {
-    padding-inline: 10px;
-  }
-}
-
-@media (max-width: 640px) {
-  .mode-tabs {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (min-width: 1024px) {
-  .dashboard-shell {
-    grid-template-columns: 380px 1fr;
-    align-items: start;
-  }
-  .mobile-bottom-nav {
-    display: none;
-  }
-}
-
+/* Desktop Viewport Breakpoints (`1280px` and `1440px+`) */
 @media (min-width: 1280px) {
   .dashboard-shell {
-    grid-template-columns: 420px 1fr;
-    gap: 22px;
-    padding-inline: 24px;
+    grid-template-columns: 500px minmax(0, 1fr);
+    gap: 24px;
+    padding-inline: 32px;
+  }
+}
+
+@media (min-width: 1440px) {
+  .dashboard-shell {
+    grid-template-columns: 540px minmax(0, 1fr);
+    gap: 28px;
+    padding-inline: 36px;
   }
 }

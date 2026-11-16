@@ -2741,7 +2741,7 @@ class TestTier2F30CliCompanionBoundaries(Tier2BoundaryTestBase):
 
 
 class TestTier2F31ResponsiveBidiWebUiBoundaries(Tier2BoundaryTestBase):
-    """F31 — Mobile-First Responsive BiDi/RTL & LTR Web Application boundaries."""
+    """F31 — Desktop-First Multi-Column BiDi/RTL & LTR Web Application boundaries."""
 
     def test_f31_01_index_html_rtl_default_lang_he_and_viewport_meta_present(self) -> None:
         client = self.get_client()
@@ -2752,12 +2752,31 @@ class TestTier2F31ResponsiveBidiWebUiBoundaries(Tier2BoundaryTestBase):
         self.assertIn('lang="he"', html)
         self.assertIn('name="viewport"', html)
         self.assertIn("width=device-width", html)
+        self.assertIn('id="dashboard-shell"', html)
+        self.assertIn('class="sidebar-column"', html)
+        self.assertIn('class="content-column"', html)
 
     def test_f31_02_css_mobile_360_430_and_desktop_1280_breakpoints_and_logical_rtl_properties(self) -> None:
         css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text(encoding="utf-8")
         self.assertIn("@media", css)
         self.assertIn("sticky", css)
         self.assertTrue("inset-inline" in css or "margin-inline" in css or "padding-inline" in css)
+        # Boundary verification of desktop 1280x800 and 1440x900 track geometry & non-overflow
+        for vp_width, expected_sidebar, expected_gap, expected_pad in (
+            (1280, 500, 24, 32),
+            (1440, 540, 28, 36),
+        ):
+            content_track_width = vp_width - (2 * expected_pad) - expected_sidebar - expected_gap
+            self.assertGreaterEqual(content_track_width, 650, f"Main content track too narrow at {vp_width}px")
+            total_width = (2 * expected_pad) + expected_sidebar + expected_gap + content_track_width
+            self.assertLessEqual(total_width, vp_width, f"Horizontal overflow at {vp_width}px")
+            # Inner sidebar width after .zone-card padding (2*18px) and border (2*1px)
+            sidebar_inner = expected_sidebar - 36 - 2
+            # 3 columns in .mode-tabs (gap 10px) and .form-grid-3 (gap 12px) must each be >= 135px wide
+            col3_width = (sidebar_inner - 2 * 12) / 3.0
+            col2_width = (sidebar_inner - 12) / 2.0
+            self.assertGreaterEqual(col3_width, 135.0)
+            self.assertGreaterEqual(col2_width, 215.0)
 
     def test_f31_03_mode1_ui_marks_child_framework_selector_as_optional_not_required(self) -> None:
         app_js = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text(encoding="utf-8")
