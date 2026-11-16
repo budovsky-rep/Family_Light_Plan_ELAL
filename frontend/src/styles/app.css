@@ -1,0 +1,409 @@
+/*
+ * Family Vacation Planner — Mobile-First Responsive BiDi/RTL & LTR Stylesheet (`frontend/src/styles/app.css`)
+ * Uses CSS Logical Properties (`inset-inline`, `margin-inline`, `padding-inline`, `border-inline-start`)
+ * and responsive breakpoints (`360px`, `430px`, `640px`, `1024px`, `1280px`).
+ */
+
+:root {
+  --bg-page: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f1f5f9;
+  --bg-header: #0f172a;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --brand-primary: #0284c7;
+  --brand-primary-hover: #0369a1;
+  --brand-accent: #0ea5e9;
+  --elal-navy: #1e3a8a;
+  --elal-gold: #d97706;
+  --vac-emerald: #10b981;
+  --camp-amber: #f59e0b;
+  --waning-sky: #38bdf8;
+  --school-rose: #f43f5e;
+  --border-subtle: #e2e8f0;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Header & Navigation */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: linear-gradient(135deg, var(--bg-header), var(--elal-navy));
+  color: #ffffff;
+  padding-block: 14px;
+  padding-inline: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.2);
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-brand h1 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.brand-badge {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  padding-block: 4px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.header-summary-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pill {
+  background: rgba(255, 255, 255, 0.14);
+  padding-block: 5px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+/* Touch-Friendly Buttons & Inputs */
+button,
+select,
+input[type="text"],
+input[type="number"],
+input[type="date"] {
+  min-height: 44px;
+  padding-block: 8px;
+  padding-inline: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  font-size: 0.92rem;
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.btn-primary {
+  background-color: var(--brand-primary);
+  color: #ffffff;
+  border: none;
+  font-weight: 700;
+  cursor: pointer;
+  padding-inline: 18px;
+  transition: background-color 0.15s ease;
+}
+
+.btn-primary:hover {
+  background-color: var(--brand-primary-hover);
+}
+
+.btn-secondary {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-locale-toggle {
+  min-height: 36px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+/* Main 4-Zone Dashboard Grid */
+.dashboard-shell {
+  max-width: 1480px;
+  margin-inline: auto;
+  padding-block: 18px 88px;
+  padding-inline: 16px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
+
+.zone-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding-block: 18px;
+  padding-inline: 18px;
+  box-shadow: var(--shadow-card);
+}
+
+.zone-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-block-end: 14px;
+  padding-block-end: 10px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.zone-header h2 {
+  margin: 0;
+  font-size: 1.08rem;
+  color: var(--elal-navy);
+}
+
+/* Segmented Mode Tabs */
+.mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin-block-end: 14px;
+}
+
+.mode-tab-btn {
+  text-align: start;
+  padding-block: 10px;
+  padding-inline: 14px;
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mode-tab-btn.active {
+  border-color: var(--brand-primary);
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+/* Form Grids */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-block-end: 14px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-field label {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* Sticky RTL Multi-Child Calendar Heatmap Table */
+.calendar-scroll-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.calendar-heatmap-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.calendar-heatmap-table th,
+.calendar-heatmap-table td {
+  padding-block: 8px;
+  padding-inline: 10px;
+  border-block-end: 1px solid var(--border-subtle);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.calendar-heatmap-table th.sticky-col,
+.calendar-heatmap-table td.sticky-col {
+  position: sticky;
+  inset-inline-start: 0;
+  background-color: var(--bg-surface);
+  z-index: 2;
+  font-weight: 700;
+  border-inline-end: 2px solid var(--border-subtle);
+}
+
+.badge-vacation {
+  background-color: #d1fae5;
+  color: #065f46;
+  padding-block: 3px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.badge-camp {
+  background-color: #fef3c7;
+  color: #92400e;
+  padding-block: 3px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+/* Vacation Proposals List & Swipeable Cards */
+.proposals-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.proposal-card {
+  border: 1px solid var(--border-subtle);
+  border-inline-start: 5px solid var(--brand-primary);
+  border-radius: var(--radius-md);
+  padding-block: 16px;
+  padding-inline: 16px;
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.proposal-card.tier-RECOMMENDED {
+  border-inline-start-color: var(--vac-emerald);
+}
+
+.proposal-top-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.score-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  scroll-snap-type: x mandatory;
+}
+
+.score-pill {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  padding-block: 4px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  scroll-snap-align: start;
+}
+
+.allocations-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-block-start: 6px;
+}
+
+.allocations-table th,
+.allocations-table td {
+  padding-block: 6px;
+  padding-inline: 8px;
+  border-block-end: 1px solid var(--border-subtle);
+  text-align: start;
+}
+
+/* Mobile Bottom Navigation Bar */
+.mobile-bottom-nav {
+  position: fixed;
+  bottom: 0;
+  inset-inline: 0;
+  z-index: 50;
+  background: var(--bg-surface);
+  border-block-start: 1px solid var(--border-subtle);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  padding-block: 6px;
+  padding-inline: 8px;
+  box-shadow: 0 -2px 10px rgba(15, 23, 42, 0.08);
+}
+
+.mobile-nav-btn {
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.mobile-nav-btn.active {
+  color: var(--brand-primary);
+}
+
+/* Responsive Breakpoints: Mobile (360px - 430px - 640px) & Desktop (1024px - 1280px+) */
+@media (max-width: 430px) {
+  .app-header {
+    padding-inline: 12px;
+  }
+  .header-brand h1 {
+    font-size: 1rem;
+  }
+  .dashboard-shell {
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .mode-tabs {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard-shell {
+    grid-template-columns: 380px 1fr;
+    align-items: start;
+  }
+  .mobile-bottom-nav {
+    display: none;
+  }
+}
+
+@media (min-width: 1280px) {
+  .dashboard-shell {
+    grid-template-columns: 420px 1fr;
+    gap: 22px;
+    padding-inline: 24px;
+  }
+}

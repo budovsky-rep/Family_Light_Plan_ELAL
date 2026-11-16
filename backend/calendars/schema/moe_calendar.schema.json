@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MinistryOfEducationSchoolYearCalendar",
+  "type": "object",
+  "required": ["school_year_hebrew", "school_year_gregorian", "circular_ids", "frameworks", "periods"],
+  "properties": {
+    "school_year_hebrew": { "type": "string", "example": "תשפ\"ז" },
+    "school_year_gregorian": { "type": "string", "example": "2026-2027" },
+    "calendar_sync_source": {
+      "type": "string",
+      "enum": ["OFFICIAL_MOE_CIRCULAR", "AUTO_SYNCED_CIRCULAR", "HEBREW_RULE_PROJECTED", "USER_MUNICIPAL_OVERRIDE"]
+    },
+    "circular_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "example": ["0363", "0364"]
+    },
+    "frameworks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["label_he", "grades", "start_date", "end_date_6day", "end_date_5day", "nitzanim_eligible"],
+        "properties": {
+          "label_he": { "type": "string" },
+          "grades": { "type": "string" },
+          "start_date": { "type": "string", "format": "date" },
+          "end_date_6day": { "type": "string", "format": "date" },
+          "end_date_5day": { "type": "string", "format": "date" },
+          "nitzanim_eligible": { "type": "boolean" }
+        }
+      }
+    },
+    "periods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name_he", "name_en", "start_date", "end_date", "resume_date", "applies_to_frameworks"],
+        "properties": {
+          "id": { "type": "string", "example": "sukkot_5787" },
+          "holiday_code": { "type": "string", "example": "YOM_KIPPUR_SUKKOT" },
+          "name_he": { "type": "string", "example": "יום הכיפורים, גשר וחג הסוכות" },
+          "name_en": { "type": "string", "example": "Yom Kippur, Bridge & Sukkot" },
+          "start_date": { "type": "string", "format": "date" },
+          "end_date": { "type": "string", "format": "date" },
+          "resume_date": { "type": "string", "format": "date" },
+          "parent_workday_status": {
+            "type": "string",
+            "enum": ["PUBLIC_HOLIDAY_OFF", "EREV_CHAG_HALF_DAY", "CHOL_HAMOED", "REGULAR_WORKDAY"]
+          },
+          "applies_to_frameworks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "DAYCARE_SUPERVISED",
+                "MUNICIPAL_GAN",
+                "ELEMENTARY_1_3",
+                "ELEMENTARY_4_6",
+                "MIDDLE_SCHOOL_7_9",
+                "HIGH_SCHOOL_10_12",
+                "SPECIAL_ED",
+                "RELIGIOUS_HAREDI"
+              ]
+            }
+          },
+          "framework_overrides": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "start_date": { "type": "string", "format": "date" },
+                "end_date": { "type": "string", "format": "date" },
+                "resume_date": { "type": "string", "format": "date" }
+              }
+            }
+          },
+          "nitzanim_window": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "active": { "type": "boolean" },
+              "program_name_he": { "type": "string", "example": "בית הספר של החגים - ניצנים" },
+              "start_date": { "type": "string", "format": "date" },
+              "end_date": { "type": "string", "format": "date" },
+              "operating_days_count": { "type": "integer", "example": 5 },
+              "hours_base": { "type": "string", "example": "08:00-13:00" },
+              "uncovered_vacation_dates": {
+                "type": "array",
+                "items": { "type": "string", "format": "date" }
+              }
+            }
+          },
+          "tlv_airport_restrictions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "start_iso": { "type": "string" },
+                "end_iso": { "type": "string" },
+                "reason": { "type": "string", "example": "Yom Kippur Ben Gurion Airport total shutdown" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

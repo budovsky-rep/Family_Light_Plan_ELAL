@@ -1,0 +1,49 @@
+app:
+  default_origin_iata: "TLV"
+  default_currency: "USD"
+  supported_currencies: ["USD", "ILS", "EUR"]
+  locale_default: "he-IL"
+  default_db_path: "data/vacation_planner.db"
+
+elal_rbd_client:
+  base_url: "https://www.elal.com/rbddataclients/"
+  cache_ttl_seconds: 14400
+  itinerary_cache_ttl_seconds: 21600
+  rate_limit_min_interval_sec: 2.0
+  rate_limit_jitter_sec: [1.5, 3.5]
+  max_route_months_per_batch: 15
+  metro_iata_expansion:
+    NYC: ["JFK", "EWR"]
+    LON: ["LHR", "LTN"]
+    PAR: ["CDG"]
+    MIL: ["MXP"]
+    ROM: ["FCO"]
+    TYO: ["NRT"]
+    MIA_AREA: ["MIA", "FLL"]
+
+optimization_weights:
+  vus_alpha_per: 0.60
+  vus_beta_ccg: 0.40
+  vus_gamma_sap: 0.35
+  ctos_calendar_weight: 0.55
+  ctos_flight_weight: 0.45
+
+framework_criticality_weights:
+  DAYCARE_SUPERVISED: 0.25
+  MUNICIPAL_GAN: 0.25
+  ELEMENTARY_1_3: 0.50
+  ELEMENTARY_4_6: 0.75
+  MIDDLE_SCHOOL_7_9: 1.00
+  HIGH_SCHOOL_10_12: 1.35
+  SPECIAL_ED: 0.50
+  RELIGIOUS_HAREDI: 1.00
+
+daily_state_penalties:
+  VACATION: 0.00
+  WEEKEND: 0.00
+  CAMP_OPTIONAL_AS_VACATION: 0.15
+  CAMP_OPTIONAL_AS_CHILDCARE: 0.75
+  SCHOOL_FRIDAY: 0.35
+  SCHOOL_END_OF_YEAR_WANING: 0.50
+  SCHOOL_REGULAR: 1.00
+  EXAM_BLACKOUT: 999999.0

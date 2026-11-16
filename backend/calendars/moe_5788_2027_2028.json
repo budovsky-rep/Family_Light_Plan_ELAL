@@ -1,0 +1,360 @@
+{
+  "school_year_hebrew": "תשפ\"ח",
+  "school_year_gregorian": "2027-2028",
+  "calendar_sync_source": "HEBREW_RULE_PROJECTED",
+  "circular_ids": ["projected-5788"],
+  "frameworks": {
+    "DAYCARE_SUPERVISED": {
+      "label_he": "מעונות יום ומשפחתונים בפיקוח",
+      "grades": "גילאי 0-3",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-08-08",
+      "end_date_5day": "2028-08-08",
+      "nitzanim_eligible": false
+    },
+    "MUNICIPAL_GAN": {
+      "label_he": "גני ילדים רשמיים",
+      "grades": "גילאי 3-6",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-06-30",
+      "end_date_5day": "2028-06-29",
+      "nitzanim_eligible": true
+    },
+    "ELEMENTARY_1_3": {
+      "label_he": "בית ספר יסודי (כיתות א'-ג')",
+      "grades": "א'-ג'",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-06-30",
+      "end_date_5day": "2028-06-29",
+      "nitzanim_eligible": true
+    },
+    "ELEMENTARY_4_6": {
+      "label_he": "בית ספר יסודי (כיתות ד'-ו')",
+      "grades": "ד'-ו'",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-06-30",
+      "end_date_5day": "2028-06-29",
+      "nitzanim_eligible": false
+    },
+    "MIDDLE_SCHOOL_7_9": {
+      "label_he": "חטיבת ביניים (כיתות ז'-ט')",
+      "grades": "ז'-ט'",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-06-20",
+      "end_date_5day": "2028-06-20",
+      "nitzanim_eligible": false
+    },
+    "HIGH_SCHOOL_10_12": {
+      "label_he": "חטיבה עליונה (כיתות י'-י\"ב)",
+      "grades": "י'-י\"ב",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-06-20",
+      "end_date_5day": "2028-06-20",
+      "nitzanim_eligible": false
+    },
+    "SPECIAL_ED": {
+      "label_he": "חינוך מיוחד",
+      "grades": "גילאי 3-21",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-08-15",
+      "end_date_5day": "2028-08-15",
+      "nitzanim_eligible": false
+    },
+    "RELIGIOUS_HAREDI": {
+      "label_he": "ממלכתי-דתי / מוסדות חרדיים",
+      "grades": "א'-י\"ב",
+      "start_date": "2027-09-01",
+      "end_date_6day": "2028-06-30",
+      "end_date_5day": "2028-06-29",
+      "nitzanim_eligible": true
+    }
+  },
+  "periods": [
+    {
+      "id": "rosh_hashanah_5788",
+      "holiday_code": "ROSH_HASHANAH",
+      "name_he": "ראש השנה",
+      "name_en": "Rosh Hashanah",
+      "start_date": "2027-10-01",
+      "end_date": "2027-10-03",
+      "resume_date": "2027-10-04",
+      "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "yom_kippur_sukkot_5788",
+      "holiday_code": "YOM_KIPPUR_SUKKOT",
+      "name_he": "יום הכיפורים, גשר וחג הסוכות",
+      "name_en": "Yom Kippur, Bridge & Sukkot",
+      "start_date": "2027-10-10",
+      "end_date": "2027-10-23",
+      "resume_date": "2027-10-24",
+      "parent_workday_status": "CHOL_HAMOED",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {
+        "HIGH_SCHOOL_10_12": {
+          "start_date": "2027-10-10",
+          "end_date": "2027-10-24",
+          "resume_date": "2027-10-25"
+        }
+      },
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": [
+        {
+          "start_iso": "2027-10-10T13:00:00",
+          "end_iso": "2027-10-11T22:30:00",
+          "reason": "Yom Kippur Ben Gurion Airport total shutdown"
+        }
+      ]
+    },
+    {
+      "id": "hanukkah_5788",
+      "holiday_code": "HANUKKAH",
+      "name_he": "חופשת חנוכה",
+      "name_en": "Hanukkah",
+      "start_date": "2027-12-26",
+      "end_date": "2028-01-01",
+      "resume_date": "2028-01-02",
+      "parent_workday_status": "REGULAR_WORKDAY",
+      "applies_to_frameworks": [
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": {
+        "active": true,
+        "program_name_he": "בית הספר של החגים - חנוכה",
+        "start_date": "2027-12-26",
+        "end_date": "2027-12-30",
+        "operating_days_count": 5,
+        "hours_base": "08:00-13:00",
+        "uncovered_vacation_dates": ["2027-12-31", "2028-01-01"]
+      },
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "purim_5788",
+      "holiday_code": "PURIM",
+      "name_he": "חופשת פורים",
+      "name_en": "Purim",
+      "start_date": "2028-03-12",
+      "end_date": "2028-03-13",
+      "resume_date": "2028-03-14",
+      "parent_workday_status": "REGULAR_WORKDAY",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "pesach_5788",
+      "holiday_code": "PESACH",
+      "name_he": "חופשת פסח",
+      "name_en": "Pesach",
+      "start_date": "2028-04-02",
+      "end_date": "2028-04-17",
+      "resume_date": "2028-04-18",
+      "parent_workday_status": "CHOL_HAMOED",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {
+        "DAYCARE_SUPERVISED": {
+          "start_date": "2028-04-10",
+          "end_date": "2028-04-17",
+          "resume_date": "2028-04-18"
+        }
+      },
+      "nitzanim_window": {
+        "active": true,
+        "program_name_he": "בית הספר של החגים - פסח",
+        "start_date": "2028-04-02",
+        "end_date": "2028-04-06",
+        "operating_days_count": 5,
+        "hours_base": "08:00-13:00",
+        "uncovered_vacation_dates": [
+          "2028-04-07",
+          "2028-04-08",
+          "2028-04-09",
+          "2028-04-10",
+          "2028-04-11",
+          "2028-04-12",
+          "2028-04-13",
+          "2028-04-14",
+          "2028-04-15",
+          "2028-04-16",
+          "2028-04-17"
+        ]
+      },
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "yom_haatzmaut_5788",
+      "holiday_code": "YOM_HAATZMAUT",
+      "name_he": "יום העצמאות",
+      "name_en": "Independence Day",
+      "start_date": "2028-05-02",
+      "end_date": "2028-05-02",
+      "resume_date": "2028-05-03",
+      "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "shavuot_5788",
+      "holiday_code": "SHAVUOT",
+      "name_he": "חג השבועות",
+      "name_en": "Shavuot",
+      "start_date": "2028-05-31",
+      "end_date": "2028-06-01",
+      "resume_date": "2028-06-02",
+      "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "summer_june_20_30_5788",
+      "holiday_code": "SUMMER_JUNE_20_30",
+      "name_he": "החופש הגדול — 20–30 ביוני (על-יסודי)",
+      "name_en": "Late June Summer Arbitrage (Grades 7-12)",
+      "start_date": "2028-06-21",
+      "end_date": "2028-06-30",
+      "resume_date": "2028-09-01",
+      "parent_workday_status": "REGULAR_WORKDAY",
+      "applies_to_frameworks": [
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "summer_july_5788",
+      "holiday_code": "SUMMER_JULY",
+      "name_he": "החופש הגדול — יולי",
+      "name_en": "Summer Vacation - July",
+      "start_date": "2028-07-01",
+      "end_date": "2028-07-31",
+      "resume_date": "2028-09-01",
+      "parent_workday_status": "REGULAR_WORKDAY",
+      "applies_to_frameworks": [
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {},
+      "nitzanim_window": {
+        "active": true,
+        "program_name_he": "בית הספר של החופש הגדול - ניצנים",
+        "start_date": "2028-07-02",
+        "end_date": "2028-07-31",
+        "operating_days_count": 22,
+        "hours_base": "08:00-13:00",
+        "uncovered_vacation_dates": ["2028-07-01"]
+      },
+      "tlv_airport_restrictions": []
+    },
+    {
+      "id": "summer_august_5788",
+      "holiday_code": "SUMMER_AUGUST",
+      "name_he": "החופש הגדול — אוגוסט",
+      "name_en": "Summer Vacation - August",
+      "start_date": "2028-08-01",
+      "end_date": "2028-08-31",
+      "resume_date": "2028-09-01",
+      "parent_workday_status": "REGULAR_WORKDAY",
+      "applies_to_frameworks": [
+        "DAYCARE_SUPERVISED",
+        "MUNICIPAL_GAN",
+        "ELEMENTARY_1_3",
+        "ELEMENTARY_4_6",
+        "MIDDLE_SCHOOL_7_9",
+        "HIGH_SCHOOL_10_12",
+        "SPECIAL_ED",
+        "RELIGIOUS_HAREDI"
+      ],
+      "framework_overrides": {
+        "DAYCARE_SUPERVISED": {
+          "start_date": "2028-08-09",
+          "end_date": "2028-08-31",
+          "resume_date": "2028-09-01"
+        },
+        "SPECIAL_ED": {
+          "start_date": "2028-08-16",
+          "end_date": "2028-08-31",
+          "resume_date": "2028-09-01"
+        }
+      },
+      "nitzanim_window": null,
+      "tlv_airport_restrictions": []
+    }
+  ]
+}

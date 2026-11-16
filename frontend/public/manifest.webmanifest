@@ -1,0 +1,28 @@
+{
+  "name": "מתכנן חופשות משפחתיות חכם — משרד החינוך וכרטיסי בונוס אל על",
+  "short_name": "חופשה משפחתית",
+  "description": "אופטימיזציית חופשות משפחתיות לפי לוח חופשות משרד החינוך, מקסום ימי חופש וחיפוש כרטיסי בונוס באל על וכל חברות התעופה",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "dir": "rtl",
+  "lang": "he-IL",
+  "background_color": "#0f172a",
+  "theme_color": "#0284c7",
+  "categories": ["travel", "productivity", "lifestyle"],
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%230284c7'/%3E%3Cpath d='M42 118l108-44-34 74-22-26-26 14 6-22-32 4z' fill='%23ffffff'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%230284c7'/%3E%3Cpath d='M112 314l288-118-90 198-58-70-70 38 16-58-86 10z' fill='%23ffffff'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
