@@ -649,56 +649,52 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                             styles.setdefault(sel, {}).update(decls)
             return styles
 
-        for vp_w, vp_h, expected_sidebar_px, expected_gap_px, expected_pad_px in (
-            (1280, 800, 500, 24, 32),
-            (1440, 900, 540, 28, 36),
+        for vp_w, vp_h, expected_gap_px, expected_pad_px in (
+            (1280, 800, 24, 32),
+            (1440, 900, 28, 36),
         ):
             computed = compute_styles_for_viewport(vp_w)
             shell_style = computed.get(".dashboard-shell", {})
             self.assertEqual(shell_style.get("display"), "grid")
             self.assertEqual(
                 shell_style.get("grid-template-columns"),
-                f"{expected_sidebar_px}px minmax(0, 1fr)",
+                "minmax(0, 1fr)",
             )
-            self.assertEqual(shell_style.get("max-width"), "1600px")
+            self.assertEqual(shell_style.get("max-width"), "1200px")
             self.assertEqual(shell_style.get("padding-block"), "24px 36px")
 
             # Verify every overflow-sensitive container has min-width: 0
             for sel in (".sidebar-column", ".content-column", ".zone-card", ".form-field", ".proposals-grid", ".proposal-card", ".calendar-scroll-wrapper"):
                 self.assertEqual(computed.get(sel, {}).get("min-width"), "0", f"{sel} missing min-width: 0 at {vp_w}x{vp_h}")
 
-            # Compute exact bounding boxes in both RTL ("rtl") and LTR ("ltr")
-            container_w = min(vp_w, 1600)
+            # Compute exact bounding boxes in both RTL ("rtl") and LTR ("ltr") for single-column desktop flow
+            container_w = min(vp_w, 1200)
             inner_w = container_w - (2 * expected_pad_px)
-            main_col_w = inner_w - expected_sidebar_px - expected_gap_px
-            self.assertGreaterEqual(main_col_w, 690)
+            self.assertGreaterEqual(inner_w, 1100)
 
             for direction in ("rtl", "ltr"):
-                if direction == "rtl":
-                    # In RTL, sidebar (Start column) is on the right, content (End column) is on the left
-                    sidebar_box = (expected_pad_px + main_col_w + expected_gap_px, expected_pad_px + inner_w)
-                    content_box = (expected_pad_px, expected_pad_px + main_col_w)
-                else:
-                    # In LTR, sidebar (Start column) is on the left, content (End column) is on the right
-                    sidebar_box = (expected_pad_px, expected_pad_px + expected_sidebar_px)
-                    content_box = (expected_pad_px + expected_sidebar_px + expected_gap_px, expected_pad_px + inner_w)
+                margin_side = (vp_w - container_w) / 2.0
+                col_box = (margin_side + expected_pad_px, margin_side + expected_pad_px + inner_w)
 
                 # Assert zero horizontal overflow (`scrollWidth <= viewport_width`)
-                self.assertGreaterEqual(min(sidebar_box[0], content_box[0]), 0)
-                self.assertLessEqual(max(sidebar_box[1], content_box[1]), vp_w)
-                # Assert zero overlap between sidebar and content columns
-                overlap = min(sidebar_box[1], content_box[1]) - max(sidebar_box[0], content_box[0])
-                self.assertLessEqual(overlap, -expected_gap_px)
+                self.assertGreaterEqual(col_box[0], 0)
+                self.assertLessEqual(col_box[1], vp_w)
 
-                # Verify 3 mode tabs and form grids inside sidebar render side-by-side without overlapping
-                sidebar_card_inner_w = expected_sidebar_px - 36 - 2
+                # Verify 3 mode tabs and form grids inside single-column card render side-by-side without overlapping
+                card_inner_w = inner_w - 36 - 2
                 tab_gap = 10
-                tab_w = (sidebar_card_inner_w - 2 * tab_gap) / 3.0
-                self.assertGreater(tab_w, 140.0)
-                form3_w = (sidebar_card_inner_w - 2 * 12) / 3.0
-                self.assertGreater(form3_w, 135.0)
-                form2_w = (sidebar_card_inner_w - 12) / 2.0
-                self.assertGreater(form2_w, 215.0)
+                tab_w = (card_inner_w - 2 * tab_gap) / 3.0
+                self.assertGreater(tab_w, 250.0)
+                form3_w = (card_inner_w - 2 * 12) / 3.0
+                self.assertGreater(form3_w, 250.0)
+                form2_w = (card_inner_w - 12) / 2.0
+                self.assertGreater(form2_w, 400.0)
+
+        # Verify MoE calendar is optional (hidden by default) and toggleable on demand
+        cal_zone = soup.find("section", id="zone-calendar")
+        self.assertIsNotNone(cal_zone)
+        self.assertTrue(cal_zone.has_attr("hidden"))
+        self.assertIn("setCalendarVisibility", js_text)
 
         # Verify locale toggle script updates dir/lang and re-renders all zones cleanly
         self.assertIn("document.documentElement.setAttribute('dir', 'ltr')", js_text)

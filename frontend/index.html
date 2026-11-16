@@ -18,10 +18,10 @@
       <h1 id="header-title">מתכנן חופשות משפחתיות חכם</h1>
     </div>
     <nav class="desktop-zone-nav" aria-label="ניווט אזורי שולחן עבודה">
-      <button type="button" class="desktop-nav-btn active" data-desktop-zone="zone-search">🔍 1. חיפוש ומצב</button>
-      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-profile">👨‍👩‍👧‍👦 2. פרופיל ומועדונים</button>
-      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-calendar">📅 3. לוח משרד החינוך</button>
-      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-results">✈️ 4. חלופות ובונוס</button>
+      <button type="button" class="desktop-nav-btn active" data-desktop-zone="zone-search">🔍 1. מצב חיפוש ויעד</button>
+      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-profile">👨‍👩‍👧‍👦 2. מבנה משפחתי ומועדונים</button>
+      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-results">✈️ 3. תוצאות וחלופות בונוס</button>
+      <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar">📅 לוח חופשות משרד החינוך (הצג)</button>
     </nav>
     <div class="header-summary-pills">
       <span class="pill" id="header-family-pill" dir="ltr">2 Adults + 3 Children</span>
@@ -192,10 +192,11 @@
             <input type="number" id="prof-pto-budget" min="0" max="60" step="0.5" value="18" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="prof-matmid-points">יתרת נקודות אל על מתמיד (משפחתי):</label>
+            <label for="prof-matmid-points">יתרת נקודות אל על מתמיד (משפחתי — מחושב אוטומטית):</label>
             <input type="number" id="prof-matmid-points" min="0" step="1000" value="185000" dir="ltr" />
           </div>
         </div>
+        <div id="family-clubs-totals-strip" class="score-strip" style="margin-block-end: 10px;"></div>
 
         <!-- Children Ages & Optional Frameworks List -->
         <div style="margin-block-start: 12px;">
@@ -217,16 +218,38 @@
       </section>
     </div>
 
-    <!-- Right/End Column: Zone 3 (Multi-Child MoE Calendar Heatmap) + Zone 4 (Ranked Bonus & Flight Proposals) -->
+    <!-- Step 3: Ranked Vacation & El Al Bonus Proposals + Optional MoE Calendar -->
     <div class="content-column">
-      <!-- Zone 3: Multi-Child MoE Calendar & Annual Auto-Updater -->
-      <section class="zone-card" id="zone-calendar" aria-labelledby="zone-calendar-title">
+      <!-- Zone 4: Ranked Vacation & El Al Bonus Proposals -->
+      <section class="zone-card" id="zone-results" aria-labelledby="zone-results-title">
         <div class="zone-header">
-          <h2 id="zone-calendar-title">3. לוח חופשות משרד החינוך וחפיפה רב-גילאית (מתעדכן אוטומטית כל שנה)</h2>
-          <div style="display: flex; gap: 8px; align-items: center;">
+          <h2 id="zone-results-title">3. תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס (CTOS / VUS / FBVS)</h2>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <button type="button" class="btn-secondary" id="btn-toggle-calendar-inline" style="min-height: 36px; font-size: 0.82rem;">
+              📅 הצג לוח חופשות משרד החינוך
+            </button>
+            <button type="button" class="btn-secondary" id="btn-compare-selected" style="min-height: 36px; font-size: 0.82rem;">
+              ⚖️ השווה חלופות נבחרות
+            </button>
+          </div>
+        </div>
+        <div id="comparison-banner-container" style="display: none; margin-block-end: 14px;"></div>
+        <div class="proposals-grid" id="proposals-container">
+          <p>מחשב חלופות חופשה משפחתית וכרטיסי בונוס...</p>
+        </div>
+      </section>
+
+      <!-- Zone 3 (Optional): Multi-Child MoE Calendar & Annual Auto-Updater -->
+      <section class="zone-card" id="zone-calendar" aria-labelledby="zone-calendar-title" hidden style="display: none;">
+        <div class="zone-header">
+          <h2 id="zone-calendar-title">לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)</h2>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <span class="pill" id="calendar-sync-badge" style="background: #e0f2fe; color: #0369a1;">OFFICIAL_MOE_CIRCULAR</span>
             <button type="button" class="btn-secondary" id="btn-sync-moe-year" style="min-height: 36px; font-size: 0.82rem;">
               🔄 עדכן לוח שנה אוטומטי
+            </button>
+            <button type="button" class="btn-secondary" id="btn-close-calendar" style="min-height: 36px; font-size: 0.82rem;">
+              ✖️ הסתר לוח חופשות
             </button>
           </div>
         </div>
@@ -247,20 +270,6 @@
               <tr><td colspan="7">טוען נתוני לוח חופשות משרד החינוך...</td></tr>
             </tbody>
           </table>
-        </div>
-      </section>
-
-      <!-- Zone 4: Ranked Vacation & El Al Bonus Proposals -->
-      <section class="zone-card" id="zone-results" aria-labelledby="zone-results-title">
-        <div class="zone-header">
-          <h2 id="zone-results-title">4. דירוג חופשות מומלצות וניצול כרטיסי בונוס (CTOS / VUS / FBVS)</h2>
-          <button type="button" class="btn-secondary" id="btn-compare-selected" style="min-height: 36px; font-size: 0.82rem;">
-            ⚖️ השווה חלופות נבחרות
-          </button>
-        </div>
-        <div id="comparison-banner-container" style="display: none; margin-block-end: 14px;"></div>
-        <div class="proposals-grid" id="proposals-container">
-          <p>מחשב חלופות חופשה משפחתית וכרטיסי בונוס...</p>
         </div>
       </section>
     </div>

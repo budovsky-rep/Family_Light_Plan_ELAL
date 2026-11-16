@@ -47,11 +47,50 @@
     dir: 'rtl',
     dateSelectionMode: 'HOLIDAY_DIRECT_INTENT',
     airlineSelectionMode: 'EL_AL_ONLY',
+    isCalendarVisible: false,
     profile: null,
     calendarData: null,
     proposals: [],
     selectedProposalIds: new Set()
   };
+
+  function setCalendarVisibility(visible, scrollToIt) {
+    state.isCalendarVisible = Boolean(visible);
+    const calZone = document.getElementById('zone-calendar');
+    const isHe = state.locale === 'he';
+    if (calZone) {
+      if (state.isCalendarVisible) {
+        calZone.removeAttribute('hidden');
+        calZone.style.display = 'block';
+        if (scrollToIt) {
+          calZone.scrollIntoView({ behavior: 'smooth' });
+        }
+      } else {
+        calZone.setAttribute('hidden', '');
+        calZone.style.display = 'none';
+      }
+    }
+    const btnTop = document.getElementById('btn-toggle-calendar');
+    if (btnTop) {
+      btnTop.textContent = state.isCalendarVisible
+        ? isHe
+          ? '📅 הסתר לוח משרד החינוך'
+          : '📅 Hide MoE Calendar'
+        : isHe
+          ? '📅 לוח חופשות משרד החינוך (הצג)'
+          : '📅 Show MoE Calendar';
+    }
+    const btnInline = document.getElementById('btn-toggle-calendar-inline');
+    if (btnInline) {
+      btnInline.textContent = state.isCalendarVisible
+        ? isHe
+          ? '📅 הסתר לוח חופשות משרד החינוך'
+          : '📅 Hide MoE Vacation Calendar'
+        : isHe
+          ? '📅 הצג לוח חופשות משרד החינוך'
+          : '📅 Show MoE Vacation Calendar';
+    }
+  }
 
   function suggestFrameworkByAge(ageYears) {
     const age = Number(ageYears) || 0;
@@ -91,8 +130,75 @@
     return resp.json();
   }
 
+  function recalculateHouseholdPointsFromWallets() {
+    if (!state.profile) return { matmidTotal: 0, allClubsTotal: 0, byProgram: {} };
+    const wallets = state.profile.passenger_loyalty_wallets || [];
+    let matmidTotal = 0;
+    let allClubsTotal = 0;
+    const byProgram = {};
+
+    wallets.forEach((w) => {
+      const pts = Math.max(0, Number(w.available_points) || 0);
+      const prog = String(w.program_code || 'ELAL_MATMID');
+      allClubsTotal += pts;
+      byProgram[prog] = (byProgram[prog] || 0) + pts;
+      if (prog === 'ELAL_MATMID') {
+        matmidTotal += pts;
+      }
+    });
+
+    state.profile.matmid_points_balance = matmidTotal;
+    const matmidInput = document.getElementById('prof-matmid-points');
+    if (matmidInput) {
+      matmidInput.value = matmidTotal;
+    }
+
+    const ptsPill = document.getElementById('header-points-pill');
+    if (ptsPill) {
+      if (allClubsTotal > matmidTotal) {
+        ptsPill.textContent = `${matmidTotal.toLocaleString()} Matmid (${allClubsTotal.toLocaleString()} Total pts)`;
+      } else {
+        ptsPill.textContent = `${matmidTotal.toLocaleString()} Matmid pts`;
+      }
+    }
+
+    const stripEl = document.getElementById('family-clubs-totals-strip');
+    if (stripEl) {
+      const isHe = state.locale === 'he';
+      const progShortLabels = {
+        ELAL_MATMID: isHe ? 'אל על מתמיד' : 'El Al Matmid',
+        BRITISH_AVIOS: 'Avios',
+        FLYING_BLUE: 'Flying Blue',
+        UNITED_MILEAGEPLUS: 'United MP',
+        MILES_AND_MORE: 'Miles & More',
+        DELTA_SKYMILES: 'Delta SkyMiles',
+        QANTAS_FREQUENT_FLYER: 'Qantas FF',
+        AEGEAN_MILES_BONUS: 'Aegean',
+        AMEX_MR_ISRAEL: 'Amex MR IL',
+        ISRAELI_CC_TRAVEL_POINTS: isHe ? 'נקודות אשראי' : 'CC Travel Pts'
+      };
+      const breakdownPills = Object.entries(byProgram)
+        .filter(([, total]) => total > 0)
+        .map(
+          ([prog, total]) =>
+            `<span class="score-pill" dir="ltr">${progShortLabels[prog] || prog}: <strong>${Number(total).toLocaleString()}</strong></span>`
+        )
+        .join('');
+      const totalTitle = isHe ? 'סה״כ נקודות משפחתי (מכל המועדונים):' : 'Total Family Points (All Clubs):';
+      stripEl.innerHTML = `
+        <span class="score-pill" style="background: #eff6ff; border-color: #93c5fd; color: #1e3a8a;">
+          ${totalTitle} <strong dir="ltr">${allClubsTotal.toLocaleString()}</strong>
+        </span>
+        ${breakdownPills}
+      `;
+    }
+
+    return { matmidTotal, allClubsTotal, byProgram };
+  }
+
   function renderProfileControls() {
     if (!state.profile) return;
+    recalculateHouseholdPointsFromWallets();
     const adultsInput = document.getElementById('prof-adults-count');
     const ptoInput = document.getElementById('prof-pto-budget');
     const matmidInput = document.getElementById('prof-matmid-points');
@@ -101,12 +207,8 @@
     if (matmidInput) matmidInput.value = state.profile.matmid_points_balance;
 
     const famPill = document.getElementById('header-family-pill');
-    const ptsPill = document.getElementById('header-points-pill');
     if (famPill) {
       famPill.textContent = `${state.profile.adults_count} Adults + ${state.profile.children.length} Children`;
-    }
-    if (ptsPill) {
-      ptsPill.textContent = `${Number(state.profile.matmid_points_balance || 0).toLocaleString()} Matmid pts`;
     }
 
     const childrenContainer = document.getElementById('children-list-container');
@@ -155,6 +257,12 @@
           }).join('');
           return `
             <div class="proposal-card" style="padding: 10px; margin-block-end: 8px; border-inline-start-color: #d97706;">
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-block-end: 6px;">
+                <strong style="font-size: 0.85rem;">💳 ${w.passenger_name || (state.locale === 'he' ? 'נוסע #' + (idx + 1) : 'Passenger #' + (idx + 1))} <span style="font-weight: 400; color: var(--text-secondary);">(${w.passenger_id})</span></strong>
+                <button type="button" class="btn-secondary" data-remove-wallet="${idx}" style="min-height: 28px; padding: 2px 10px; font-size: 0.75rem; color: #be123c; border-color: #fecdd3; background: #fff1f2;">
+                  ${state.locale === 'he' ? '🗑️ הסר מועדון' : '🗑️ Remove Club'}
+                </button>
+              </div>
               <div class="form-grid form-grid-3" style="margin-block-end: 0;">
                 <div class="form-field">
                   <label>${state.locale === 'he' ? 'נוסע' : 'Passenger'} (${w.passenger_id}):</label>
@@ -431,15 +539,16 @@
         const zCalendar = document.getElementById('zone-calendar-title');
         if (zCalendar) {
           zCalendar.textContent = isHe
-            ? '3. לוח חופשות משרד החינוך וחפיפה רב-גילאית (מתעדכן אוטומטית כל שנה)'
-            : '3. MoE Multi-Child Vacation Calendar & Annual Auto-Updater';
+            ? 'לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)'
+            : 'MoE Multi-Child Vacation Calendar (Optional View)';
         }
         const zResults = document.getElementById('zone-results-title');
         if (zResults) {
           zResults.textContent = isHe
-            ? '4. דירוג חופשות מומלצות וניצול כרטיסי בונוס (CTOS / VUS / FBVS)'
-            : '4. Ranked Vacation Proposals & Bonus Fulfillment (CTOS / VUS / FBVS)';
+            ? '3. תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס (CTOS / VUS / FBVS)'
+            : '3. Search Results, Ranked Vacation Proposals & Bonus Fulfillment (CTOS / VUS / FBVS)';
         }
+        setCalendarVisibility(state.isCalendarVisible, false);
         renderProfileControls();
         renderCalendarTable();
         renderProposals();
@@ -452,7 +561,7 @@
         if (!state.profile) return;
         state.profile.adults_count = Number(document.getElementById('prof-adults-count').value || 2);
         state.profile.annual_pto_budget = Number(document.getElementById('prof-pto-budget').value || 18);
-        state.profile.matmid_points_balance = Number(document.getElementById('prof-matmid-points').value || 185000);
+        recalculateHouseholdPointsFromWallets();
         state.profile = await apiSend('PUT', '/api/v1/profile', state.profile);
         renderProfileControls();
         await runVacationSearch();
@@ -484,19 +593,42 @@
       btnAddWallet.addEventListener('click', () => {
         if (!state.profile) return;
         const nextIdx = (state.profile.passenger_loyalty_wallets || []).length + 1;
+        const adultNum = Math.max(1, ((nextIdx - 1) % Math.max(1, state.profile.adults_count || 2)) + 1);
         state.profile.passenger_loyalty_wallets.push({
           id: `wallet-custom-${Date.now()}`,
-          passenger_id: `A${Math.min(nextIdx, state.profile.adults_count)}`,
-          passenger_name: `נוסע ${nextIdx}`,
-          program_code: 'BRITISH_AVIOS',
+          passenger_id: `ADULT_${adultNum}`,
+          passenger_name: `הורה ${adultNum}`,
+          program_code: 'ELAL_MATMID',
           available_points: 45000,
+          can_pool_with_family: true,
+          pool_group_id: 'FAMILY_POOL',
+          transfer_ratio_to_airline: 1.0,
+          has_club_credit_card: true,
           companion_vouchers_count: 0,
           allow_household_pooling: true,
-          point_valuation_cents: 1.3
+          point_valuation_cents: 1.6
         });
+        recalculateHouseholdPointsFromWallets();
         renderProfileControls();
       });
     }
+
+    document.body.addEventListener('input', (ev) => {
+      const target = ev.target;
+      if (!target || !state.profile) return;
+      if (target.hasAttribute('data-wallet-pts')) {
+        const idx = Number(target.getAttribute('data-wallet-pts'));
+        if (state.profile.passenger_loyalty_wallets[idx]) {
+          state.profile.passenger_loyalty_wallets[idx].available_points = Math.max(0, Number(target.value || 0));
+          recalculateHouseholdPointsFromWallets();
+        }
+      } else if (target.hasAttribute('data-wallet-name')) {
+        const idx = Number(target.getAttribute('data-wallet-name'));
+        if (state.profile.passenger_loyalty_wallets[idx]) {
+          state.profile.passenger_loyalty_wallets[idx].passenger_name = target.value;
+        }
+      }
+    });
 
     document.body.addEventListener('change', (ev) => {
       const target = ev.target;
@@ -513,12 +645,20 @@
         const idx = Number(target.getAttribute('data-child-fw'));
         const val = target.value;
         state.profile.children[idx].framework_type = val === '' ? null : val;
+      } else if (target.hasAttribute('data-wallet-name')) {
+        const idx = Number(target.getAttribute('data-wallet-name'));
+        if (state.profile.passenger_loyalty_wallets[idx]) {
+          state.profile.passenger_loyalty_wallets[idx].passenger_name = target.value;
+          renderProfileControls();
+        }
       } else if (target.hasAttribute('data-wallet-prog')) {
         const idx = Number(target.getAttribute('data-wallet-prog'));
         state.profile.passenger_loyalty_wallets[idx].program_code = target.value;
+        recalculateHouseholdPointsFromWallets();
       } else if (target.hasAttribute('data-wallet-pts')) {
         const idx = Number(target.getAttribute('data-wallet-pts'));
-        state.profile.passenger_loyalty_wallets[idx].available_points = Number(target.value || 0);
+        state.profile.passenger_loyalty_wallets[idx].available_points = Math.max(0, Number(target.value || 0));
+        recalculateHouseholdPointsFromWallets();
       } else if (target.hasAttribute('data-compare-id')) {
         const pid = target.getAttribute('data-compare-id');
         if (target.checked) state.selectedProposalIds.add(pid);
@@ -529,9 +669,18 @@
     document.body.addEventListener('click', (ev) => {
       const target = ev.target;
       if (!target || !state.profile) return;
-      if (target.hasAttribute('data-remove-child')) {
-        const idx = Number(target.getAttribute('data-remove-child'));
+      const removeChildBtn = target.closest('[data-remove-child]');
+      if (removeChildBtn) {
+        const idx = Number(removeChildBtn.getAttribute('data-remove-child'));
         state.profile.children.splice(idx, 1);
+        renderProfileControls();
+        return;
+      }
+      const removeWalletBtn = target.closest('[data-remove-wallet]');
+      if (removeWalletBtn) {
+        const idx = Number(removeWalletBtn.getAttribute('data-remove-wallet'));
+        state.profile.passenger_loyalty_wallets.splice(idx, 1);
+        recalculateHouseholdPointsFromWallets();
         renderProfileControls();
       }
     });
@@ -580,11 +729,34 @@
       });
     }
 
+    const btnToggleCalInline = document.getElementById('btn-toggle-calendar-inline');
+    if (btnToggleCalInline) {
+      btnToggleCalInline.addEventListener('click', () => {
+        setCalendarVisibility(!state.isCalendarVisible, !state.isCalendarVisible);
+      });
+    }
+
+    const btnCloseCal = document.getElementById('btn-close-calendar');
+    if (btnCloseCal) {
+      btnCloseCal.addEventListener('click', () => {
+        setCalendarVisibility(false, false);
+      });
+    }
+
     document.querySelectorAll('.desktop-nav-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.desktop-nav-btn').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
         const zoneId = btn.getAttribute('data-desktop-zone');
+        if (zoneId === 'zone-calendar') {
+          setCalendarVisibility(!state.isCalendarVisible, !state.isCalendarVisible);
+          btn.classList.toggle('active', state.isCalendarVisible);
+          return;
+        }
+        document.querySelectorAll('.desktop-nav-btn').forEach((b) => {
+          if (b.getAttribute('data-desktop-zone') !== 'zone-calendar') {
+            b.classList.remove('active');
+          }
+        });
+        btn.classList.add('active');
         const el = document.getElementById(zoneId);
         if (el) el.scrollIntoView({ behavior: 'smooth' });
       });

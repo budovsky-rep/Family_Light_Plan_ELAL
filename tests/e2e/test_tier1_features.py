@@ -3417,10 +3417,9 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertIn("@media", css)
         self.assertIn("sticky", css)
         self.assertTrue("inset-inline" in css or "margin-inline" in css or "padding-inline" in css)
-        # Verify desktop multi-column workspace layout rules & absence of mobile constraints
-        self.assertIn("grid-template-columns: 500px minmax(0, 1fr)", css)
-        self.assertIn("grid-template-columns: 540px minmax(0, 1fr)", css)
-        self.assertIn("max-width: 1600px", css)
+        # Verify single-column sequential desktop workspace layout rules & absence of mobile constraints
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", css)
+        self.assertIn("max-width: 1200px", css)
         self.assertNotIn("padding-block: 18px 88px", css)
         self.assertNotIn("scroll-snap-type: x mandatory", css)
         self.assertRegex(css, r"\.mobile-bottom-nav\s*\{[^}]*display:\s*none\s*!important")
@@ -3444,6 +3443,9 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertIn("form-grid form-grid-2", app_js)
         self.assertIn("form-grid form-grid-3", app_js)
         self.assertIn("desktop-nav-btn", app_js)
+        # Verify wallet removal button (`data-remove-wallet`) and automatic family points calculation
+        self.assertIn("data-remove-wallet", app_js)
+        self.assertIn("recalculateHouseholdPointsFromWallets", app_js)
 
     def test_f31_4_all_eight_component_files_exist_and_implement_ui_zones(self) -> None:
         comp_root = PROJECT_ROOT / "frontend" / "src" / "components"
