@@ -1,30 +1,33 @@
 /*
- * Family Vacation Planner — Desktop-First BiDi/RTL & LTR Stylesheet (`frontend/src/styles/app.css`)
- * Uses CSS Logical Properties (`inset-inline`, `margin-inline`, `padding-inline`, `border-inline-start`, `border-inline-end`, `text-align: start`)
- * and desktop multi-column workspace layout (`1280px`, `1440px+`, `max-width: 1600px`).
+ * Family Vacation Planner — Coastal Departure Lounge & First-Class Boarding Pass Stylesheet (`frontend/src/styles/app.css`)
+ * Uses CSS Logical Properties (`inset-inline-start`, `margin-inline`, `padding-inline`, `border-inline-start`, `border-inline-end`, `text-align: start`)
+ * and desktop workspace layout (`1280px`, `1440px+`, `max-width: 1200px`).
  */
 
 :root {
-  --bg-page: #f8fafc;
+  --bg-page: #edf6fc;
   --bg-surface: #ffffff;
-  --bg-elevated: #f1f5f9;
-  --bg-header: #0f172a;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #64748b;
+  --bg-elevated: #f1f7fb;
+  --bg-warm-sand: #fefce8;
+  --bg-header: #082038;
+  --text-primary: #0a2540;
+  --text-secondary: #334e68;
+  --text-muted: #627d98;
   --brand-primary: #0284c7;
   --brand-primary-hover: #0369a1;
-  --brand-accent: #0ea5e9;
-  --elal-navy: #1e3a8a;
+  --brand-accent: #0d9488;
+  --elal-navy: #0c356a;
   --elal-gold: #d97706;
-  --vac-emerald: #10b981;
+  --vac-emerald: #059669;
   --camp-amber: #f59e0b;
   --waning-sky: #38bdf8;
-  --school-rose: #f43f5e;
-  --border-subtle: #e2e8f0;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --shadow-card: 0 4px 16px rgba(15, 23, 42, 0.06);
+  --school-rose: #e11d48;
+  --border-subtle: #d8e6f3;
+  --border-strong: #b6d2ea;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --shadow-card: 0 12px 32px rgba(10, 37, 64, 0.07), 0 2px 6px rgba(10, 37, 64, 0.04);
+  --shadow-hover: 0 18px 40px rgba(2, 132, 199, 0.14), 0 4px 12px rgba(10, 37, 64, 0.06);
 }
 
 *,
@@ -38,18 +41,19 @@ body {
   margin: 0;
   padding: 0;
   background-color: var(--bg-page);
+  background-image: linear-gradient(180deg, #dff1fd 0%, #eff8ff 360px, #f6fafd 100%);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  line-height: 1.5;
+  font-family: "Rubik", "Assistant", "Heebo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Desktop Header & Zone Quick-Navigation */
+/* Desktop Header & Coastal Aviation Bar */
 .app-header {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: linear-gradient(135deg, var(--bg-header), var(--elal-navy));
+  background: linear-gradient(135deg, #071d36 0%, #0b3866 55%, #0e6378 100%);
   color: #ffffff;
   padding-block: 14px;
   padding-inline: 32px;
@@ -58,29 +62,60 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.2);
+  border-block-end: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 24px rgba(7, 29, 54, 0.24);
 }
 
 .header-brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+}
+
+.brand-emblem {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.brand-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .header-brand h1 {
   margin: 0;
   font-size: 1.25rem;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.brand-subtitle {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #bae6fd;
+  font-weight: 500;
 }
 
 .brand-badge {
-  background: rgba(255, 255, 255, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  padding-block: 4px;
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.48);
+  color: #fde68a;
+  padding-block: 3px;
   padding-inline: 10px;
   border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 600;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
 }
 
 .desktop-zone-nav {
@@ -93,21 +128,23 @@ body {
 .desktop-nav-btn {
   min-height: 36px;
   padding-block: 6px;
-  padding-inline: 12px;
+  padding-inline: 14px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.12);
-  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0f9ff;
   font-size: 0.82rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.15s ease;
 }
 
 .desktop-nav-btn:hover,
 .desktop-nav-btn.active {
   background: rgba(255, 255, 255, 0.26);
-  border-color: rgba(255, 255, 255, 0.55);
+  border-color: #7dd3fc;
+  color: #ffffff;
+  transform: translateY(-1px);
 }
 
 .header-summary-pills {
@@ -119,11 +156,19 @@ body {
 
 .pill {
   background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   padding-block: 5px;
   padding-inline: 12px;
   border-radius: 999px;
-  font-size: 0.82rem;
-  font-weight: 600;
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pill-points {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(251, 191, 36, 0.45);
+  color: #fef3c7;
 }
 
 /* Desktop-Proportioned Buttons & Inputs */
@@ -132,15 +177,26 @@ select,
 input[type="text"],
 input[type="number"],
 input[type="date"] {
-  min-height: 38px;
+  min-height: 40px;
   min-width: 0;
-  padding-block: 6px;
-  padding-inline: 10px;
-  border-radius: 10px;
+  padding-block: 7px;
+  padding-inline: 12px;
+  border-radius: 11px;
   border: 1px solid var(--border-subtle);
   font-size: 0.9rem;
+  font-family: inherit;
   background-color: var(--bg-surface);
   color: var(--text-primary);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+select:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="date"]:focus {
+  outline: none;
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.16);
 }
 
 select,
@@ -151,37 +207,54 @@ input[type="date"] {
 }
 
 .btn-primary {
-  background-color: var(--brand-primary);
+  background: linear-gradient(135deg, #0284c7 0%, #0d9488 100%);
   color: #ffffff;
   border: none;
   font-weight: 700;
+  font-size: 0.96rem;
   cursor: pointer;
-  padding-inline: 18px;
-  transition: background-color 0.15s ease;
+  padding-block: 11px;
+  padding-inline: 22px;
+  box-shadow: 0 6px 18px rgba(2, 132, 199, 0.28);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
 
 .btn-primary:hover {
-  background-color: var(--brand-primary-hover);
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(2, 132, 199, 0.34);
 }
 
 .btn-secondary {
   background-color: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong);
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-secondary:hover {
+  background-color: #e0f2fe;
+  border-color: var(--brand-primary);
 }
 
 .btn-locale-toggle {
   min-height: 36px;
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.18);
   color: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 0.78rem;
 }
 
-/* Main Single-Column Sequential Desktop Workspace (Search -> Family Profile -> Results + Optional Calendar) */
+.btn-locale-toggle:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Main Single-Column Sequential Desktop Workspace (Hero -> Search -> Family Profile -> Results + Optional Calendar) */
 .dashboard-shell {
   width: 100%;
   max-width: 1200px;
@@ -199,9 +272,193 @@ input[type="date"] {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 22px;
 }
 
+/* Atmospheric Vacation Hero & Destination Quick-Picker */
+.vacation-hero-card {
+  min-width: 0;
+  background: linear-gradient(135deg, #082038 0%, #0369a1 55%, #0d9488 100%);
+  color: #ffffff;
+  border-radius: var(--radius-lg);
+  padding-block: 24px;
+  padding-inline: 24px;
+  box-shadow: 0 16px 40px rgba(8, 32, 56, 0.18);
+  border: 1px solid rgba(125, 211, 252, 0.3);
+}
+
+.hero-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.95fr);
+  gap: 24px;
+  align-items: center;
+  margin-block-end: 20px;
+}
+
+.hero-copy-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hero-eyebrow {
+  display: inline-block;
+  align-self: flex-start;
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  color: #fef08a;
+  padding-block: 4px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.hero-headline {
+  margin: 0;
+  font-size: 1.68rem;
+  font-weight: 800;
+  line-height: 1.25;
+  color: #ffffff;
+  letter-spacing: -0.015em;
+}
+
+.hero-lead {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #e0f2fe;
+  line-height: 1.6;
+}
+
+.hero-highlights-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 4px;
+}
+
+.hero-highlight-chip {
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #f0f9ff;
+  padding-block: 5px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.hero-art-col {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-scenic-svg {
+  width: 100%;
+  max-width: 380px;
+  height: auto;
+  border-radius: 14px;
+  box-shadow: 0 10px 28px rgba(7, 29, 54, 0.32);
+}
+
+.dest-strip-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block-start: 14px;
+  border-block-start: 1px solid rgba(255, 255, 255, 0.18);
+  margin-block-end: 12px;
+}
+
+.dest-strip-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #f0f9ff;
+}
+
+.dest-strip-hint {
+  font-size: 0.78rem;
+  color: #bae6fd;
+}
+
+.dest-postcard-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dest-postcard {
+  min-width: 0;
+  text-align: start;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+  border-radius: 13px;
+  padding-block: 10px;
+  padding-inline: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dest-postcard:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.55);
+  transform: translateY(-2px);
+}
+
+.dest-postcard.active {
+  background: #ffffff;
+  color: var(--text-primary);
+  border-color: #fbbf24;
+  box-shadow: 0 8px 20px rgba(7, 29, 54, 0.25);
+}
+
+.dest-postcard-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.dest-emoji {
+  font-size: 1.2rem;
+}
+
+.dest-iata {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding-block: 2px;
+  padding-inline: 7px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.28);
+  color: #fef08a;
+}
+
+.dest-postcard.active .dest-iata {
+  background: #0284c7;
+  color: #ffffff;
+}
+
+.dest-name {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.dest-vibe {
+  font-size: 0.75rem;
+  opacity: 0.86;
+}
+
+/* Workspace Zone Cards */
 .zone-card {
   min-width: 0;
   background: var(--bg-surface);
@@ -218,15 +475,69 @@ input[type="date"] {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-block-end: 14px;
-  padding-block-end: 10px;
+  margin-block-end: 16px;
+  padding-block-end: 12px;
   border-block-end: 1px solid var(--border-subtle);
+}
+
+.zone-title-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.zone-step-pill {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding-block: 3px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+}
+
+.zone-step-pill-gold {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
 }
 
 .zone-header h2 {
   margin: 0;
-  font-size: 1.08rem;
+  font-size: 1.14rem;
+  font-weight: 800;
   color: var(--elal-navy);
+}
+
+.profile-helper-banner {
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-inline-start: 4px solid var(--brand-primary);
+  border-radius: 10px;
+  padding-block: 9px;
+  padding-inline: 12px;
+  margin-block-start: 0;
+  margin-block-end: 14px;
+}
+
+.sub-panel-section {
+  margin-block-start: 14px;
+  padding-block-start: 12px;
+  border-block-start: 1px dashed var(--border-subtle);
+}
+
+.sub-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-block-end: 10px;
+  font-size: 0.92rem;
 }
 
 /* Desktop 3-Column Segmented Mode Tabs */
@@ -240,20 +551,29 @@ input[type="date"] {
 .mode-tab-btn {
   min-width: 0;
   text-align: start;
-  padding-block: 10px;
-  padding-inline: 12px;
+  padding-block: 12px;
+  padding-inline: 14px;
   border-radius: var(--radius-md);
   border: 2px solid var(--border-subtle);
   background: var(--bg-elevated);
   cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.15s ease, box-shadow 0.16s ease;
+}
+
+.mode-tab-btn:hover {
+  border-color: #7dd3fc;
+  background: #f0f9ff;
+  transform: translateY(-1px);
 }
 
 .mode-tab-btn.active {
   border-color: var(--brand-primary);
-  background: #e0f2fe;
-  color: #0369a1;
+  background: linear-gradient(135deg, #e0f2fe 0%, #ccfbf1 100%);
+  color: #0c4a6e;
+  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.14);
 }
 
 /* Desktop Multi-Column Form Grids */
@@ -276,12 +596,12 @@ input[type="date"] {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .form-field label {
   font-size: 0.83rem;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-secondary);
 }
 
@@ -290,6 +610,7 @@ input[type="date"] {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  margin-block-start: 4px;
 }
 
 /* Sticky BiDi (RTL/LTR) Multi-Child Calendar Heatmap Table */
@@ -310,8 +631,8 @@ input[type="date"] {
 
 .calendar-heatmap-table th,
 .calendar-heatmap-table td {
-  padding-block: 8px;
-  padding-inline: 10px;
+  padding-block: 9px;
+  padding-inline: 12px;
   border-block-end: 1px solid var(--border-subtle);
   text-align: start;
   white-space: nowrap;
@@ -321,6 +642,8 @@ input[type="date"] {
   position: sticky;
   top: 0;
   background-color: var(--bg-elevated);
+  color: var(--elal-navy);
+  font-weight: 700;
   z-index: 3;
 }
 
@@ -342,44 +665,59 @@ input[type="date"] {
 .badge-vacation {
   background-color: #d1fae5;
   color: #065f46;
-  padding-block: 3px;
-  padding-inline: 8px;
+  border: 1px solid #6ee7b7;
+  padding-block: 4px;
+  padding-inline: 10px;
   border-radius: 999px;
-  font-weight: 600;
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 .badge-camp {
   background-color: #fef3c7;
   color: #92400e;
-  padding-block: 3px;
-  padding-inline: 8px;
+  border: 1px solid #fde68a;
+  padding-block: 4px;
+  padding-inline: 10px;
   border-radius: 999px;
-  font-weight: 600;
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
-/* Desktop Vacation Proposals Grid & Cards */
+/* Signature Boarding-Pass Vacation Proposal Cards */
 .proposals-grid {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
 }
 
 .proposal-card {
   min-width: 0;
-  border: 1px solid var(--border-subtle);
-  border-inline-start: 5px solid var(--brand-primary);
-  border-radius: var(--radius-md);
-  padding-block: 16px;
-  padding-inline: 16px;
-  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-inline-start: 6px solid var(--brand-primary);
+  border-radius: 16px;
+  padding-block: 18px;
+  padding-inline: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fcff 100%);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  box-shadow: 0 6px 20px rgba(10, 37, 64, 0.05);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.proposal-card:hover {
+  box-shadow: var(--shadow-hover);
 }
 
 .proposal-card.tier-RECOMMENDED {
   border-inline-start-color: var(--vac-emerald);
+  background: linear-gradient(180deg, #ffffff 0%, #f2fbf7 100%);
+}
+
+.proposal-card.tier-TOP_CHOICE {
+  border-inline-start-color: var(--elal-gold);
 }
 
 .proposal-top-bar {
@@ -387,7 +725,108 @@ input[type="date"] {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
+}
+
+.proposal-dest-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.proposal-dest-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #e0f2fe 0%, #ccfbf1 100%);
+  border: 1px solid #bae6fd;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.35rem;
+}
+
+.proposal-dest-title {
+  font-size: 1.16rem;
+  font-weight: 800;
+  color: var(--elal-navy);
+}
+
+/* Boarding-Pass Visual Flight Route Telemetry Bar */
+.boarding-route-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #f0f7fc;
+  border: 1px solid #cfe3f4;
+  border-radius: 12px;
+  padding-block: 10px;
+  padding-inline: 16px;
+}
+
+.route-endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.route-iata {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--elal-navy);
+  letter-spacing: 0.04em;
+}
+
+.route-date {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.route-arc-Track {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.route-arc-line {
+  width: 100%;
+  display: flex;
+  align-items: center;
   gap: 8px;
+  color: var(--brand-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.route-arc-dash {
+  flex: 1;
+  height: 2px;
+  border-block-start: 2px dashed #7dd3fc;
+}
+
+.route-nights-pill {
+  background: #ffffff;
+  border: 1px solid #93c5fd;
+  color: #0369a1;
+  padding-block: 2px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.boarding-perforation {
+  border-block-start: 2px dashed #cbd5e1;
+  margin-block: 2px;
 }
 
 .score-strip {
@@ -399,26 +838,41 @@ input[type="date"] {
 .score-pill {
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  padding-block: 4px;
-  padding-inline: 10px;
-  border-radius: 8px;
+  padding-block: 5px;
+  padding-inline: 11px;
+  border-radius: 9px;
   font-size: 0.8rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.allocations-details {
+  background: #f8fafc;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding-block: 8px;
+  padding-inline: 12px;
 }
 
 .allocations-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.82rem;
-  margin-block-start: 6px;
+  margin-block-start: 8px;
 }
 
 .allocations-table th,
 .allocations-table td {
-  padding-block: 6px;
-  padding-inline: 8px;
+  padding-block: 7px;
+  padding-inline: 10px;
   border-block-end: 1px solid var(--border-subtle);
   text-align: start;
+}
+
+.allocations-table thead th {
+  background: var(--bg-elevated);
+  color: var(--elal-navy);
+  font-weight: 700;
 }
 
 /* Legacy Mobile Bottom Navigation Bar — Hidden in Desktop Layout */
