@@ -1,15 +1,16 @@
 /**
- * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js`)
+ * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v1.3)
  *
- * How it works:
- * 1. Runs in the Page `MAIN` world at `document_start` (and injects a fallback bridge if needed).
- * 2. When Auto-Pilot clicks El Al's native "Search" button, El Al's own frontend code sends two
- *    legitimate `POST` requests to `GeneralRestServices-GetRbdAvailability` (with all of El Al's
- *    authentic headers and tokens).
- * 3. Our `MAIN`-world interceptor rewrites `input.startDate`, `input.endDate`, `input.rbd`, and
- *    `input.seg` in the outgoing request body to match the active Israeli Holiday window, and
- *    captures the returned `AccumulatedOutput.resultSet` records directly as well as rendering
- *    the holiday flights right into El Al's visible table!
+ * Key design for 100% stability on `https://www.elal.com/rbddataclients/`:
+ * 1. Loops by Holiday -> Cabin (`Economy`, then `Premium`) -> Destination so `Travel Class`
+ *    is only changed twice per holiday instead of on every destination.
+ * 2. Selects `Travel Class` FIRST and waits 450ms before selecting `From`/`To` airports,
+ *    because changing `Travel Class` on El Al's form resets the airport dropdowns.
+ * 3. Strictly validates that all 4 airport dropdowns (`TLV -> DEST` and `DEST -> TLV`) have
+ *    valid selections before clicking `Search` — preventing El Al's "Oops! Something went wrong" modal.
+ * 4. In the `MAIN`-world XHR/fetch interceptor for `GeneralRestServices-GetRbdAvailability`,
+ *    rewrites ONLY `input.startDate` and `input.endDate` to the active Holiday window while
+ *    preserving El Al's native `seg`, `rbd`, headers, and tokens untouched.
  */
 
 (function () {
@@ -67,18 +68,7 @@
         const seg0 = parsed.input.seg && parsed.input.seg[0] ? parsed.input.seg[0] : null;
         const isInbound = seg0 && String(seg0.dest || "").toUpperCase() === "TLV";
 
-        if (seg0) {
-          if (isInbound) {
-            seg0.org = ov.destIata;
-            seg0.dest = "TLV";
-          } else {
-            seg0.org = "TLV";
-            seg0.dest = ov.destIata;
-          }
-        }
-        if (ov.rbd) {
-          parsed.input.rbd = ov.rbd;
-        }
+        // Rewrite ONLY startDate and endDate so El Al's form-signed seg & rbd stay 100% consistent
         if (isInbound) {
           if (ov.retStartIso) parsed.input.startDate = ov.retStartIso;
           if (ov.retEndIso) parsed.input.endDate = ov.retEndIso;
@@ -91,7 +81,6 @@
           {
             source: "FVP_MAIN_XHR_REWRITTEN",
             direction: isInbound ? "INBOUND" : "OUTBOUND",
-            destIata: ov.destIata,
             rbd: parsed.input.rbd,
             startDate: parsed.input.startDate,
             endDate: parsed.input.endDate
@@ -248,11 +237,19 @@
       };
     }
 
+    function getSelectedOptionText(selectEl) {
+      if (!selectEl || !selectEl.options || selectEl.selectedIndex < 0) return "";
+      return (selectEl.options[selectEl.selectedIndex].text || "").trim();
+    }
+
     function setSelectOptionInMain(selectEl, matcherFn) {
       if (!selectEl || !selectEl.options) return false;
       for (let i = 0; i < selectEl.options.length; i++) {
         const opt = selectEl.options[i];
         if (matcherFn(opt)) {
+          if (selectEl.selectedIndex === i) {
+            return true;
+          }
           selectEl.selectedIndex = i;
           try {
             const desc = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value");
@@ -311,55 +308,92 @@
         const sleepMain = (ms) => new Promise((r) => setTimeout(r, ms));
         const targetToken = `[${String(destIata || "").toUpperCase()}]`;
 
-        const c1 = findFormElementsInMain();
-        setSelectOptionInMain(
-          c1.depFromSelect,
-          (opt) => (opt.text || "").toUpperCase().includes("[TLV]") || (opt.value || "").toUpperCase() === "TLV"
-        );
-        const okOut = setSelectOptionInMain(
-          c1.depToSelect,
-          (opt) => (opt.text || "").toUpperCase().includes(targetToken) || (opt.value || "").toUpperCase() === destIata.toUpperCase()
-        );
-        await sleepMain(120);
+        // STEP 1: Select Travel Class FIRST (because changing Travel Class on El Al resets the airport dropdowns!)
+        const c0 = findFormElementsInMain();
+        const curDepClassTxt = getSelectedOptionText(c0.depClassSelect).toLowerCase();
+        const curRetClassTxt = getSelectedOptionText(c0.retClassSelect).toLowerCase();
+        const wantCabinLower = String(cabinName || "economy").toLowerCase();
 
-        const c2 = findFormElementsInMain();
-        setSelectOptionInMain(
-          c2.retFromSelect,
-          (opt) => (opt.text || "").toUpperCase().includes(targetToken) || (opt.value || "").toUpperCase() === destIata.toUpperCase()
-        );
-        setSelectOptionInMain(
-          c2.retToSelect,
-          (opt) => (opt.text || "").toUpperCase().includes("[TLV]") || (opt.value || "").toUpperCase() === "TLV"
-        );
-        setSelectOptionInMain(
-          c2.depClassSelect,
-          (opt) => (opt.text || "").toLowerCase().includes(cabinName.toLowerCase())
-        );
-        setSelectOptionInMain(
-          c2.retClassSelect,
-          (opt) => (opt.text || "").toLowerCase().includes(cabinName.toLowerCase())
-        );
-
-        // Update visual text inside the Date boxes (without dispatching blur so datepicker won't revert it)
-        if (c2.depDateInput && depDate) setVisualDateInMain(c2.depDateInput, depDate);
-        if (c2.retDateInput && retDate) setVisualDateInMain(c2.retDateInput, retDate);
-        await sleepMain(80);
-
-        if (okOut && c2.searchBtn) {
-          c2.searchBtn.click();
+        if (!curDepClassTxt.includes(wantCabinLower) || !curRetClassTxt.includes(wantCabinLower)) {
+          const okClass1 = setSelectOptionInMain(
+            c0.depClassSelect,
+            (opt) => (opt.text || "").toLowerCase().includes(wantCabinLower)
+          );
+          await sleepMain(250);
+          const c0b = findFormElementsInMain();
+          const okClass2 = setSelectOptionInMain(
+            c0b.retClassSelect,
+            (opt) => (opt.text || "").toLowerCase().includes(wantCabinLower)
+          );
+          if (!okClass1 || !okClass2) {
+            window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "CABIN_NOT_AVAILABLE" }, "*");
+            return;
+          }
+          await sleepMain(450);
         }
 
-        // Re-assert visual date text 150ms after Search click
-        setTimeout(() => {
-          if (c2.depDateInput && depDate) setVisualDateInMain(c2.depDateInput, depDate);
-          if (c2.retDateInput && retDate) setVisualDateInMain(c2.retDateInput, retDate);
-        }, 150);
+        // STEP 2: Select Departure From [TLV] -> To [DEST]
+        const c1 = findFormElementsInMain();
+        const okDepFrom = setSelectOptionInMain(
+          c1.depFromSelect,
+          (opt) => (opt.text || "").toUpperCase().includes("[TLV]")
+        );
+        await sleepMain(220);
+
+        const c1b = findFormElementsInMain();
+        const okDepTo = setSelectOptionInMain(
+          c1b.depToSelect,
+          (opt) => (opt.text || "").toUpperCase().includes(targetToken)
+        );
+        if (!okDepFrom || !okDepTo) {
+          window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "DEST_NOT_IN_DEP" }, "*");
+          return;
+        }
+        await sleepMain(380);
+
+        // STEP 3: Select Return From [DEST] -> To [TLV]
+        const c2 = findFormElementsInMain();
+        const okRetFrom = setSelectOptionInMain(
+          c2.retFromSelect,
+          (opt) => (opt.text || "").toUpperCase().includes(targetToken)
+        );
+        await sleepMain(220);
+
+        const c2b = findFormElementsInMain();
+        const okRetTo = setSelectOptionInMain(
+          c2b.retToSelect,
+          (opt) => (opt.text || "").toUpperCase().includes("[TLV]")
+        );
+        if (!okRetFrom || !okRetTo) {
+          window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "DEST_NOT_IN_RET" }, "*");
+          return;
+        }
+        await sleepMain(280);
+
+        // STEP 4: Final safety check that all 4 airport boxes are non-empty and match before clicking Search
+        const cFinal = findFormElementsInMain();
+        const validDepFrom = getSelectedOptionText(cFinal.depFromSelect).toUpperCase().includes("[TLV]");
+        const validDepTo = getSelectedOptionText(cFinal.depToSelect).toUpperCase().includes(targetToken);
+        const validRetFrom = getSelectedOptionText(cFinal.retFromSelect).toUpperCase().includes(targetToken);
+        const validRetTo = getSelectedOptionText(cFinal.retToSelect).toUpperCase().includes("[TLV]");
+
+        if (!validDepFrom || !validDepTo || !validRetFrom || !validRetTo) {
+          window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "VALIDATION_FAILED" }, "*");
+          return;
+        }
+
+        if (cFinal.depDateInput && depDate) setVisualDateInMain(cFinal.depDateInput, depDate);
+        if (cFinal.retDateInput && retDate) setVisualDateInMain(cFinal.retDateInput, retDate);
+
+        if (cFinal.searchBtn) {
+          cFinal.searchBtn.click();
+        }
 
         window.postMessage(
           {
             source: "FVP_MAIN_TO_ISO",
             reqId: reqId,
-            okOut: okOut,
+            okOut: true,
             actualDep: depDate,
             actualRet: retDate
           },
@@ -380,7 +414,6 @@
   // ISOLATED EXTENSION WORLD: Widget UI, Auto-Pilot Loop & Server Sync
   // ============================================================================
 
-  // Strictly Israeli Holiday & MoE School Vacation windows with exact 14-day ISO ranges for El Al's API
   const YEARLY_HOLIDAY_WINDOWS = [
     {
       label: "חנוכה 2026",
@@ -582,7 +615,6 @@
     });
   }
 
-  // Listen for direct JSON records captured by the MAIN world XHR/fetch hook
   window.addEventListener("message", (ev) => {
     if (!ev.data) return;
     if (ev.data.source === "FVP_MAIN_XHR_REWRITTEN") {
@@ -677,8 +709,8 @@
         if (settled) return;
         settled = true;
         window.removeEventListener("message", onMsg);
-        resolve({ okOut: true, actualDep: win.dep, actualRet: win.ret });
-      }, 900);
+        resolve({ okOut: false, reason: "TIMEOUT" });
+      }, 2800);
     });
   }
 
@@ -709,23 +741,26 @@
 
       const windowsToScan = YEARLY_HOLIDAY_WINDOWS;
 
+      // Loop: Holiday -> Cabin (Economy across all destinations, then Premium) -> Destination
       for (let wIdx = 0; wIdx < windowsToScan.length && autoPilotRunning; wIdx++) {
         const win = windowsToScan[wIdx];
 
-        for (let dIdx = 0; dIdx < destinations.length && autoPilotRunning; dIdx++) {
-          const destIata = destinations[dIdx];
-          for (const cabinObj of TARGET_CABINS) {
-            if (!autoPilotRunning) break;
+        for (const cabinObj of TARGET_CABINS) {
+          if (!autoPilotRunning) break;
 
+          for (let dIdx = 0; dIdx < destinations.length && autoPilotRunning; dIdx++) {
+            const destIata = destinations[dIdx];
             const stepRes = await triggerMainWorldFormStep(destIata, cabinObj, win);
-            if (!stepRes || !stepRes.okOut) continue;
+            if (!stepRes || !stepRes.okOut) {
+              continue;
+            }
 
             if (statusEl) {
               const rangeNote = lastRewrittenRangeLabel || `${win.depStartIso.slice(0, 10)}..${win.depEndIso.slice(0, 10)}`;
-              statusEl.textContent = `🤖 חג [${wIdx + 1}/${windowsToScan.length}] ${win.label} (${rangeNote}) | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinObj.name}) | סונכרנו: ${totalSyncedCount}`;
+              statusEl.textContent = `🤖 חג [${wIdx + 1}/${windowsToScan.length}] ${win.label} (${rangeNote}) | ${cabinObj.name} | יעד ${dIdx + 1}/${destinations.length}: ${destIata} | סונכרנו: ${totalSyncedCount}`;
             }
 
-            const politeWaitMs = 5200 + Math.floor(Math.random() * 1200);
+            const politeWaitMs = 5600 + Math.floor(Math.random() * 1400);
             await sleep(politeWaitMs);
 
             if (!autoPilotRunning) break;
@@ -790,7 +825,7 @@
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>✈️ סנכרון חגים (Economy + Premium) v1.2</strong>
+        <strong>✈️ סנכרון חגים (Economy + Premium) v1.3</strong>
         <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">קצב אנושי בטוח</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
