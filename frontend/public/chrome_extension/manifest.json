@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "El Al Bonus Sync -> Family Vacation Planner",
-  "version": "1.0.0",
-  "description": "Passively reads visible El Al rbddataclients award table rows and syncs them to your Family Vacation Planner server (34.165.250.15:8080).",
+  "version": "1.1.0",
+  "description": "Scans El Al rbddataclients holiday dates (Economy & Premium) and syncs them to your Family Vacation Planner server (34.165.250.15:8080).",
   "permissions": ["storage"],
   "host_permissions": [
     "https://www.elal.com/*",
@@ -15,6 +15,12 @@
     {
       "matches": ["https://www.elal.com/rbddataclients*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.elal.com/rbddataclients*"],
+      "js": ["content.js"],
+      "world": "MAIN",
       "run_at": "document_idle"
     }
   ]

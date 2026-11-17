@@ -1,13 +1,10 @@
 /**
  * Safe Auto-Pilot & Passive DOM Table Reader Content Script (`chrome_extension/content.js`)
  *
- * Runs on `https://www.elal.com/rbddataclients/*`:
- * - Makes ZERO direct `fetch` or `XHR` requests to `elal.com` (preventing 401/474 WAF blocks).
- * - Focuses strictly on Israeli Holidays & Ministry of Education Vacations (`YEARLY_HOLIDAY_WINDOWS`),
- *   strictly on `Economy` and `Premium` cabins (skipping `Business`), and strictly on our 26 core El Al destinations.
- * - Drives El Al's own form dropdowns & blue "Search" button at a safe, human pace (5.2s–6.4s per step),
- *   lets El Al render the table normally, reads the visible DOM rows, and sends them to
- *   `http://34.165.250.15:8080/api/v1/elal-bonus/sync`.
+ * Runs in BOTH:
+ * 1. Extension `ISOLATED` world (manages the UI widget & sends parsed rows to `background.js`).
+ * 2. Page `MAIN` world (directly updates El Al's jQuery Datepicker & AngularJS `ngModel` state
+ *    so that Departure Date & Return Date genuinely update to the target Holiday window).
  */
 
 (function () {
@@ -18,36 +15,10 @@
     jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
   };
 
-  // Strictly Israeli Holiday & MoE School Vacation windows (Departure Date, Return Date in El Al format DD-Month-YYYY)
-  const YEARLY_HOLIDAY_WINDOWS = [
-    { label: "חנוכה 2026", dep: "06-December-2026", ret: "13-December-2026" },
-    { label: "פורים 2027", dep: "22-March-2027", ret: "28-March-2027" },
-    { label: "פסח 2027 (לפני ליל הסדר וחג ראשון)", dep: "11-April-2027", ret: "18-April-2027" },
-    { label: "פסח 2027 (חול המועד וחג שני)", dep: "20-April-2027", ret: "28-April-2027" },
-    { label: "יום העצמאות 2027", dep: "10-May-2027", ret: "16-May-2027" },
-    { label: "שבועות ויוני 2027", dep: "10-June-2027", ret: "28-June-2027" },
-    { label: "החופש הגדול — יולי 2027", dep: "12-July-2027", ret: "20-July-2027" },
-    { label: "החופש הגדול — אוגוסט 2027", dep: "16-August-2027", ret: "24-August-2027" },
-    { label: "ראש השנה וסוכות 2027", dep: "01-October-2027", ret: "24-October-2027" }
-  ];
-
-  // Core El Al destinations supported by Family Vacation Planner
-  const PRIORITY_IATAS = [
-    "FCO", "ATH", "LCA", "RHO", "PFO", "MAD", "BCN", "CDG", "LHR", "LTN",
-    "AMS", "BER", "MUC", "VIE", "BUD", "PRG", "MXP", "ZRH", "TBS",
-    "BKK", "HKT", "NRT", "JFK", "EWR", "MIA", "FLL"
-  ];
-
-  // Scan only Economy and Premium cabins as requested
-  const TARGET_CABINS = ["Economy", "Premium"];
-
-  let autoPilotRunning = false;
-  let totalSyncedCount = 0;
-  let lastSyncedSignature = "";
-
-  function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
+  const isIsolatedExtensionWorld =
+    typeof chrome !== "undefined" &&
+    Boolean(chrome.runtime) &&
+    typeof chrome.runtime.sendMessage === "function";
 
   function parseElAlTableDate(rawDateStr) {
     if (!rawDateStr) return null;
@@ -66,6 +37,302 @@
     return null;
   }
 
+  function parseElAlDateToJsDate(rawDateStr) {
+    const iso = parseElAlTableDate(rawDateStr);
+    if (!iso) return null;
+    const [y, m, d] = iso.split("-").map((n) => parseInt(n, 10));
+    return new Date(y, m - 1, d, 12, 0, 0);
+  }
+
+  function findVisibleElAlDateInputs(classSelects) {
+    const taggedDep = document.querySelector("input[data-fvp-date-role='departure']");
+    const taggedRet = document.querySelector("input[data-fvp-date-role='return']");
+    if (taggedDep && taggedRet) {
+      return [taggedDep, taggedRet];
+    }
+
+    const visibleInputs = Array.from(document.querySelectorAll("input")).filter((inp) => {
+      const type = (inp.type || "text").toLowerCase();
+      if (type === "hidden" || type === "checkbox" || type === "radio" || type === "submit" || type === "button") {
+        return false;
+      }
+      const rect = inp.getBoundingClientRect();
+      return rect.width > 30 && rect.height > 15;
+    });
+
+    // Primary match: visible inputs whose value matches El Al's DD-Month-YYYY format (e.g. "17-November-2026")
+    const formatMatched = visibleInputs.filter((inp) =>
+      /\d{1,2}-[A-Za-z]{3,9}-\d{4}/.test((inp.value || "").trim())
+    );
+
+    const chosen = formatMatched.length >= 2 ? formatMatched.slice(0, 2) : visibleInputs.slice(0, 2);
+    if (chosen[0]) chosen[0].setAttribute("data-fvp-date-role", "departure");
+    if (chosen[1]) chosen[1].setAttribute("data-fvp-date-role", "return");
+    return chosen;
+  }
+
+  function findElAlFormControls() {
+    const selects = Array.from(document.querySelectorAll("select")).filter((s) => {
+      const rect = s.getBoundingClientRect();
+      return rect.width > 30 && rect.height > 15;
+    });
+    const airportSelects = selects.filter((s) =>
+      Array.from(s.options || []).some((o) => /\[[A-Z]{3}\]/.test(o.text) || /choose airport/i.test(o.text))
+    );
+    const classSelects = selects.filter((s) =>
+      Array.from(s.options || []).some((o) => /economy|premium|business|תיירים|פרימיום|עסקים/i.test(o.text))
+    );
+    const dateInputs = findVisibleElAlDateInputs(classSelects);
+
+    const searchBtn = Array.from(
+      document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")
+    ).find((b) => {
+      const rect = b.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const txt = (b.innerText || b.value || "").trim();
+      return /^search$/i.test(txt) || /חיפוש/.test(txt);
+    });
+
+    return {
+      depFromSelect: airportSelects[0] || null,
+      depToSelect: airportSelects[1] || null,
+      retFromSelect: airportSelects[2] || null,
+      retToSelect: airportSelects[3] || null,
+      depClassSelect: classSelects[0] || null,
+      retClassSelect: classSelects[1] || null,
+      depDateInput: dateInputs[0] || null,
+      retDateInput: dateInputs[1] || null,
+      searchBtn: searchBtn || null
+    };
+  }
+
+  function setNativeValue(el, newValue) {
+    if (!el) return false;
+    try {
+      if (el.tagName === "INPUT") {
+        el.removeAttribute("readonly");
+      }
+      const proto =
+        el.tagName === "SELECT"
+          ? window.HTMLSelectElement.prototype
+          : window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) {
+        desc.set.call(el, newValue);
+      } else {
+        el.value = newValue;
+      }
+      el.setAttribute("value", newValue);
+    } catch (_err) {
+      el.value = newValue;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  function updateDateInputWithPageFrameworks(inp, dateStr) {
+    if (!inp || !dateStr) return;
+    const jsDate = parseElAlDateToJsDate(dateStr);
+    setNativeValue(inp, dateStr);
+
+    const jq = window.jQuery || window.$;
+    if (typeof jq === "function") {
+      try {
+        const $inp = jq(inp);
+        const $group = $inp.closest(".input-group, .date");
+        if (typeof $inp.datepicker === "function") {
+          if (jsDate) {
+            try { $inp.datepicker("setDate", jsDate); } catch (_e) {}
+          }
+          try { $inp.datepicker("update", dateStr); } catch (_e) {}
+        }
+        if ($group.length && typeof $group.datepicker === "function") {
+          if (jsDate) {
+            try { $group.datepicker("setDate", jsDate); } catch (_e) {}
+          }
+          try { $group.datepicker("update", dateStr); } catch (_e) {}
+        }
+        $inp.val(dateStr);
+        $inp.trigger("input").trigger("change").trigger("changeDate");
+        jq(".datepicker, .ui-datepicker, .bootstrap-datetimepicker-widget").hide();
+      } catch (_jqErr) {}
+    }
+
+    if (window.angular && typeof window.angular.element === "function") {
+      try {
+        const ngEl = window.angular.element(inp);
+        const ngModel = ngEl.controller && ngEl.controller("ngModel");
+        if (ngModel) {
+          ngModel.$setViewValue(dateStr);
+          if (typeof ngModel.$commitViewValue === "function") {
+            ngModel.$commitViewValue();
+          }
+          if (typeof ngModel.$render === "function") {
+            ngModel.$render();
+          }
+        }
+        const scope =
+          (ngEl.isolateScope && ngEl.isolateScope()) ||
+          (ngEl.scope && ngEl.scope());
+        if (scope && typeof scope.$applyAsync === "function") {
+          scope.$applyAsync();
+        }
+      } catch (_ngErr) {}
+    }
+
+    setNativeValue(inp, dateStr);
+    inp.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+
+  function selectDropdownOptionWithFrameworks(selectEl, matcherFn) {
+    if (!selectEl || !selectEl.options) return false;
+    for (let i = 0; i < selectEl.options.length; i++) {
+      const opt = selectEl.options[i];
+      if (matcherFn(opt)) {
+        selectEl.selectedIndex = i;
+        setNativeValue(selectEl, opt.value);
+        const jq = window.jQuery || window.$;
+        if (typeof jq === "function") {
+          try {
+            jq(selectEl).val(opt.value).trigger("change");
+          } catch (_e) {}
+        }
+        if (window.angular && typeof window.angular.element === "function") {
+          try {
+            const ngEl = window.angular.element(selectEl);
+            const ngModel = ngEl.controller && ngEl.controller("ngModel");
+            if (ngModel) {
+              ngModel.$setViewValue(opt.value);
+              if (typeof ngModel.$render === "function") ngModel.$render();
+            }
+            const scope = (ngEl.isolateScope && ngEl.isolateScope()) || (ngEl.scope && ngEl.scope());
+            if (scope && typeof scope.$applyAsync === "function") scope.$applyAsync();
+          } catch (_e) {}
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ============================================================================
+  // MAIN WORLD BRIDGE: Executes inside El Al's page context with access to $/angular
+  // ============================================================================
+  if (!isIsolatedExtensionWorld) {
+    window.addEventListener("message", async (ev) => {
+      if (!ev.data || ev.data.source !== "FVP_ISO_TO_MAIN") return;
+
+      if (ev.data.type === "SET_FORM_AND_SEARCH") {
+        const { reqId, destIata, cabinName, depDate, retDate } = ev.data;
+        const sleepMain = (ms) => new Promise((r) => setTimeout(r, ms));
+        const targetToken = `[${String(destIata || "").toUpperCase()}]`;
+
+        const c1 = findElAlFormControls();
+        if (c1.depDateInput && depDate) updateDateInputWithPageFrameworks(c1.depDateInput, depDate);
+        if (c1.retDateInput && retDate) updateDateInputWithPageFrameworks(c1.retDateInput, retDate);
+        await sleepMain(80);
+
+        selectDropdownOptionWithFrameworks(
+          c1.depFromSelect,
+          (opt) => (opt.text || "").toUpperCase().includes("[TLV]") || (opt.value || "").toUpperCase() === "TLV"
+        );
+        const okOut = selectDropdownOptionWithFrameworks(
+          c1.depToSelect,
+          (opt) => (opt.text || "").toUpperCase().includes(targetToken) || (opt.value || "").toUpperCase() === destIata.toUpperCase()
+        );
+        await sleepMain(120);
+
+        const c2 = findElAlFormControls();
+        selectDropdownOptionWithFrameworks(
+          c2.retFromSelect,
+          (opt) => (opt.text || "").toUpperCase().includes(targetToken) || (opt.value || "").toUpperCase() === destIata.toUpperCase()
+        );
+        selectDropdownOptionWithFrameworks(
+          c2.retToSelect,
+          (opt) => (opt.text || "").toUpperCase().includes("[TLV]") || (opt.value || "").toUpperCase() === "TLV"
+        );
+        selectDropdownOptionWithFrameworks(
+          c2.depClassSelect,
+          (opt) => (opt.text || "").toLowerCase().includes(cabinName.toLowerCase())
+        );
+        selectDropdownOptionWithFrameworks(
+          c2.retClassSelect,
+          (opt) => (opt.text || "").toLowerCase().includes(cabinName.toLowerCase())
+        );
+
+        // Re-apply dates right before clicking Search in case airport/cabin change reset them
+        if (c2.depDateInput && depDate) updateDateInputWithPageFrameworks(c2.depDateInput, depDate);
+        if (c2.retDateInput && retDate) updateDateInputWithPageFrameworks(c2.retDateInput, retDate);
+        await sleepMain(120);
+
+        const actualDep = c2.depDateInput ? c2.depDateInput.value : "";
+        const actualRet = c2.retDateInput ? c2.retDateInput.value : "";
+
+        if (okOut && c2.searchBtn) {
+          c2.searchBtn.click();
+        }
+
+        window.postMessage(
+          {
+            source: "FVP_MAIN_TO_ISO",
+            reqId: reqId,
+            okOut: okOut,
+            actualDep: actualDep,
+            actualRet: actualRet
+          },
+          "*"
+        );
+      }
+    });
+    return;
+  }
+
+  // ============================================================================
+  // ISOLATED EXTENSION WORLD: Widget UI, Auto-Pilot Loop & Server Sync
+  // ============================================================================
+
+  // Strictly Israeli Holiday & MoE School Vacation windows (Departure Date, Return Date in El Al format DD-Month-YYYY)
+  const YEARLY_HOLIDAY_WINDOWS = [
+    { label: "חנוכה 2026", dep: "06-December-2026", ret: "13-December-2026" },
+    { label: "פורים 2027", dep: "22-March-2027", ret: "28-March-2027" },
+    { label: "פסח 2027 (לפני ליל הסדר וחג ראשון)", dep: "11-April-2027", ret: "18-April-2027" },
+    { label: "פסח 2027 (חול המועד וחג שני)", dep: "20-April-2027", ret: "28-April-2027" },
+    { label: "יום העצמאות 2027", dep: "10-May-2027", ret: "16-May-2027" },
+    { label: "שבועות ויוני 2027", dep: "10-June-2027", ret: "28-June-2027" },
+    { label: "החופש הגדול — יולי 2027", dep: "12-July-2027", ret: "20-July-2027" },
+    { label: "החופש הגדול — אוגוסט 2027", dep: "16-August-2027", ret: "24-August-2027" },
+    { label: "ראש השנה וסוכות 2027", dep: "01-October-2027", ret: "24-October-2027" }
+  ];
+
+  const PRIORITY_IATAS = [
+    "FCO", "ATH", "LCA", "RHO", "PFO", "MAD", "BCN", "CDG", "LHR", "LTN",
+    "AMS", "BER", "MUC", "VIE", "BUD", "PRG", "MXP", "ZRH", "TBS",
+    "BKK", "HKT", "NRT", "JFK", "EWR", "MIA", "FLL"
+  ];
+
+  const TARGET_CABINS = ["Economy", "Premium"];
+
+  let autoPilotRunning = false;
+  let totalSyncedCount = 0;
+  let lastSyncedSignature = "";
+  let bridgeReqSeq = 0;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isRowDateNearHolidayWindow(rowDateIso, win) {
+    if (!win || !win.dep || !win.ret) return true;
+    const rowDt = parseElAlDateToJsDate(rowDateIso);
+    const depDt = parseElAlDateToJsDate(win.dep);
+    const retDt = parseElAlDateToJsDate(win.ret);
+    if (!rowDt || !depDt || !retDt) return true;
+    const minMs = depDt.getTime() - 21 * 86400 * 1000;
+    const maxMs = retDt.getTime() + 21 * 86400 * 1000;
+    return rowDt.getTime() >= minMs && rowDt.getTime() <= maxMs;
+  }
+
   function detectSelectedCabinOnPage() {
     const selects = Array.from(document.querySelectorAll("select"));
     for (const sel of selects) {
@@ -79,7 +346,7 @@
     return "ECONOMY";
   }
 
-  function extractVisibleTableRows(explicitCabinUpper) {
+  function extractVisibleTableRows(explicitCabinUpper, activeHolidayWindow) {
     const cabin = explicitCabinUpper || detectSelectedCabinOnPage();
     if (cabin === "BUSINESS") return [];
     const extracted = [];
@@ -92,6 +359,9 @@
       if (cells.length >= 7) {
         const rowDate = parseElAlTableDate(cells[3]);
         if (!rowDate) continue;
+        if (activeHolidayWindow && !isRowDateNearHolidayWindow(rowDate, activeHolidayWindow)) {
+          continue;
+        }
 
         const outFlight = cells[0].replace(/\s+/g, "");
         const outRoute = cells[1].replace(/\s+/g, "").toUpperCase();
@@ -167,96 +437,6 @@
     });
   }
 
-  function findElAlFormControls() {
-    const selects = Array.from(document.querySelectorAll("select"));
-    const airportSelects = selects.filter((s) =>
-      Array.from(s.options || []).some((o) => /\[[A-Z]{3}\]/.test(o.text) || /choose airport/i.test(o.text))
-    );
-    const classSelects = selects.filter((s) =>
-      Array.from(s.options || []).some((o) => /economy|premium|business|תיירים|פרימיום|עסקים/i.test(o.text))
-    );
-    const allInputs = Array.from(document.querySelectorAll("input"));
-    const strictDateInputs = allInputs.filter((inp) => {
-      const v = (inp.value || "") + " " + (inp.placeholder || "") + " " + (inp.id || "") + " " + (inp.name || "");
-      return /\d{1,2}-[A-Za-z]+-\d{4}/.test(v) || /date/i.test(v);
-    });
-    const dateInputs =
-      strictDateInputs.length >= 2
-        ? strictDateInputs
-        : allInputs.filter((inp) => inp.type === "text" || inp.type === "date");
-
-    const searchBtn = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")).find(
-      (b) => /^\s*search\s*$/i.test(b.innerText || b.value || "") || /חיפוש/.test(b.innerText || b.value || "")
-    );
-
-    return {
-      depFromSelect: airportSelects[0] || null,
-      depToSelect: airportSelects[1] || null,
-      retFromSelect: airportSelects[2] || null,
-      retToSelect: airportSelects[3] || null,
-      depClassSelect: classSelects[0] || null,
-      retClassSelect: classSelects[1] || null,
-      depDateInput: dateInputs[0] || null,
-      retDateInput: dateInputs[1] || null,
-      searchBtn: searchBtn || null
-    };
-  }
-
-  function setFormElementValue(el, newValue) {
-    if (!el) return false;
-    try {
-      if (el.tagName === "INPUT") {
-        el.removeAttribute("readonly");
-      }
-      const proto =
-        el.tagName === "SELECT"
-          ? window.HTMLSelectElement.prototype
-          : window.HTMLInputElement.prototype;
-      const desc = Object.getOwnPropertyDescriptor(proto, "value");
-      if (desc && desc.set) {
-        desc.set.call(el, newValue);
-      } else {
-        el.value = newValue;
-      }
-      el.setAttribute("value", newValue);
-    } catch (_err) {
-      el.value = newValue;
-    }
-    el.dispatchEvent(new Event("focus", { bubbles: true }));
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter", keyCode: 13 }));
-    el.dispatchEvent(new Event("blur", { bubbles: true }));
-    return true;
-  }
-
-  function selectAirportByIata(selectEl, iataCode) {
-    if (!selectEl || !selectEl.options) return false;
-    const targetToken = `[${iataCode.toUpperCase()}]`;
-    for (let i = 0; i < selectEl.options.length; i++) {
-      const opt = selectEl.options[i];
-      if ((opt.text || "").toUpperCase().includes(targetToken) || (opt.value || "").toUpperCase() === iataCode.toUpperCase()) {
-        selectEl.selectedIndex = i;
-        setFormElementValue(selectEl, opt.value);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function selectCabinClass(selectEl, cabinName) {
-    if (!selectEl || !selectEl.options) return false;
-    for (let i = 0; i < selectEl.options.length; i++) {
-      const opt = selectEl.options[i];
-      if ((opt.text || "").toLowerCase().includes(cabinName.toLowerCase())) {
-        selectEl.selectedIndex = i;
-        setFormElementValue(selectEl, opt.value);
-        return true;
-      }
-    }
-    return false;
-  }
-
   function discoverAvailableDestinations(depToSelect) {
     if (!depToSelect || !depToSelect.options) return PRIORITY_IATAS;
     const foundIatas = [];
@@ -267,9 +447,61 @@
       }
     }
     if (foundIatas.length === 0) return PRIORITY_IATAS;
-    // Strictly scan our 26 core El Al destinations (`PRIORITY_IATAS`) so we don't waste time on secondary codeshares
     const priorityAvailable = PRIORITY_IATAS.filter((c) => foundIatas.includes(c));
     return priorityAvailable.length > 0 ? priorityAvailable : PRIORITY_IATAS;
+  }
+
+  function triggerMainWorldFormStep(destIata, cabinName, depDate, retDate) {
+    return new Promise((resolve) => {
+      const reqId = ++bridgeReqSeq;
+      let settled = false;
+
+      const onMsg = (ev) => {
+        if (!ev.data || ev.data.source !== "FVP_MAIN_TO_ISO" || ev.data.reqId !== reqId) return;
+        settled = true;
+        window.removeEventListener("message", onMsg);
+        resolve(ev.data);
+      };
+      window.addEventListener("message", onMsg);
+
+      window.postMessage(
+        {
+          source: "FVP_ISO_TO_MAIN",
+          type: "SET_FORM_AND_SEARCH",
+          reqId: reqId,
+          destIata: destIata,
+          cabinName: cabinName,
+          depDate: depDate,
+          retDate: retDate
+        },
+        "*"
+      );
+
+      // Fallback in case MAIN world script wasn't loaded yet
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("message", onMsg);
+        const c = findElAlFormControls();
+        if (c.depDateInput && depDate) updateDateInputWithPageFrameworks(c.depDateInput, depDate);
+        if (c.retDateInput && retDate) updateDateInputWithPageFrameworks(c.retDateInput, retDate);
+        const targetToken = `[${destIata.toUpperCase()}]`;
+        selectDropdownOptionWithFrameworks(c.depFromSelect, (o) => (o.text || "").includes("[TLV]"));
+        const okOut = selectDropdownOptionWithFrameworks(c.depToSelect, (o) => (o.text || "").includes(targetToken));
+        selectDropdownOptionWithFrameworks(c.retFromSelect, (o) => (o.text || "").includes(targetToken));
+        selectDropdownOptionWithFrameworks(c.retToSelect, (o) => (o.text || "").includes("[TLV]"));
+        selectDropdownOptionWithFrameworks(c.depClassSelect, (o) => (o.text || "").toLowerCase().includes(cabinName.toLowerCase()));
+        selectDropdownOptionWithFrameworks(c.retClassSelect, (o) => (o.text || "").toLowerCase().includes(cabinName.toLowerCase()));
+        if (c.depDateInput && depDate) updateDateInputWithPageFrameworks(c.depDateInput, depDate);
+        if (c.retDateInput && retDate) updateDateInputWithPageFrameworks(c.retDateInput, retDate);
+        if (okOut && c.searchBtn) c.searchBtn.click();
+        resolve({
+          okOut: okOut,
+          actualDep: c.depDateInput ? c.depDateInput.value : depDate,
+          actualRet: c.retDateInput ? c.retDateInput.value : retDate
+        });
+      }, 650);
+    });
   }
 
   async function runAutoPilot() {
@@ -314,30 +546,11 @@
           for (const cabinName of TARGET_CABINS) {
             if (!autoPilotRunning) break;
 
-            const cStep = findElAlFormControls();
-            selectAirportByIata(cStep.depFromSelect, "TLV");
-            const okOut = selectAirportByIata(cStep.depToSelect, destIata);
-            await sleep(120);
-
-            const cAfterOut = findElAlFormControls();
-            selectAirportByIata(cAfterOut.retFromSelect, destIata);
-            selectAirportByIata(cAfterOut.retToSelect, "TLV");
-            selectCabinClass(cAfterOut.depClassSelect, cabinName);
-            selectCabinClass(cAfterOut.retClassSelect, cabinName);
-
-            // Always set holiday dates AFTER airport & cabin selection so El Al's form does not reset them
-            if (cAfterOut.depDateInput && win.dep) setFormElementValue(cAfterOut.depDateInput, win.dep);
-            if (cAfterOut.retDateInput && win.ret) setFormElementValue(cAfterOut.retDateInput, win.ret);
-            await sleep(120);
-
-            if (!okOut) continue;
+            const stepRes = await triggerMainWorldFormStep(destIata, cabinName, win.dep, win.ret);
+            if (!stepRes || !stepRes.okOut) continue;
 
             if (statusEl) {
-              statusEl.textContent = `🤖 חג [${wIdx + 1}/${windowsToScan.length}] ${win.label} (${win.dep}) | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinName}) | סונכרנו: ${totalSyncedCount}`;
-            }
-
-            if (cAfterOut.searchBtn) {
-              cAfterOut.searchBtn.click();
+              statusEl.textContent = `🤖 חג [${wIdx + 1}/${windowsToScan.length}] ${win.label} (טופס: ${stepRes.actualDep || win.dep}) | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinName}) | סונכרנו: ${totalSyncedCount}`;
             }
 
             const politeWaitMs = 5200 + Math.floor(Math.random() * 1200);
@@ -345,7 +558,7 @@
 
             if (!autoPilotRunning) break;
 
-            const rows = extractVisibleTableRows(cabinName.toUpperCase());
+            const rows = extractVisibleTableRows(cabinName.toUpperCase(), win);
             if (rows.length > 0) {
               const resp = await sendRowsToServerPromise(rows);
               if (resp && resp.ok) {
@@ -362,7 +575,7 @@
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
-        statusEl.textContent = `🎉 סריקת החגים הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות אמיתיות לשרת.`;
+        statusEl.textContent = `🎉 סריקת החגים הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות חגים אמיתיות לשרת.`;
       }
     } catch (err) {
       autoPilotRunning = false;
