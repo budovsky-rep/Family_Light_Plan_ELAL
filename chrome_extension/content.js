@@ -3,7 +3,7 @@
  *
  * Runs on `https://www.elal.com/rbddataclients/*`:
  * - Makes ZERO direct `fetch` or `XHR` requests to `elal.com` (preventing 401/474 WAF blocks).
- * - Drives El Al's own form dropdowns & blue "Search" button at a safe, human pace (5.5s–6.5s per step),
+ * - Drives El Al's own form dropdowns & blue "Search" button at a safe, human pace (5.2s–6.4s per step),
  *   lets El Al render the table normally, reads the visible DOM rows, and sends them to
  *   `http://34.165.250.15:8080/api/v1/elal-bonus/sync`.
  */
@@ -15,11 +15,6 @@
     jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
     jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
   };
-
-  const MONTH_NAMES_EN = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
 
   // Key Israeli holiday & summer windows across the year (Departure Date, Return Date in El Al format DD-Month-YYYY)
   const YEARLY_HOLIDAY_WINDOWS = [
@@ -165,29 +160,20 @@
 
   function findElAlFormControls() {
     const selects = Array.from(document.querySelectorAll("select"));
-    // Airport selects contain options with "[TLV]" or "[MAD]" / "Choose airport"
     const airportSelects = selects.filter((s) =>
       Array.from(s.options || []).some((o) => /\[[A-Z]{3}\]/.test(o.text) || /choose airport/i.test(o.text))
     );
-    // Class selects contain Economy / Business
     const classSelects = selects.filter((s) =>
       Array.from(s.options || []).some((o) => /economy|business|תיירים|עסקים/i.test(o.text))
     );
-    // Date inputs
     const dateInputs = Array.from(document.querySelectorAll("input")).filter((inp) => {
       const v = (inp.value || "") + " " + (inp.placeholder || "");
       return /\d{1,2}-[A-Za-z]+-\d{4}/.test(v) || inp.type === "text" || inp.type === "date";
     });
-    // Blue Search button
     const searchBtn = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")).find(
       (b) => /^\s*search\s*$/i.test(b.innerText || b.value || "") || /חיפוש/.test(b.innerText || b.value || "")
     );
 
-    // In El Al's form:
-    // airportSelects[0] = Departure From (TLV)
-    // airportSelects[1] = Departure To (Destination)
-    // airportSelects[2] = Return From (Destination)
-    // airportSelects[3] = Return To (TLV)
     return {
       depFromSelect: airportSelects[0] || null,
       depToSelect: airportSelects[1] || null,
@@ -203,16 +189,23 @@
 
   function setFormElementValue(el, newValue) {
     if (!el) return false;
-    const setter =
-      Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set ||
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-    if (setter) {
-      setter.call(el, newValue);
-    } else {
+    try {
+      const proto =
+        el.tagName === "SELECT"
+          ? window.HTMLSelectElement.prototype
+          : window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) {
+        desc.set.call(el, newValue);
+      } else {
+        el.value = newValue;
+      }
+    } catch (_err) {
       el.value = newValue;
     }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
     return true;
   }
 
@@ -253,7 +246,6 @@
       }
     }
     if (foundIatas.length === 0) return PRIORITY_IATAS;
-    // Order priority family destinations first, then any remaining El Al routes
     const ordered = PRIORITY_IATAS.filter((c) => foundIatas.includes(c));
     for (const c of foundIatas) {
       if (!ordered.includes(c)) ordered.push(c);
@@ -277,97 +269,111 @@
       return;
     }
 
-    // First sync whatever is already visible on screen right now
-    const initialRows = extractVisibleTableRows();
-    if (initialRows.length > 0) {
-      const initResp = await sendRowsToServerPromise(initialRows);
-      if (initResp && initResp.ok) {
-        totalSyncedCount += Number(initResp.records_synced || initialRows.length);
+    try {
+      const initialRows = extractVisibleTableRows();
+      if (initialRows.length > 0) {
+        const initResp = await sendRowsToServerPromise(initialRows);
+        if (initResp && initResp.ok) {
+          totalSyncedCount += Number(initResp.records_synced || initialRows.length);
+        }
       }
-    }
 
-    const controls = findElAlFormControls();
-    if (!controls.depToSelect || !controls.searchBtn) {
-      if (statusEl) {
-        statusEl.textContent = "⚠️ לא נמצא טופס החיפוש של אל על בדף זה (וודא שהדף נטען במלואו).";
+      const initialControls = findElAlFormControls();
+      if (!initialControls.depToSelect || !initialControls.searchBtn) {
+        if (statusEl) {
+          statusEl.textContent = "⚠️ לא נמצא טופס החיפוש של אל על בדף זה (וודא שהדף נטען במלואו).";
+        }
+        return;
       }
-      return;
-    }
 
-    autoPilotRunning = true;
-    if (btnEl) {
-      btnEl.textContent = "⏹️ עצור סריקה אוטומטית (Auto-Pilot פעיל)";
-      btnEl.style.background = "#ef4444";
-    }
-
-    const destinations = discoverAvailableDestinations(controls.depToSelect);
-    // Include current date on form as the first window if present, followed by YEARLY_HOLIDAY_WINDOWS
-    const currentDepDate = controls.depDateInput ? controls.depDateInput.value : "";
-    const currentRetDate = controls.retDateInput ? controls.retDateInput.value : "";
-    const windowsToScan = [];
-    if (currentDepDate && currentRetDate) {
-      windowsToScan.push({
-        label: `התאריכים שנבחרו (${currentDepDate})`,
-        dep: currentDepDate,
-        ret: currentRetDate
-      });
-    }
-    for (const w of YEARLY_HOLIDAY_WINDOWS) {
-      if (!windowsToScan.some((x) => x.dep === w.dep && x.ret === w.ret)) {
-        windowsToScan.push(w);
+      autoPilotRunning = true;
+      if (btnEl) {
+        btnEl.textContent = "⏹️ עצור סריקה אוטומטית (Auto-Pilot פעיל)";
+        btnEl.style.background = "#ef4444";
       }
-    }
 
-    for (let wIdx = 0; wIdx < windowsToScan.length && autoPilotRunning; wIdx++) {
-      const win = windowsToScan[wIdx];
-      if (controls.depDateInput && win.dep) setFormElementValue(controls.depDateInput, win.dep);
-      if (controls.retDateInput && win.ret) setFormElementValue(controls.retDateInput, win.ret);
+      const destinations = discoverAvailableDestinations(initialControls.depToSelect);
+      const currentDepDate = initialControls.depDateInput ? initialControls.depDateInput.value : "";
+      const currentRetDate = initialControls.retDateInput ? initialControls.retDateInput.value : "";
+      const windowsToScan = [];
+      if (currentDepDate && currentRetDate) {
+        windowsToScan.push({
+          label: `התאריכים שבטופס (${currentDepDate})`,
+          dep: currentDepDate,
+          ret: currentRetDate
+        });
+      }
+      for (const w of YEARLY_HOLIDAY_WINDOWS) {
+        if (!windowsToScan.some((x) => x.dep === w.dep && x.ret === w.ret)) {
+          windowsToScan.push(w);
+        }
+      }
 
-      for (let dIdx = 0; dIdx < destinations.length && autoPilotRunning; dIdx++) {
-        const destIata = destinations[dIdx];
-        for (const cabinName of ["Economy", "Premium", "Business"]) {
-          if (!autoPilotRunning) break;
+      for (let wIdx = 0; wIdx < windowsToScan.length && autoPilotRunning; wIdx++) {
+        const win = windowsToScan[wIdx];
+        const cWin = findElAlFormControls();
+        if (cWin.depDateInput && win.dep) setFormElementValue(cWin.depDateInput, win.dep);
+        if (cWin.retDateInput && win.ret) setFormElementValue(cWin.retDateInput, win.ret);
+        await sleep(200);
 
-          selectAirportByIata(controls.depFromSelect, "TLV");
-          const okOut = selectAirportByIata(controls.depToSelect, destIata);
-          selectAirportByIata(controls.retFromSelect, destIata);
-          selectAirportByIata(controls.retToSelect, "TLV");
-          selectCabinClass(controls.depClassSelect, cabinName);
-          selectCabinClass(controls.retClassSelect, cabinName);
+        for (let dIdx = 0; dIdx < destinations.length && autoPilotRunning; dIdx++) {
+          const destIata = destinations[dIdx];
+          for (const cabinName of ["Economy", "Premium", "Business"]) {
+            if (!autoPilotRunning) break;
 
-          if (!okOut) continue;
+            const cStep = findElAlFormControls();
+            selectAirportByIata(cStep.depFromSelect, "TLV");
+            const okOut = selectAirportByIata(cStep.depToSelect, destIata);
+            await sleep(120);
+            const cAfterOut = findElAlFormControls();
+            selectAirportByIata(cAfterOut.retFromSelect, destIata);
+            selectAirportByIata(cAfterOut.retToSelect, "TLV");
+            selectCabinClass(cAfterOut.depClassSelect, cabinName);
+            selectCabinClass(cAfterOut.retClassSelect, cabinName);
 
-          if (statusEl) {
-            statusEl.textContent = `🤖 [${wIdx + 1}/${windowsToScan.length}] ${win.label} | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinName}) | סונכרנו: ${totalSyncedCount}`;
-          }
+            if (!okOut) continue;
 
-          // Click El Al's native Search button
-          controls.searchBtn.click();
+            if (statusEl) {
+              statusEl.textContent = `🤖 [${wIdx + 1}/${windowsToScan.length}] ${win.label} | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinName}) | סונכרנו: ${totalSyncedCount}`;
+            }
 
-          // Wait a polite, human interval (5.2s - 6.4s) for El Al to render the table and avoid WAF rate-limits
-          const politeWaitMs = 5200 + Math.floor(Math.random() * 1200);
-          await sleep(politeWaitMs);
+            if (cAfterOut.searchBtn) {
+              cAfterOut.searchBtn.click();
+            }
 
-          if (!autoPilotRunning) break;
+            const politeWaitMs = 5200 + Math.floor(Math.random() * 1200);
+            await sleep(politeWaitMs);
 
-          const rows = extractVisibleTableRows();
-          if (rows.length > 0) {
-            const resp = await sendRowsToServerPromise(rows);
-            if (resp && resp.ok) {
-              totalSyncedCount += Number(resp.records_synced || rows.length);
+            if (!autoPilotRunning) break;
+
+            const rows = extractVisibleTableRows();
+            if (rows.length > 0) {
+              const resp = await sendRowsToServerPromise(rows);
+              if (resp && resp.ok) {
+                totalSyncedCount += Number(resp.records_synced || rows.length);
+              }
             }
           }
         }
       }
-    }
 
-    autoPilotRunning = false;
-    if (btnEl) {
-      btnEl.textContent = "🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)";
-      btnEl.style.background = "#10b981";
-    }
-    if (statusEl) {
-      statusEl.textContent = `🎉 הסריקה הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות אמיתיות לשרת.`;
+      autoPilotRunning = false;
+      if (btnEl) {
+        btnEl.textContent = "🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)";
+        btnEl.style.background = "#10b981";
+      }
+      if (statusEl) {
+        statusEl.textContent = `🎉 הסריקה הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות אמיתיות לשרת.`;
+      }
+    } catch (err) {
+      autoPilotRunning = false;
+      if (btnEl) {
+        btnEl.textContent = "🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)";
+        btnEl.style.background = "#10b981";
+      }
+      if (statusEl) {
+        statusEl.textContent = `❌ שגיאה בסריקה: ${String(err && err.message ? err.message : err)}`;
+      }
     }
   }
 
