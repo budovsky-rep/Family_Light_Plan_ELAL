@@ -3,6 +3,8 @@
  *
  * Runs on `https://www.elal.com/rbddataclients/*`:
  * - Makes ZERO direct `fetch` or `XHR` requests to `elal.com` (preventing 401/474 WAF blocks).
+ * - Focuses strictly on Israeli Holidays & Ministry of Education Vacations (`YEARLY_HOLIDAY_WINDOWS`),
+ *   strictly on `Economy` and `Premium` cabins (skipping `Business`), and strictly on our 26 core El Al destinations.
  * - Drives El Al's own form dropdowns & blue "Search" button at a safe, human pace (5.2s–6.4s per step),
  *   lets El Al render the table normally, reads the visible DOM rows, and sends them to
  *   `http://34.165.250.15:8080/api/v1/elal-bonus/sync`.
@@ -16,22 +18,28 @@
     jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
   };
 
-  // Key Israeli holiday & summer windows across the year (Departure Date, Return Date in El Al format DD-Month-YYYY)
+  // Strictly Israeli Holiday & MoE School Vacation windows (Departure Date, Return Date in El Al format DD-Month-YYYY)
   const YEARLY_HOLIDAY_WINDOWS = [
+    { label: "חנוכה 2026", dep: "06-December-2026", ret: "13-December-2026" },
+    { label: "פורים 2027", dep: "22-March-2027", ret: "28-March-2027" },
+    { label: "פסח 2027 (לפני ליל הסדר וחג ראשון)", dep: "11-April-2027", ret: "18-April-2027" },
     { label: "פסח 2027 (חול המועד וחג שני)", dep: "20-April-2027", ret: "28-April-2027" },
-    { label: "פסח 2027 (לפני ליל הסדר)", dep: "11-April-2027", ret: "18-April-2027" },
-    { label: "שבועות ויוני 2027", dep: "21-June-2027", ret: "28-June-2027" },
+    { label: "יום העצמאות 2027", dep: "10-May-2027", ret: "16-May-2027" },
+    { label: "שבועות ויוני 2027", dep: "10-June-2027", ret: "28-June-2027" },
     { label: "החופש הגדול — יולי 2027", dep: "12-July-2027", ret: "20-July-2027" },
     { label: "החופש הגדול — אוגוסט 2027", dep: "16-August-2027", ret: "24-August-2027" },
-    { label: "חנוכה 2026", dep: "06-December-2026", ret: "13-December-2026" },
-    { label: "פורים 2027", dep: "22-March-2027", ret: "28-March-2027" }
+    { label: "ראש השנה וסוכות 2027", dep: "01-October-2027", ret: "24-October-2027" }
   ];
 
+  // Core El Al destinations supported by Family Vacation Planner
   const PRIORITY_IATAS = [
     "FCO", "ATH", "LCA", "RHO", "PFO", "MAD", "BCN", "CDG", "LHR", "LTN",
     "AMS", "BER", "MUC", "VIE", "BUD", "PRG", "MXP", "ZRH", "TBS",
     "BKK", "HKT", "NRT", "JFK", "EWR", "MIA", "FLL"
   ];
+
+  // Scan only Economy and Premium cabins as requested
+  const TARGET_CABINS = ["Economy", "Premium"];
 
   let autoPilotRunning = false;
   let totalSyncedCount = 0;
@@ -71,8 +79,9 @@
     return "ECONOMY";
   }
 
-  function extractVisibleTableRows() {
-    const cabin = detectSelectedCabinOnPage();
+  function extractVisibleTableRows(explicitCabinUpper) {
+    const cabin = explicitCabinUpper || detectSelectedCabinOnPage();
+    if (cabin === "BUSINESS") return [];
     const extracted = [];
     const trList = Array.from(document.querySelectorAll("table tr, .table tr, [role='row']"));
 
@@ -96,7 +105,7 @@
             flight_date: rowDate,
             economy_seats: cabin === "ECONOMY" ? outAvail : 0,
             premium_seats: cabin === "PREMIUM" ? outAvail : 0,
-            business_seats: cabin === "BUSINESS" ? outAvail : 0
+            business_seats: 0
           });
         }
 
@@ -112,7 +121,7 @@
             flight_date: rowDate,
             economy_seats: cabin === "ECONOMY" ? inAvail : 0,
             premium_seats: cabin === "PREMIUM" ? inAvail : 0,
-            business_seats: cabin === "BUSINESS" ? inAvail : 0
+            business_seats: 0
           });
         }
       }
@@ -164,12 +173,18 @@
       Array.from(s.options || []).some((o) => /\[[A-Z]{3}\]/.test(o.text) || /choose airport/i.test(o.text))
     );
     const classSelects = selects.filter((s) =>
-      Array.from(s.options || []).some((o) => /economy|business|תיירים|עסקים/i.test(o.text))
+      Array.from(s.options || []).some((o) => /economy|premium|business|תיירים|פרימיום|עסקים/i.test(o.text))
     );
-    const dateInputs = Array.from(document.querySelectorAll("input")).filter((inp) => {
-      const v = (inp.value || "") + " " + (inp.placeholder || "");
-      return /\d{1,2}-[A-Za-z]+-\d{4}/.test(v) || inp.type === "text" || inp.type === "date";
+    const allInputs = Array.from(document.querySelectorAll("input"));
+    const strictDateInputs = allInputs.filter((inp) => {
+      const v = (inp.value || "") + " " + (inp.placeholder || "") + " " + (inp.id || "") + " " + (inp.name || "");
+      return /\d{1,2}-[A-Za-z]+-\d{4}/.test(v) || /date/i.test(v);
     });
+    const dateInputs =
+      strictDateInputs.length >= 2
+        ? strictDateInputs
+        : allInputs.filter((inp) => inp.type === "text" || inp.type === "date");
+
     const searchBtn = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")).find(
       (b) => /^\s*search\s*$/i.test(b.innerText || b.value || "") || /חיפוש/.test(b.innerText || b.value || "")
     );
@@ -190,6 +205,9 @@
   function setFormElementValue(el, newValue) {
     if (!el) return false;
     try {
+      if (el.tagName === "INPUT") {
+        el.removeAttribute("readonly");
+      }
       const proto =
         el.tagName === "SELECT"
           ? window.HTMLSelectElement.prototype
@@ -200,11 +218,14 @@
       } else {
         el.value = newValue;
       }
+      el.setAttribute("value", newValue);
     } catch (_err) {
       el.value = newValue;
     }
+    el.dispatchEvent(new Event("focus", { bubbles: true }));
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter", keyCode: 13 }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
     return true;
   }
@@ -246,11 +267,9 @@
       }
     }
     if (foundIatas.length === 0) return PRIORITY_IATAS;
-    const ordered = PRIORITY_IATAS.filter((c) => foundIatas.includes(c));
-    for (const c of foundIatas) {
-      if (!ordered.includes(c)) ordered.push(c);
-    }
-    return ordered;
+    // Strictly scan our 26 core El Al destinations (`PRIORITY_IATAS`) so we don't waste time on secondary codeshares
+    const priorityAvailable = PRIORITY_IATAS.filter((c) => foundIatas.includes(c));
+    return priorityAvailable.length > 0 ? priorityAvailable : PRIORITY_IATAS;
   }
 
   async function runAutoPilot() {
@@ -260,24 +279,16 @@
     if (autoPilotRunning) {
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)";
+        btnEl.textContent = "🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
-        statusEl.textContent = `⏸️ הסריקה נעצרה. סה"כ סונכרנו ${totalSyncedCount} טיסות לשרת.`;
+        statusEl.textContent = `⏸️ הסריקה נעצרה. סה"כ סונכרנו ${totalSyncedCount} טיסות חגים לשרת.`;
       }
       return;
     }
 
     try {
-      const initialRows = extractVisibleTableRows();
-      if (initialRows.length > 0) {
-        const initResp = await sendRowsToServerPromise(initialRows);
-        if (initResp && initResp.ok) {
-          totalSyncedCount += Number(initResp.records_synced || initialRows.length);
-        }
-      }
-
       const initialControls = findElAlFormControls();
       if (!initialControls.depToSelect || !initialControls.searchBtn) {
         if (statusEl) {
@@ -293,48 +304,36 @@
       }
 
       const destinations = discoverAvailableDestinations(initialControls.depToSelect);
-      const currentDepDate = initialControls.depDateInput ? initialControls.depDateInput.value : "";
-      const currentRetDate = initialControls.retDateInput ? initialControls.retDateInput.value : "";
-      const windowsToScan = [];
-      if (currentDepDate && currentRetDate) {
-        windowsToScan.push({
-          label: `התאריכים שבטופס (${currentDepDate})`,
-          dep: currentDepDate,
-          ret: currentRetDate
-        });
-      }
-      for (const w of YEARLY_HOLIDAY_WINDOWS) {
-        if (!windowsToScan.some((x) => x.dep === w.dep && x.ret === w.ret)) {
-          windowsToScan.push(w);
-        }
-      }
+      const windowsToScan = YEARLY_HOLIDAY_WINDOWS;
 
       for (let wIdx = 0; wIdx < windowsToScan.length && autoPilotRunning; wIdx++) {
         const win = windowsToScan[wIdx];
-        const cWin = findElAlFormControls();
-        if (cWin.depDateInput && win.dep) setFormElementValue(cWin.depDateInput, win.dep);
-        if (cWin.retDateInput && win.ret) setFormElementValue(cWin.retDateInput, win.ret);
-        await sleep(200);
 
         for (let dIdx = 0; dIdx < destinations.length && autoPilotRunning; dIdx++) {
           const destIata = destinations[dIdx];
-          for (const cabinName of ["Economy", "Premium", "Business"]) {
+          for (const cabinName of TARGET_CABINS) {
             if (!autoPilotRunning) break;
 
             const cStep = findElAlFormControls();
             selectAirportByIata(cStep.depFromSelect, "TLV");
             const okOut = selectAirportByIata(cStep.depToSelect, destIata);
             await sleep(120);
+
             const cAfterOut = findElAlFormControls();
             selectAirportByIata(cAfterOut.retFromSelect, destIata);
             selectAirportByIata(cAfterOut.retToSelect, "TLV");
             selectCabinClass(cAfterOut.depClassSelect, cabinName);
             selectCabinClass(cAfterOut.retClassSelect, cabinName);
 
+            // Always set holiday dates AFTER airport & cabin selection so El Al's form does not reset them
+            if (cAfterOut.depDateInput && win.dep) setFormElementValue(cAfterOut.depDateInput, win.dep);
+            if (cAfterOut.retDateInput && win.ret) setFormElementValue(cAfterOut.retDateInput, win.ret);
+            await sleep(120);
+
             if (!okOut) continue;
 
             if (statusEl) {
-              statusEl.textContent = `🤖 [${wIdx + 1}/${windowsToScan.length}] ${win.label} | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinName}) | סונכרנו: ${totalSyncedCount}`;
+              statusEl.textContent = `🤖 חג [${wIdx + 1}/${windowsToScan.length}] ${win.label} (${win.dep}) | יעד ${dIdx + 1}/${destinations.length}: ${destIata} (${cabinName}) | סונכרנו: ${totalSyncedCount}`;
             }
 
             if (cAfterOut.searchBtn) {
@@ -346,7 +345,7 @@
 
             if (!autoPilotRunning) break;
 
-            const rows = extractVisibleTableRows();
+            const rows = extractVisibleTableRows(cabinName.toUpperCase());
             if (rows.length > 0) {
               const resp = await sendRowsToServerPromise(rows);
               if (resp && resp.ok) {
@@ -359,16 +358,16 @@
 
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)";
+        btnEl.textContent = "🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
-        statusEl.textContent = `🎉 הסריקה הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות אמיתיות לשרת.`;
+        statusEl.textContent = `🎉 סריקת החגים הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות אמיתיות לשרת.`;
       }
     } catch (err) {
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)";
+        btnEl.textContent = "🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -404,14 +403,14 @@
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>✈️ סנכרון מתכנן חופשות (Auto-Pilot)</strong>
+        <strong>✈️ סנכרון חגים (Economy + Premium)</strong>
         <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">קצב אנושי בטוח</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
-        מוכן לסריקה אוטומטית של כל היעדים והחגים אל השרת (34.165.250.15:8080).
+        מוכן לסריקה אוטומטית של חגי ישראל (Economy ו-Premium) ב-26 יעדי אל על אל השרת.
       </div>
       <button id="fvp-sync-btn" type="button" style="background:#10b981;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:12.5px;">
-        🤖 הפעל סריקה אוטומטית של כל היעדים (Auto-Pilot)
+        🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)
       </button>
     `;
     document.body.appendChild(box);

@@ -185,21 +185,25 @@
         <div class="zone-header">
           <div class="zone-title-wrap">
             <span class="zone-step-pill" dir="ltr">STEP 01</span>
-            <h2 id="zone-search-title">1. בחירת מצב תאריכים, חברת תעופה ויעד</h2>
+            <h2 id="zone-search-title">1. תכנון חופשה סביב חגים וחופשות משרד החינוך</h2>
           </div>
-          <span class="badge-vacation" id="active-mode-badge">Mode 3: חג ושנה</span>
+          <span class="badge-vacation" id="active-mode-badge">תכנון לפי חג ושנה</span>
         </div>
 
-        <!-- 3 Flight Date Selection Modes -->
-        <div class="mode-tabs" role="tablist" aria-label="מצבי בחירת תאריכי חופשה">
-          <button type="button" class="mode-tab-btn" data-mode="SPECIFIC_DATES" id="tab-mode-specific">
-            📅 1. תאריכים ספציפיים (±גמישות)
-          </button>
-          <button type="button" class="mode-tab-btn" data-mode="MOE_VACATION_MAXIMIZATION" id="tab-mode-moe">
-            🎓 2. מקסום חופשות משרד החינוך (שנתי)
+        <p id="bonus-holiday-focus-banner" class="profile-helper-banner">
+          ℹ️ <strong>מיקוד בחגים וחופשות (Economy &amp; Premium):</strong> מאגר כרטיסי הבונוס של אל על מסונכרן ומעודכן במיוחד סביב חגי ישראל וחופשות משרד החינוך. האפליקציה ממוקדת בתכנון חופשות סביב החגים ולוח החופשות השנתי שבהם נתוני הבונוס מעודכנים.
+        </p>
+
+        <!-- Holiday & School Vacation Selection Modes (Specific Dates hidden since bonus sync targets holidays) -->
+        <div class="mode-tabs" role="tablist" aria-label="מצבי בחירת חופשה וחגים">
+          <button type="button" class="mode-tab-btn" data-mode="SPECIFIC_DATES" id="tab-mode-specific" hidden style="display: none;">
+            📅 תאריכים ספציפיים (±גמישות)
           </button>
           <button type="button" class="mode-tab-btn active" data-mode="HOLIDAY_DIRECT_INTENT" id="tab-mode-holiday">
-            ✨ 3. חיפוש לפי חג/חופשה ושנה (למשל פסח 2027)
+            ✨ 1. תכנון לפי חג / חופשה ושנה (למשל פסח 2027)
+          </button>
+          <button type="button" class="mode-tab-btn" data-mode="MOE_VACATION_MAXIMIZATION" id="tab-mode-moe">
+            🎓 2. מקסום חופשות משרד החינוך (שנתי — כל החגים)
           </button>
         </div>
 

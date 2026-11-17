@@ -659,9 +659,9 @@
 
     const badge = document.getElementById('active-mode-badge');
     if (badge) {
-      if (mode === 'SPECIFIC_DATES') badge.textContent = 'Mode 1: תאריכים ספציפיים (מסגרת אופציונלית)';
-      else if (mode === 'MOE_VACATION_MAXIMIZATION') badge.textContent = 'Mode 2: מקסום שנתי (משרד החינוך)';
-      else badge.textContent = 'Mode 3: חג ושנה ספציפיים';
+      if (mode === 'SPECIFIC_DATES') badge.textContent = 'תאריכים ספציפיים (ללא סנכרון בונוס חגים)';
+      else if (mode === 'MOE_VACATION_MAXIMIZATION') badge.textContent = 'מקסום שנתי (חופשות משרד החינוך)';
+      else badge.textContent = 'תכנון לפי חג ושנה';
     }
     renderProfileControls();
   }
