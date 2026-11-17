@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """Admin Sync Script (`scripts/sync_elal_to_server.py`).
 
-Runs on your Mac (which has a residential IP not blocked by El Al's cloud WAF),
-fetches live Classic Award seat availability across all 25 El Al destinations
-and 3 cabin classes (`E` Economy, `P` Premium, `I` Business) for both OUTBOUND
-and INBOUND directions over the next 350 days, and pushes the real flight
-inventory directly to the production server (`http://34.165.250.15:8080`).
-
-Usage on your Mac:
-    python3 scripts/sync_elal_to_server.py --server http://34.165.250.15:8080
+Supports two Santa-compliant modes on corporate Google Mac (`gMac`):
+1. `--from-file <path>`: Pure Python (`urllib.request`, zero browser binaries) — uploads
+   a JSON file exported from your open `https://www.elal.com/rbddataclients/` Chrome tab
+   directly to `http://34.165.250.15:8080`.
+2. Browser mode using signed `/Applications/Google Chrome.app` (`channel="chrome"`),
+   avoiding the untrusted `Google Chrome for Testing` binary blocked by Santa.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from __future__ import annotations
 import argparse
 from datetime import date, timedelta
 import json
-import subprocess
+from pathlib import Path
 import sys
 import time
 import urllib.request
@@ -69,19 +67,43 @@ def push_records_to_server(
         return int(res_json.get("records_synced", 0))
 
 
-def run_sync(
+def sync_from_exported_file(server_url: str, file_path: str) -> None:
+    """Pure Python upload of `elal_rbd_export.json` to the production server (0 browser binaries)."""
+    p = Path(file_path).expanduser().resolve()
+    if not p.exists():
+        print(f"File not found: {p}", file=sys.stderr)
+        sys.exit(1)
+
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    start_d = date.today()
+    end_d = start_d + timedelta(days=345)
+    total_synced = 0
+
+    if isinstance(raw, dict) and "by_destination" in raw:
+        by_dest = raw["by_destination"]
+        for idx, (dest, payloads) in enumerate(by_dest.items(), start=1):
+            cnt = push_records_to_server(server_url, dest, start_d, end_d, payloads)
+            total_synced += cnt
+            print(f"[{idx}/{len(by_dest)}] {dest}: synced {cnt} real award flights to {server_url}")
+    elif isinstance(raw, dict) and "AccumulatedOutput" in raw:
+        cnt = push_records_to_server(server_url, "FCO", start_d, end_d, [raw])
+        total_synced += cnt
+        print(f"Synced {cnt} real award flights to {server_url}")
+    elif isinstance(raw, list):
+        cnt = push_records_to_server(server_url, "FCO", start_d, end_d, raw)
+        total_synced += cnt
+        print(f"Synced {cnt} real award flights to {server_url}")
+
+    print(f"\nDone! Total real El Al award flight records synced to {server_url}: {total_synced}")
+
+
+def run_sync_with_system_chrome(
     server_url: str,
     destinations: list[str],
     days_ahead: int = 345,
-    headless: bool = False,
 ) -> None:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("Playwright not found on Mac — installing playwright and chromium automatically...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-        from playwright.sync_api import sync_playwright
+    """Launch signed `/Applications/Google Chrome.app` (`channel='chrome'`) to avoid Santa block."""
+    from playwright.sync_api import sync_playwright
 
     start_d = date.today()
     end_d = start_d + timedelta(days=days_ahead)
@@ -89,18 +111,18 @@ def run_sync(
     end_iso = f"{end_d.isoformat()}T21:00:00.000Z"
 
     print(
-        f"Starting El Al RBD live sync for {len(destinations)} destinations "
-        f"({start_d.isoformat()} -> {end_d.isoformat()}) -> {server_url}"
+        f"Starting El Al RBD live sync using system Google Chrome for {len(destinations)} destinations -> {server_url}"
     )
 
     total_synced = 0
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
+        # Use channel="chrome" so Playwright runs /Applications/Google Chrome.app (signed by Google)
+        browser = p.chromium.launch(channel="chrome", headless=False)
         ctx = browser.new_context(viewport={"width": 1280, "height": 800})
         page = ctx.new_page()
-        print(f"Opening {ELAL_RBD_PAGE_URL} to initialize session...")
-        page.goto(ELAL_RBD_PAGE_URL, wait_until="networkidle", timeout=45000)
-        page.wait_for_timeout(3000)
+        print(f"Opening {ELAL_RBD_PAGE_URL} in standard Google Chrome...")
+        page.goto(ELAL_RBD_PAGE_URL, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(4000)
 
         for idx, dest in enumerate(destinations, start=1):
             dest_payloads: list[dict] = []
@@ -141,7 +163,7 @@ def run_sync(
                     )
                     if isinstance(data, dict) and "AccumulatedOutput" in data:
                         dest_payloads.append(data)
-                    time.sleep(0.35)
+                    time.sleep(0.3)
 
             synced_cnt = push_records_to_server(
                 server_url=server_url,
@@ -170,9 +192,14 @@ def main() -> None:
         help=f"Production server URL (default: {DEFAULT_SERVER_URL})",
     )
     parser.add_argument(
+        "--from-file",
+        default="",
+        help="Path to exported JSON file from Chrome console (pure Python upload, zero browser binaries)",
+    )
+    parser.add_argument(
         "--destinations",
         default=",".join(ALL_ELAL_DESTINATIONS),
-        help="Comma-separated destination IATA codes (default: all 26 El Al destinations)",
+        help="Comma-separated destination IATA codes",
     )
     parser.add_argument(
         "--days",
@@ -180,18 +207,16 @@ def main() -> None:
         default=345,
         help="Number of days ahead to scan (default: 345)",
     )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run browser in headless mode",
-    )
     args = parser.parse_args()
+    if args.from_file:
+        sync_from_exported_file(args.server, args.from_file)
+        return
+
     dests = [d.strip().upper() for d in args.destinations.split(",") if d.strip()]
-    run_sync(
+    run_sync_with_system_chrome(
         server_url=args.server,
         destinations=dests,
         days_ahead=args.days,
-        headless=args.headless,
     )
 
 
