@@ -210,6 +210,32 @@ class SQLiteRepository:
 
             if live_mode:
                 # Purge any pre-seeded fictitious rows (which lack `#live` in source_url)
+                # First remove dependent proposals & itineraries referencing non-live bonus rows
+                conn.execute(
+                    """
+                    DELETE FROM vacation_option_proposals
+                    WHERE itinerary_id IN (
+                        SELECT id FROM flight_itineraries
+                        WHERE outbound_bonus_id IN (
+                            SELECT id FROM elal_bonus_availability WHERE source_url NOT LIKE '%#live%'
+                        )
+                        OR inbound_bonus_id IN (
+                            SELECT id FROM elal_bonus_availability WHERE source_url NOT LIKE '%#live%'
+                        )
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    DELETE FROM flight_itineraries
+                    WHERE outbound_bonus_id IN (
+                        SELECT id FROM elal_bonus_availability WHERE source_url NOT LIKE '%#live%'
+                    )
+                    OR inbound_bonus_id IN (
+                        SELECT id FROM elal_bonus_availability WHERE source_url NOT LIKE '%#live%'
+                    )
+                    """
+                )
                 conn.execute(
                     "DELETE FROM elal_bonus_availability WHERE source_url NOT LIKE '%#live%'"
                 )

@@ -3449,10 +3449,23 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertIn("אין משיכה של טיסות מהשרת", app_js)
 
         # Verify live-fetch mode (`ELAL_LIVE_FETCH_ENABLED=1`) never returns fictitious flights
+        # even when an existing database already had seeded proposals/itineraries referencing bonus rows
         old_env = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
         try:
+            os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            live_db, _pre_repo = self.make_isolated_env(auto_seed=True)
+            pre_client = self.get_client(live_db)
+            pre_client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "PESACH",
+                    "direct_target_year": 2027,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["MAD"],
+                },
+            )
             os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
-            live_db, _live_repo = self.make_isolated_env(auto_seed=True)
             live_client = self.get_client(live_db)
             live_resp = live_client.post(
                 "/api/v1/vacations/search",
