@@ -879,6 +879,156 @@ input[type="date"] {
   font-weight: 700;
 }
 
+/* Weather & Vacation Style Selector Strip + Telemetry Cards */
+.vacation-type-filter-box {
+  background: linear-gradient(180deg, #f8fbff 0%, #f0f7fc 100%);
+  border: 1px solid #cfe3f4;
+  border-radius: 14px;
+  padding-block: 14px;
+  padding-inline: 16px;
+  margin-block-end: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vacation-type-filter-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vacation-type-filter-header strong {
+  display: block;
+  font-size: 0.94rem;
+  color: var(--elal-navy);
+}
+
+.vacation-type-hint {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-block-start: 2px;
+}
+
+.weather-mode-select-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.weather-mode-select-wrap label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.weather-mode-select-wrap select {
+  width: auto;
+  min-height: 36px;
+  font-size: 0.82rem;
+  padding-block: 5px;
+  padding-inline: 10px;
+}
+
+.vacation-type-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vacation-type-pill {
+  min-height: 36px;
+  padding-block: 6px;
+  padding-inline: 14px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.14s ease;
+}
+
+.vacation-type-pill:hover {
+  border-color: var(--brand-primary);
+  background: #f0f9ff;
+  transform: translateY(-1px);
+}
+
+.vacation-type-pill.active {
+  background: linear-gradient(135deg, #0284c7 0%, #0d9488 100%);
+  border-color: #0369a1;
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.24);
+}
+
+.weather-telemetry-strip {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-inline-start: 4px solid #0284c7;
+  border-radius: 11px;
+  padding-block: 10px;
+  padding-inline: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.weather-telemetry-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.weather-metric-chip {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  padding-block: 3px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.weather-telemetry-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.weather-summary-note {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.weather-rec-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.weather-badge-tag {
+  background: #e0f2fe;
+  border: 1px solid #bae6fd;
+  color: #0369a1;
+  padding-block: 2px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 /* Legacy Mobile Bottom Navigation Bar — Hidden in Desktop Layout */
 .mobile-bottom-nav {
   display: none !important;

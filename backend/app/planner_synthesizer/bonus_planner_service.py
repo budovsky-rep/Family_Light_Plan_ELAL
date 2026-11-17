@@ -40,6 +40,10 @@ from backend.app.providers.commercial_flights import (
     FamilyBaggageNormalizer,
 )
 from backend.app.providers.elal_rbd_client import ElAlRbdDataClientAdapter
+from backend.app.planner_synthesizer.weather_suitability_engine import (
+    DestinationWeatherSuitabilityEngine,
+    VACATION_TYPE_LABELS_HE,
+)
 from backend.app.schemas.domain import (
     AirlineSelectionMode,
     CandidateVacationWindow,
@@ -642,6 +646,8 @@ class MultiClubWalletAllocationEngine:
         preferred_cabins: Optional[list[str]] = None,
         enabled_programs: Optional[list[str]] = None,
         commercial_offer: Optional[dict[str, Any]] = None,
+        fallback_departure_date: Optional[date] = None,
+        fallback_return_date: Optional[date] = None,
     ) -> Optional[dict[str, Any]]:
         """Allocate family tickets for `strategy` and return an itinerary dictionary (or `None` if infeasible)."""
         strat_str = (
@@ -665,19 +671,25 @@ class MultiClubWalletAllocationEngine:
         origin_iata = "TLV"
         dest_iata = "FCO"
         return_origin_iata = "FCO"
-        dep_date = date(2027, 4, 11)
-        ret_date = date(2027, 4, 18)
+        dep_date = fallback_departure_date or date(2027, 4, 11)
+        ret_date = fallback_return_date or date(2027, 4, 18)
 
         if outbound_award is not None:
             origin_iata = outbound_award.origin_iata if outbound_award.direction == "OUTBOUND" else outbound_award.destination_iata
             dest_iata = outbound_award.destination_iata if outbound_award.direction == "OUTBOUND" else outbound_award.origin_iata
             return_origin_iata = dest_iata
             dep_date = outbound_award.flight_date
+            if inbound_award is None and fallback_return_date is None:
+                ret_date = dep_date + timedelta(days=7)
         if inbound_award is not None:
             return_origin_iata = inbound_award.origin_iata if inbound_award.direction == "INBOUND" else inbound_award.destination_iata
             if outbound_award is None:
                 dest_iata = return_origin_iata
             ret_date = inbound_award.flight_date
+            if outbound_award is None and fallback_departure_date is None:
+                dep_date = ret_date - timedelta(days=7)
+        if ret_date <= dep_date:
+            ret_date = dep_date + timedelta(days=max(1, (fallback_return_date - fallback_departure_date).days if (fallback_departure_date and fallback_return_date and fallback_return_date > fallback_departure_date) else 5))
         if commercial_offer is not None and outbound_award is None and inbound_award is None:
             origin_iata = str(commercial_offer.get("origin_iata") or "TLV")
             dest_iata = str(commercial_offer.get("destination_iata") or "FCO")
@@ -1729,7 +1741,12 @@ class BonusVacationPlannerService:
         self.wallet_engine: MultiClubWalletAllocationEngine = (
             wallet_engine or MultiClubWalletAllocationEngine()
         )
+        self.weather_engine: DestinationWeatherSuitabilityEngine = (
+            DestinationWeatherSuitabilityEngine()
+        )
         self.last_expanded_destinations: list[str] = []
+        self.last_weather_fallback_message_he: Optional[str] = None
+        self.last_weather_fallback_message_en: Optional[str] = None
 
     def _compute_fbvs_bonus(
         self,
@@ -1787,11 +1804,32 @@ class BonusVacationPlannerService:
 
         return round(min(100.0, max(0.0, raw_score)), 1)
 
-    def _compute_ctos(self, vus: float, fbvs: float) -> float:
-        """Compute Combined Trip Optimization Score (`CTOS = 0.55 * VUS + 0.45 * FBVS`)."""
-        w_cal = float(self._weights.get("ctos_calendar_weight", 0.55))
-        w_flt = float(self._weights.get("ctos_flight_weight", 0.45))
-        return round(min(100.0, max(0.0, w_cal * float(vus) + w_flt * float(fbvs))), 1)
+    def _compute_ctos(
+        self,
+        vus: float,
+        fbvs: float,
+        wss: Optional[float] = None,
+        has_weather_filter: bool = False,
+        min_weather_threshold: float = 0.0,
+    ) -> float:
+        """Compute Combined Trip Optimization Score (`CTOS`).
+
+        - Unfiltered (`has_weather_filter=False`): `CTOS = round(0.55 * VUS + 0.45 * FBVS, 1)`.
+        - Filtered by vacation type (`has_weather_filter=True`):
+          `CTOS = round(clamp(0.35 * WSS + 0.35 * VUS + 0.30 * FBVS - 0.50 * max(0, tau_t - WSS), 0, 100), 1)`.
+        """
+        if not has_weather_filter or wss is None:
+            w_cal = float(self._weights.get("ctos_calendar_weight", 0.55))
+            w_flt = float(self._weights.get("ctos_flight_weight", 0.45))
+            return round(min(100.0, max(0.0, w_cal * float(vus) + w_flt * float(fbvs))), 1)
+
+        w_wea = float(self._weights.get("ctos_filtered_weather_weight", 0.35))
+        w_cal_f = float(self._weights.get("ctos_filtered_calendar_weight", 0.35))
+        w_flt_f = float(self._weights.get("ctos_filtered_flight_weight", 0.30))
+        pen_factor = float(self._weights.get("ctos_sub_threshold_penalty_factor", 0.50))
+        base_ctos = w_wea * float(wss) + w_cal_f * float(vus) + w_flt_f * float(fbvs)
+        penalty = pen_factor * max(0.0, float(min_weather_threshold) - float(wss))
+        return round(min(100.0, max(0.0, base_ctos - penalty)), 1)
 
     def _build_explanation_he(
         self,
@@ -1799,6 +1837,8 @@ class BonusVacationPlannerService:
         itinerary: FlightItinerary,
         fbvs: float,
         ctos: float,
+        wss: Optional[float] = None,
+        weather_summary_he: str = "",
     ) -> str:
         strat = (
             itinerary.fulfillment_strategy.value
@@ -1817,6 +1857,11 @@ class BonusVacationPlannerService:
                 f"חזור מ-{itinerary.return_origin_iata}]"
             )
 
+        weather_note = ""
+        if wss is not None and wss > 0.0:
+            weather_note = f", WSS={wss:.1f}"
+        weather_tail = f" | {weather_summary_he}" if weather_summary_he else ""
+
         return (
             f"{itinerary.destination_city_he} ({itinerary.destination_iata}) | "
             f"{window.start_date.isoformat()} עד {window.end_date.isoformat()} "
@@ -1825,8 +1870,8 @@ class BonusVacationPlannerService:
             f"נקודות: {itinerary.total_matmid_points:,} | "
             f"תשלום במזומן: ${itinerary.total_out_of_pocket_cash_usd:,.2f} "
             f"(חיסכון נטו: ${itinerary.net_cash_saved_usd:,.2f}) | "
-            f"ציונים: VUS={window.vacation_utilization_score}, FBVS={fbvs}, CTOS={ctos}"
-            f"{low_cpp_warn}"
+            f"ציונים: VUS={window.vacation_utilization_score}, FBVS={fbvs}{weather_note}, CTOS={ctos}"
+            f"{low_cpp_warn}{weather_tail}"
         )
 
     def _ensure_award_rows_for_window(
@@ -1953,8 +1998,9 @@ class BonusVacationPlannerService:
         selected: list[CandidateVacationWindow] = []
         seen_pairs: set[tuple[date, date]] = set()
 
-        # 0. In live mode (or when real award flights exist in DB), include any candidate windows
-        #    whose departure & return dates match actual available award flights in SQLite!
+        # 0. In live mode (or when real award flights exist in DB), prioritize candidate windows
+        #    where the SAME destination has BOTH an outbound award on `w.start_date` AND an inbound
+        #    award on `w.end_date`, followed by windows matching at least one direction.
         if self.repository.is_live_fetch_mode():
             min_d = min(w.start_date for w in all_windows)
             max_d = max(w.end_date for w in all_windows)
@@ -1964,18 +2010,34 @@ class BonusVacationPlannerService:
                 end_date=max_d,
                 include_expired=False,
             )
-            out_dates = {
-                a.flight_date
-                for a in cached_awards
-                if a.direction == "OUTBOUND"
-                and (a.economy_award_seats > 0 or a.premium_award_seats > 0 or a.business_award_seats > 0)
-            }
-            in_dates = {
-                a.flight_date
-                for a in cached_awards
-                if a.direction == "INBOUND"
-                and (a.economy_award_seats > 0 or a.premium_award_seats > 0 or a.business_award_seats > 0)
-            }
+            out_by_dest: dict[str, set[date]] = {}
+            in_by_dest: dict[str, set[date]] = {}
+            out_dates: set[date] = set()
+            in_dates: set[date] = set()
+            for a in cached_awards:
+                if a.economy_award_seats <= 0 and a.premium_award_seats <= 0 and a.business_award_seats <= 0:
+                    continue
+                if a.direction == "OUTBOUND":
+                    out_dates.add(a.flight_date)
+                    out_by_dest.setdefault(a.destination_iata, set()).add(a.flight_date)
+                elif a.direction == "INBOUND":
+                    in_dates.add(a.flight_date)
+                    in_by_dest.setdefault(a.origin_iata, set()).add(a.flight_date)
+
+            # First priority: windows with round-trip award availability on the same destination
+            for w in all_windows:
+                pair = (w.start_date, w.end_date)
+                if pair in seen_pairs:
+                    continue
+                has_rt_dest = any(
+                    w.start_date in out_by_dest.get(d, set()) and w.end_date in in_by_dest.get(d, set())
+                    for d in expanded_destinations
+                )
+                if has_rt_dest:
+                    seen_pairs.add(pair)
+                    selected.append(w)
+
+            # Second priority: windows with one-way award availability
             for w in all_windows:
                 pair = (w.start_date, w.end_date)
                 if (w.start_date in out_dates or w.end_date in in_dates) and pair not in seen_pairs:
@@ -2032,14 +2094,57 @@ class BonusVacationPlannerService:
 
         expanded_destinations = self.elal_adapter.expand_metro_iatas(query.destination_iatas)
         self.last_expanded_destinations = list(expanded_destinations)
+        self.last_weather_fallback_message_he = None
+        self.last_weather_fallback_message_en = None
 
-        # When ANYWHERE (25 destinations) is requested, select a diverse representative set across Zones A-E
-        if len(expanded_destinations) > 10:
-            active_destinations = [
-                "FCO", "ATH", "LCA", "RHO", "MXP", "VIE", "BUD", "PRG",
-                "LHR", "LTN", "CDG", "MAD", "BKK", "JFK",
-            ]
-            active_destinations = [d for d in active_destinations if d in expanded_destinations]
+        has_weather_filter = bool(query.preferred_vacation_types)
+        effective_tau = self.weather_engine.get_effective_threshold(
+            query.preferred_vacation_types, query.min_weather_suitability_score
+        )
+
+        # Preliminary candidate windows for destination selection
+        prelim_windows = self._select_candidate_windows(
+            query=query,
+            profile=active_profile,
+            expanded_destinations=expanded_destinations,
+        )
+        if not prelim_windows:
+            self.repository.save_search_query(query)
+            return []
+
+        # When ANYWHERE (25 destinations) is requested:
+        # - In live mode: check all destinations.
+        # - In offline mode with an active vacation-type filter: rank all 25 destinations by average
+        #   weather suitability (`WSS`) across candidate windows and keep top 14 + all passing `effective_tau`.
+        # - In offline mode without a vacation-type filter: keep the 14 canonical destinations.
+        if len(expanded_destinations) > 10 and not self.repository.is_live_fetch_mode():
+            if has_weather_filter:
+                dest_scores: list[tuple[float, str]] = []
+                for d_code in expanded_destinations:
+                    w_vals = [
+                        self.weather_engine.evaluate_window_weather(
+                            dest_iata=d_code,
+                            start_date=w.start_date,
+                            end_date=w.end_date,
+                            preferred_vacation_types=query.preferred_vacation_types,
+                            min_threshold_override=query.min_weather_suitability_score,
+                        )[0]
+                        for w in prelim_windows
+                    ]
+                    avg_w = (sum(w_vals) / float(len(w_vals))) if w_vals else 0.0
+                    dest_scores.append((avg_w, d_code))
+                dest_scores.sort(key=lambda x: x[0], reverse=True)
+                top_14 = [d for _, d in dest_scores[:14]]
+                for sc_val, d_code in dest_scores[14:]:
+                    if sc_val >= effective_tau and d_code not in top_14:
+                        top_14.append(d_code)
+                active_destinations = top_14
+            else:
+                active_destinations = [
+                    "FCO", "ATH", "LCA", "RHO", "MXP", "VIE", "BUD", "PRG",
+                    "LHR", "LTN", "CDG", "MAD", "BKK", "JFK",
+                ]
+                active_destinations = [d for d in active_destinations if d in expanded_destinations]
         else:
             active_destinations = list(expanded_destinations)
 
@@ -2156,9 +2261,13 @@ class BonusVacationPlannerService:
                             strategy=strat_name,
                             preferred_cabins=query.preferred_cabins,
                             enabled_programs=query.enabled_loyalty_programs,
+                            fallback_departure_date=window.start_date,
+                            fallback_return_date=window.end_date,
                         )
                         if itin_dict is not None:
                             itin = FlightItinerary.from_dict(itin_dict)
+                            if not (query.min_trip_nights <= itin.trip_nights <= query.max_trip_nights):
+                                continue
                             raw_proposals.append(
                                 self._make_proposal_from_itinerary(
                                     query=query,
@@ -2269,7 +2378,11 @@ class BonusVacationPlannerService:
                 )
                 p.flight_bonus_value_score = fbvs_c
                 p.combined_trip_optimization_score = self._compute_ctos(
-                    p.vacation_utilization_score, fbvs_c
+                    p.vacation_utilization_score,
+                    fbvs_c,
+                    wss=p.weather_suitability_score,
+                    has_weather_filter=has_weather_filter,
+                    min_weather_threshold=effective_tau,
                 )
                 p.explanation_summary_he = self._build_explanation_he(
                     window=CandidateVacationWindow(
@@ -2288,18 +2401,60 @@ class BonusVacationPlannerService:
                     itinerary=p.itinerary,
                     fbvs=fbvs_c,
                     ctos=p.combined_trip_optimization_score,
+                    wss=p.weather_suitability_score if has_weather_filter else None,
+                    weather_summary_he=(
+                        p.weather_metrics.weather_summary_he
+                        if p.weather_metrics
+                        else ""
+                    ),
                 )
 
-        # Sort descending by combined_trip_optimization_score
-        raw_proposals.sort(
-            key=lambda p: (
+        # Apply HARD_THRESHOLD filtering with graceful 3-option fallback when requested
+        if has_weather_filter and query.weather_filter_mode == "HARD_THRESHOLD":
+            passing = [
+                p
+                for p in raw_proposals
+                if p.weather_suitability_score >= effective_tau
+            ]
+            if len(passing) >= 3:
+                raw_proposals = passing
+            else:
+                relaxed_tau = max(35.0, effective_tau - 20.0)
+                relaxed_passing = [
+                    p
+                    for p in raw_proposals
+                    if p.weather_suitability_score >= relaxed_tau
+                ]
+                self.last_weather_fallback_message_he = (
+                    f"⚠️ שים לב: במועד זה נמצאו פחות מ-3 חלופות מעל סף מזג האוויר המבוקש ({effective_tau:.0f}/100). "
+                    f"מוצגות החלופות הקרובות ביותר לפי התאמת מזג האוויר."
+                )
+                self.last_weather_fallback_message_en = (
+                    f"⚠️ Note: Fewer than 3 options met the weather threshold ({effective_tau:.0f}/100) for this period; "
+                    f"showing the closest weather-ranked alternatives."
+                )
+                if len(relaxed_passing) >= 3:
+                    raw_proposals = relaxed_passing
+
+        def _proposal_sort_key(p: VacationOptionProposal) -> tuple[Any, ...]:
+            if has_weather_filter:
+                return (
+                    p.weather_suitability_score >= effective_tau,
+                    p.combined_trip_optimization_score,
+                    p.weather_suitability_score,
+                    p.flight_bonus_value_score,
+                    p.vacation_utilization_score,
+                    p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
+                )
+            return (
                 p.combined_trip_optimization_score,
                 p.flight_bonus_value_score,
                 p.vacation_utilization_score,
                 p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
-            ),
-            reverse=True,
-        )
+            )
+
+        # Sort descending
+        raw_proposals.sort(key=_proposal_sort_key, reverse=True)
 
         # Keep top proposals while ensuring strategy, destination, and canonical benchmark diversity
         selected_proposals: list[VacationOptionProposal] = []
@@ -2307,7 +2462,7 @@ class BonusVacationPlannerService:
         seen_strategies: set[str] = set()
         seen_destinations: set[str] = set()
 
-        # Pass 1: Ensure canonical flagship proposals (e.g. 2027-04-11..18 FCO HYBRID_BONUS_PLUS_CASH, Open-Jaw) are included
+        # Pass 1: Ensure canonical flagship proposals (when unfiltered) and strategy/destination diversity
         for p in raw_proposals:
             if p.itinerary is None:
                 continue
@@ -2318,20 +2473,29 @@ class BonusVacationPlannerService:
             )
             is_open_jaw_p = p.itinerary.destination_iata != p.itinerary.return_origin_iata
             is_canonical_window = (
-                p.itinerary.departure_date,
-                p.itinerary.return_date,
-            ) in {
-                (date(2027, 4, 11), date(2027, 4, 18)),
-                (date(2026, 12, 6), date(2026, 12, 11)),
-                (date(2027, 6, 21), date(2027, 6, 28)),
-            }
-            if is_open_jaw_p or is_canonical_window or st not in seen_strategies or p.itinerary.destination_iata not in seen_destinations:
+                not has_weather_filter
+                and (
+                    p.itinerary.departure_date,
+                    p.itinerary.return_date,
+                )
+                in {
+                    (date(2027, 4, 11), date(2027, 4, 18)),
+                    (date(2026, 12, 6), date(2026, 12, 11)),
+                    (date(2027, 6, 21), date(2027, 6, 28)),
+                }
+            )
+            if (
+                is_open_jaw_p
+                or is_canonical_window
+                or st not in seen_strategies
+                or p.itinerary.destination_iata not in seen_destinations
+            ):
                 selected_proposals.append(p)
                 selected_ids.add(p.id)
                 seen_strategies.add(st)
                 seen_destinations.add(p.itinerary.destination_iata)
 
-        # Pass 2: Fill up to 36 proposals sorted by CTOS descending
+        # Pass 2: Fill up to 36 proposals sorted by _proposal_sort_key descending
         for p in raw_proposals:
             if len(selected_proposals) >= 36:
                 break
@@ -2339,15 +2503,7 @@ class BonusVacationPlannerService:
                 selected_proposals.append(p)
                 selected_ids.add(p.id)
 
-        selected_proposals.sort(
-            key=lambda p: (
-                p.combined_trip_optimization_score,
-                p.flight_bonus_value_score,
-                p.vacation_utilization_score,
-                p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
-            ),
-            reverse=True,
-        )
+        selected_proposals.sort(key=_proposal_sort_key, reverse=True)
 
         saved_proposals = self.repository.save_search_results(query, selected_proposals)
         return saved_proposals
@@ -2364,8 +2520,37 @@ class BonusVacationPlannerService:
             fbvs = self._compute_fbvs_bonus(itinerary, n_seated)
         else:
             fbvs = 70.0
-        ctos = self._compute_ctos(window.vacation_utilization_score, fbvs)
-        explanation = self._build_explanation_he(window, itinerary, fbvs, ctos)
+
+        has_weather_filter = bool(query.preferred_vacation_types)
+        effective_tau = self.weather_engine.get_effective_threshold(
+            query.preferred_vacation_types, query.min_weather_suitability_score
+        )
+        wss, vtype_scores, rec_types, w_metrics = (
+            self.weather_engine.evaluate_window_weather(
+                dest_iata=itinerary.destination_iata,
+                start_date=itinerary.departure_date,
+                end_date=itinerary.return_date,
+                preferred_vacation_types=query.preferred_vacation_types,
+                return_origin_iata=itinerary.return_origin_iata,
+                min_threshold_override=query.min_weather_suitability_score,
+            )
+        )
+
+        ctos = self._compute_ctos(
+            window.vacation_utilization_score,
+            fbvs,
+            wss=wss,
+            has_weather_filter=has_weather_filter,
+            min_weather_threshold=effective_tau,
+        )
+        explanation = self._build_explanation_he(
+            window,
+            itinerary,
+            fbvs,
+            ctos,
+            wss=wss if has_weather_filter else None,
+            weather_summary_he=w_metrics.weather_summary_he if w_metrics else "",
+        )
 
         return VacationOptionProposal(
             id=str(uuid.uuid4()),
@@ -2383,6 +2568,10 @@ class BonusVacationPlannerService:
             max_single_child_school_days_missed=window.max_single_child_school_days_missed,
             vacation_utilization_score=window.vacation_utilization_score,
             flight_bonus_value_score=fbvs,
+            weather_suitability_score=wss,
+            vacation_type_scores=vtype_scores,
+            recommended_vacation_types=rec_types,
+            weather_metrics=w_metrics,
             combined_trip_optimization_score=ctos,
             explanation_summary_he=explanation,
             itinerary=itinerary,
@@ -2441,6 +2630,13 @@ class BonusVacationPlannerService:
                 p.total_school_days_missed_across_children,
                 p.max_single_child_school_days_missed,
                 -p.combined_trip_optimization_score,
+            ),
+        )
+        best_by_weather = max(
+            proposals,
+            key=lambda p: (
+                p.weather_suitability_score,
+                p.combined_trip_optimization_score,
             ),
         )
 
@@ -2546,12 +2742,27 @@ class BonusVacationPlannerService:
                 },
             ),
             _row(
+                "weather_suitability",
+                "התאמת מזג אוויר וסגנון חופשה",
+                "Weather & Vacation Style Match",
+                lambda p: {
+                    "WSS": p.weather_suitability_score,
+                    "vacation_type_scores": p.vacation_type_scores,
+                    "weather_summary_he": (
+                        p.weather_metrics.weather_summary_he
+                        if p.weather_metrics
+                        else ""
+                    ),
+                },
+            ),
+            _row(
                 "scores",
-                "ציוני אופטימיזציה (VUS / FBVS / CTOS)",
+                "ציוני אופטימיזציה (VUS / FBVS / WSS / CTOS)",
                 "Optimization Scores",
                 lambda p: {
                     "VUS": p.vacation_utilization_score,
                     "FBVS": p.flight_bonus_value_score,
+                    "WSS": p.weather_suitability_score,
                     "CTOS": p.combined_trip_optimization_score,
                 },
             ),
@@ -2564,6 +2775,7 @@ class BonusVacationPlannerService:
             best_by_cash_savings_id=best_by_savings.id,
             best_by_per_id=best_by_per.id,
             best_by_minimal_absence_id=best_by_absence.id,
+            best_by_weather_id=best_by_weather.id,
         )
         return matrix.to_dict()
 

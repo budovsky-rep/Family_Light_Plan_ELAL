@@ -47,19 +47,57 @@
   const DESTINATION_ICONS = {
     ROM: '🏛️',
     FCO: '🏛️',
+    MXP: '🏔️',
     ATH: '🏖️',
+    RHO: '🏝️',
+    HER: '🏝️',
     LCA: '☀️',
+    PFO: '🏖️',
     PAR: '🥐',
     CDG: '🥐',
     LON: '🎡',
     LHR: '🎡',
+    LTN: '🎡',
     MAD: '💃',
     BCN: '🌊',
+    GVA: '⛷️',
+    ZRH: '🏔️',
+    MUC: '🏰',
+    VIE: '🎻',
+    PRG: '🏰',
+    BUD: '♨️',
+    AMS: '🌷',
+    BER: '🐻',
+    LIS: '🚋',
+    DXB: '☀️',
     NYC: '🗽',
     JFK: '🗽',
+    EWR: '🗽',
+    MIA: '🌴',
+    LAX: '🎬',
     BKK: '🌴',
     TYO: '⛩️',
     NRT: '⛩️'
+  };
+
+  const VACATION_TYPE_LABELS_HE = {
+    ANY: '🌍 הכל (ללא סינון)',
+    BEACH_AND_POOL: '🏖️ בטן-גב (חוף ובריכה)',
+    NATURE_TRIP: '🥾 טיול בטבע ונופים',
+    URBAN_CULTURE: '🏛️ עיר, תרבות ושופינג',
+    FAMILY_ATTRACTIONS_PARKS: '🎢 פארקים ואטרקציות',
+    SNOW_AND_SKI: '⛷️ חופשת שלג וסקי',
+    WINTER_FESTIVE: '🎄 שווקי חורף'
+  };
+
+  const VACATION_TYPE_LABELS_EN = {
+    ANY: '🌍 All Styles',
+    BEACH_AND_POOL: '🏖️ Beach & Pool',
+    NATURE_TRIP: '🥾 Nature & Hiking',
+    URBAN_CULTURE: '🏛️ Urban & Culture',
+    FAMILY_ATTRACTIONS_PARKS: '🎢 Theme Parks',
+    SNOW_AND_SKI: '⛷️ Snow & Ski',
+    WINTER_FESTIVE: '🎄 Winter Markets'
   };
 
   const state = {
@@ -67,12 +105,35 @@
     dir: 'rtl',
     dateSelectionMode: 'HOLIDAY_DIRECT_INTENT',
     airlineSelectionMode: 'EL_AL_ONLY',
+    selectedVacationTypes: [],
+    weatherFilterMode: 'SOFT_PRIORITIZE',
+    weatherFallbackMessageHe: null,
     isCalendarVisible: false,
     profile: null,
     calendarData: null,
     proposals: [],
     selectedProposalIds: new Set()
   };
+
+  function syncVacationTypePills() {
+    const activeSet = new Set(state.selectedVacationTypes || []);
+    const isAny = activeSet.size === 0 || activeSet.has('ANY');
+    document.querySelectorAll('[data-vacation-type]').forEach((btn) => {
+      const vt = btn.getAttribute('data-vacation-type');
+      if (vt === 'ANY') {
+        btn.classList.toggle('active', isAny);
+      } else {
+        btn.classList.toggle('active', !isAny && activeSet.has(vt));
+      }
+    });
+  }
+
+  function formatVacationTypeBadge(vtype) {
+    const code = String(vtype || 'ANY').toUpperCase();
+    return state.locale === 'he'
+      ? (VACATION_TYPE_LABELS_HE[code] || code)
+      : (VACATION_TYPE_LABELS_EN[code] || code);
+  }
 
   function syncDestinationPostcards(selectedIata) {
     document.querySelectorAll('[data-dest-card]').forEach((btn) => {
@@ -199,11 +260,12 @@
     const totalScore = Number(p.combined_trip_optimization_score || 0).toFixed(1);
     const vacScore = Number(p.vacation_utilization_score || 0).toFixed(1);
     const bonusScore = Number(p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0).toFixed(1);
+    const weatherScore = Number(p.weather_suitability_score || 0).toFixed(1);
 
     if (!isHe) {
-      return `${city} (${it.destination_iata}) | ${it.departure_date} to ${it.return_date} (${it.trip_nights} nights) | Strategy: ${stratLabel} | Points: ${pts} | Out-of-Pocket Cash: $${cashOop} (Net Saved: $${saved}) | Overall Score: ${totalScore}/100 (Vacation Match: ${vacScore}, Flight & Bonus Value: ${bonusScore})`;
+      return `${city} (${it.destination_iata}) | ${it.departure_date} to ${it.return_date} (${it.trip_nights} nights) | Strategy: ${stratLabel} | Points: ${pts} | Out-of-Pocket Cash: $${cashOop} (Net Saved: $${saved}) | Overall Score: ${totalScore}/100 (Weather: ${weatherScore}, Vacation Match: ${vacScore}, Bonus Value: ${bonusScore})`;
     }
-    return `${city} (${it.destination_iata}) | ${it.departure_date} עד ${it.return_date} (${it.trip_nights} לילות / ${p.total_vacation_days || (it.trip_nights + 1)} ימים) | אסטרטגיה: ${stratLabel} | נקודות: ${pts} | תשלום במזומן: $${cashOop} (חיסכון נטו: $${saved}) | ציון משוקלל: ${totalScore}/100 (ניצול חופשה: ${vacScore}, כדאיות טיסה ובונוס: ${bonusScore})`;
+    return `${city} (${it.destination_iata}) | ${it.departure_date} עד ${it.return_date} (${it.trip_nights} לילות / ${p.total_vacation_days || (it.trip_nights + 1)} ימים) | אסטרטגיה: ${stratLabel} | נקודות: ${pts} | תשלום במזומן: $${cashOop} (חיסכון נטו: $${saved}) | ציון משוקלל: ${totalScore}/100 (מזג אוויר: ${weatherScore}, ניצול חופשה: ${vacScore}, כדאיות טיסה ובונוס: ${bonusScore})`;
   }
 
   function classifyFareByAge(ageYears) {
@@ -514,10 +576,71 @@
       `;
       return;
     }
-    container.innerHTML = state.proposals
-      .map((p, idx) => {
-        const it = p.itinerary || {};
-        const allocList = it.family_ticket_allocation || it.passenger_allocations || [];
+    const fallbackBannerHtml = state.weatherFallbackMessageHe
+      ? `
+        <div class="proposal-card" style="border-inline-start-color: #f59e0b; background: #fffbeb; padding: 12px 16px; margin-block-end: 10px;">
+          <strong style="color: #92400e; font-size: 0.9rem;">
+            🌤️ ${isHe ? state.weatherFallbackMessageHe : 'Strict weather filter was relaxed to display the highest-rated weather options for these dates.'}
+          </strong>
+        </div>
+      `
+      : '';
+    container.innerHTML =
+      fallbackBannerHtml +
+      state.proposals
+        .map((p, idx) => {
+          const it = p.itinerary || {};
+          const wm = p.weather_metrics || null;
+          const wssVal = Number(
+            p.weather_suitability_score ??
+              (wm && wm.overall_weather_suitability_score) ??
+              0
+          );
+          const wssPillStyle =
+            wssVal >= 75
+              ? 'background: #ecfdf5; border-color: #6ee7b7; color: #065f46;'
+              : wssVal >= 60
+                ? 'background: #f0f9ff; border-color: #7dd3fc; color: #0c4a6e;'
+                : 'background: #fffbeb; border-color: #fcd34d; color: #92400e;';
+          let weatherStripHtml = '';
+          if (wm) {
+            const scoresByType = wm.scores_by_vacation_type || {};
+            const beachScore = Number(scoresByType.BEACH_AND_POOL ?? 0).toFixed(0);
+            const natureScore = Number(scoresByType.NATURE_TRIP ?? 0).toFixed(0);
+            const recTypes = (wm.recommended_vacation_types || [])
+              .slice(0, 3)
+              .map((vt) => `<span class="weather-badge-tag">${formatVacationTypeBadge(vt)}</span>`)
+              .join('');
+            const seaTempChip =
+              wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined
+                ? `<span class="weather-metric-chip">🌊 ${isHe ? 'טמפ׳ מים:' : 'Sea:'} <strong dir="ltr">${Number(wm.sea_water_temp_c).toFixed(0)}°C</strong></span>`
+                : '';
+            const extraSelectedChips = (state.selectedVacationTypes || [])
+              .filter((vt) => vt !== 'ANY' && vt !== 'BEACH_AND_POOL' && vt !== 'NATURE_TRIP')
+              .map(
+                (vt) =>
+                  `<span class="weather-metric-chip">${formatVacationTypeBadge(vt)}: <strong dir="ltr">${Number(scoresByType[vt] ?? 0).toFixed(0)}/100</strong></span>`
+              )
+              .join('');
+            weatherStripHtml = `
+              <div class="weather-telemetry-strip">
+                <div class="weather-telemetry-row">
+                  <span class="weather-metric-chip">🌡️ ${isHe ? 'טמפ׳ יום/לילה:' : 'Day/Night:'} <strong dir="ltr">${Number(wm.avg_day_high_c || 0).toFixed(0)}°C / ${Number(wm.avg_night_low_c || 0).toFixed(0)}°C</strong></span>
+                  ${seaTempChip}
+                  <span class="weather-metric-chip">☀️ ${isHe ? 'שעות שמש:' : 'Sunshine:'} <strong dir="ltr">${Number(wm.sunshine_hours_per_day || 0).toFixed(1)}h</strong></span>
+                  <span class="weather-metric-chip">🌧️ ${isHe ? 'ימי גשם משוערים:' : 'Est. Rain Days:'} <strong dir="ltr">${Number(wm.estimated_rain_days_in_trip || 0).toFixed(1)}</strong></span>
+                  <span class="weather-metric-chip">🏖️ ${isHe ? 'ציון בטן-גב:' : 'Beach Score:'} <strong dir="ltr">${beachScore}/100</strong></span>
+                  <span class="weather-metric-chip">🥾 ${isHe ? 'ציון טיול בטבע:' : 'Nature Score:'} <strong dir="ltr">${natureScore}/100</strong></span>
+                  ${extraSelectedChips}
+                </div>
+                <div class="weather-telemetry-footer">
+                  <span class="weather-summary-note">${isHe ? (wm.weather_summary_he || '') : (wm.weather_summary_en || wm.weather_summary_he || '')}</span>
+                  <div class="weather-rec-tags">${recTypes}</div>
+                </div>
+              </div>
+            `;
+          }
+          const allocList = it.family_ticket_allocation || it.passenger_allocations || [];
         const allocRows = allocList
           .map(
             (a, aIdx) => `
@@ -595,6 +718,9 @@
               <span class="score-pill" style="background: #eff6ff; border-color: #93c5fd; color: #1e3a8a;">
                 ⭐ ${isHe ? 'ציון התאמה כללי:' : 'Overall Match Score:'} <strong dir="ltr">${Number(p.combined_trip_optimization_score).toFixed(1)}/100</strong>
               </span>
+              <span class="score-pill" style="${wssPillStyle}">
+                🌤️ ${isHe ? 'ציון מזג אוויר:' : 'Weather Suitability:'} <strong dir="ltr">${wssVal.toFixed(1)}/100</strong>
+              </span>
               <span class="score-pill">
                 🏖️ ${isHe ? 'ניצול ימי חופשה:' : 'Vacation Match:'} <strong dir="ltr">${Number(p.vacation_utilization_score).toFixed(1)}/100</strong>
               </span>
@@ -617,6 +743,8 @@
                 💰 ${isHe ? 'חיסכון כספי נטו:' : 'Net Cash Saved:'} <strong dir="ltr">$${Number(it.net_cash_saved_usd || 0).toFixed(0)} (${Number(it.cents_per_point_value || 0).toFixed(2)}¢ ${isHe ? 'לנקודה' : '/pt'})</strong>
               </span>
             </div>
+
+            ${weatherStripHtml}
 
             <p style="margin: 0; font-size: 0.88rem; color: var(--text-secondary);">
               ${summaryText}
@@ -691,7 +819,12 @@
     const flexVal = Number((document.getElementById('input-flex-days') || {}).value || 2);
     const minNights = Number((document.getElementById('input-min-nights') || {}).value || 4);
     const maxNights = Number((document.getElementById('input-max-nights') || {}).value || 10);
-    const bridgeDays = Number((document.getElementById('input-bridge-days') || {}).value || 2);
+    const bridgeDays = Number((document.getElementById('input-bridge-days') || {}).value || 3);
+    const weatherModeVal =
+      (document.getElementById('select-weather-filter-mode') || {}).value ||
+      state.weatherFilterMode ||
+      'SOFT_PRIORITIZE';
+    state.weatherFilterMode = weatherModeVal;
 
     const payload = {
       date_selection_mode: state.dateSelectionMode,
@@ -706,13 +839,16 @@
       flex_days_plus_minus: flexVal,
       min_trip_nights: minNights,
       max_trip_nights: maxNights,
-      max_bridge_days_shift: bridgeDays
+      max_bridge_days_shift: bridgeDays,
+      preferred_vacation_types: state.selectedVacationTypes || [],
+      weather_filter_mode: weatherModeVal
     };
 
     const res = await apiSend('POST', '/api/v1/vacations/search', payload);
     state.proposals = res.proposals || [];
     state.statusMessageHe = res.status_message_he || null;
     state.statusMessageEn = res.status_message_en || null;
+    state.weatherFallbackMessageHe = res.weather_fallback_message_he || null;
     state.selectedProposalIds = new Set(state.proposals.slice(0, 2).map((p) => p.id));
     renderProposals();
   }
@@ -740,6 +876,34 @@
     if (selectDestEl) {
       selectDestEl.addEventListener('change', () => {
         syncDestinationPostcards(selectDestEl.value);
+      });
+    }
+
+    document.querySelectorAll('[data-vacation-type]').forEach((pillBtn) => {
+      pillBtn.addEventListener('click', () => {
+        const vt = pillBtn.getAttribute('data-vacation-type');
+        if (!vt || vt === 'ANY') {
+          state.selectedVacationTypes = [];
+        } else {
+          const cur = new Set(state.selectedVacationTypes || []);
+          cur.delete('ANY');
+          if (cur.has(vt)) {
+            cur.delete(vt);
+          } else {
+            cur.add(vt);
+          }
+          state.selectedVacationTypes = Array.from(cur);
+        }
+        syncVacationTypePills();
+        runVacationSearch();
+      });
+    });
+
+    const selectWeatherModeEl = document.getElementById('select-weather-filter-mode');
+    if (selectWeatherModeEl) {
+      selectWeatherModeEl.addEventListener('change', () => {
+        state.weatherFilterMode = selectWeatherModeEl.value || 'SOFT_PRIORITIZE';
+        runVacationSearch();
       });
     }
 
@@ -813,6 +977,23 @@
           if (nameEl) nameEl.textContent = nameEl.getAttribute(isHe ? 'data-he' : 'data-en') || nameEl.textContent;
           if (vibeEl) vibeEl.textContent = vibeEl.getAttribute(isHe ? 'data-he' : 'data-en') || vibeEl.textContent;
         });
+
+        document.querySelectorAll('[data-vacation-type]').forEach((pillBtn) => {
+          const labelTxt = pillBtn.getAttribute(isHe ? 'data-he' : 'data-en');
+          if (labelTxt) pillBtn.textContent = labelTxt;
+        });
+        const vtTitle = document.getElementById('vacation-type-title');
+        if (vtTitle) {
+          vtTitle.textContent = isHe
+            ? '🌤️ סגנון חופשה ותיעדוף מזג אוויר ביעד:'
+            : '🌤️ Vacation Style & Destination Weather Prioritization:';
+        }
+        const vtHint = document.getElementById('vacation-type-hint');
+        if (vtHint) {
+          vtHint.textContent = isHe
+            ? 'בחרו סגנון חופשה אחד או יותר כדי לתעדף יעדים עם מזג אוויר אידיאלי לתאריכי החופשה'
+            : 'Select one or more vacation styles to prioritize destinations with ideal weather for your trip dates';
+        }
 
         const zSearch = document.getElementById('zone-search-title');
         if (zSearch) {

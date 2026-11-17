@@ -503,11 +503,11 @@ class VacationMaximizerEngine:
                 macro_start = min(w.start_date for w in relevant_wins)
             macro_end = max(w.end_date for w in relevant_wins)
 
-            # Expand macro-window by bridge days + adjacent Fri/Sat weekends
+            # Expand macro-window by bridge days (±3 days default around holiday) + adjacent Fri/Sat weekends
             if h_code == "SUMMER_AUGUST" and child_fws & {"DAYCARE_SUPERVISED", "SPECIAL_ED"}:
                 scan_start = macro_start
             else:
-                scan_start = macro_start - timedelta(days=max(b_max, 2))
+                scan_start = macro_start - timedelta(days=max(b_max, 3))
             scan_end = macro_end + timedelta(days=max(b_max, 3))
             total_span = (scan_end - scan_start).days + 1
 
@@ -548,11 +548,11 @@ class VacationMaximizerEngine:
                         if cand.max_single_child_school_days_missed > b_max:
                             continue
                     else:
-                        # MAXIMIZE_EFFICIENCY_SCORE: allow June 20-30 waning days or bridge days up to b_max + 2
+                        # MAXIMIZE_EFFICIENCY_SCORE: allow June 20-30 waning days or bridge days up to max(b_max, 3)
                         if (
                             h_code != "SUMMER_JUNE_20_30"
                             and cand.max_single_child_school_days_missed
-                            > max(b_max, 2)
+                            > max(b_max, 3)
                         ):
                             continue
 
@@ -576,7 +576,8 @@ class VacationMaximizerEngine:
             ),
             reverse=True,
         )
-        return ranked[:30]
+        cap_limit = 120 if len(by_holiday) <= 2 else 45
+        return ranked[:cap_limit]
 
     def evaluate_worked_examples(
         self, profile: Optional[FamilyProfile] = None

@@ -721,6 +721,166 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.planner.export_proposal_ics("non-existent-proposal-id")
 
+    def test_weather_suitability_engine_seasonal_accuracy_and_all_vacation_types_f33(
+        self,
+    ) -> None:
+        """16. Verify `DestinationWeatherSuitabilityEngine` seasonal scores across all 25 destinations & 6 vacation styles."""
+        from backend.app.planner_synthesizer.weather_suitability_engine import (
+            DestinationWeatherSuitabilityEngine,
+        )
+        from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
+
+        self.assertEqual(len(DESTINATION_CATALOG), 25)
+        for _iata_key, entry in DESTINATION_CATALOG.items():
+            self.assertIn("climate_profile", entry)
+            self.assertIn("monthly_weather", entry)
+            self.assertEqual(len(entry["monthly_weather"]), 12)
+
+        w_engine = DestinationWeatherSuitabilityEngine()
+
+        # (a) Summer July beach vacation: RHO / LCA / PFO / ATH / BCN score >= 80, while monsoon HKT/BKK < 75 and inland MAD/VIE <= 35
+        for beach_iata in ("RHO", "LCA", "PFO", "ATH", "BCN"):
+            m_beach = w_engine.evaluate_destination(
+                beach_iata,
+                date(2027, 7, 10),
+                date(2027, 7, 17),
+                ["BEACH_AND_POOL"],
+            )
+            self.assertGreaterEqual(
+                m_beach.overall_weather_suitability_score,
+                80.0,
+                f"Expected high July beach score for {beach_iata}, got {m_beach.overall_weather_suitability_score}",
+            )
+        m_hkt_july = w_engine.evaluate_destination(
+            "HKT", date(2027, 7, 10), date(2027, 7, 17), ["BEACH_AND_POOL"]
+        )
+        m_hkt_jan = w_engine.evaluate_destination(
+            "HKT", date(2027, 1, 10), date(2027, 1, 17), ["BEACH_AND_POOL"]
+        )
+        self.assertGreater(
+            m_hkt_jan.overall_weather_suitability_score,
+            m_hkt_july.overall_weather_suitability_score + 15.0,
+        )
+        for inland_iata in ("MAD", "VIE", "PRG", "BER", "LHR"):
+            m_inland = w_engine.evaluate_destination(
+                inland_iata,
+                date(2027, 7, 10),
+                date(2027, 7, 17),
+                ["BEACH_AND_POOL"],
+            )
+            self.assertLess(m_inland.overall_weather_suitability_score, 60.0)
+
+        # (b) Winter Hanukkah December snow/ski (MUC, MXP, TBS) & festive markets (VIE, PRG, MUC, BUD, BER)
+        for ski_iata in ("MUC", "MXP", "TBS"):
+            m_ski = w_engine.evaluate_destination(
+                ski_iata,
+                date(2026, 12, 6),
+                date(2026, 12, 13),
+                ["SNOW_AND_SKI"],
+            )
+            self.assertGreaterEqual(
+                m_ski.overall_weather_suitability_score,
+                70.0,
+                f"Expected high December ski score for {ski_iata}, got {m_ski.overall_weather_suitability_score}",
+            )
+        for festive_iata in ("VIE", "PRG", "MUC", "BUD", "BER"):
+            m_fest = w_engine.evaluate_destination(
+                festive_iata,
+                date(2026, 12, 6),
+                date(2026, 12, 13),
+                ["WINTER_FESTIVE"],
+            )
+            self.assertGreaterEqual(
+                m_fest.overall_weather_suitability_score,
+                75.0,
+                f"Expected high December festive score for {festive_iata}, got {m_fest.overall_weather_suitability_score}",
+            )
+
+        # (c) Spring Pesach April nature & urban trips
+        for spring_iata in ("FCO", "ATH", "BCN", "MAD"):
+            m_nat = w_engine.evaluate_destination(
+                spring_iata,
+                date(2027, 4, 14),
+                date(2027, 4, 21),
+                ["NATURE_TRIP"],
+            )
+            self.assertGreaterEqual(m_nat.overall_weather_suitability_score, 75.0)
+
+    def test_vacation_type_filtering_soft_prioritize_and_hard_threshold_with_fallback_f33(
+        self,
+    ) -> None:
+        """17. Verify `SOFT_PRIORITIZE` 3-way CTOS and `HARD_THRESHOLD` filtering + graceful fallback."""
+        # (a) SOFT_PRIORITIZE for BEACH_AND_POOL in July across ATH, LCA, LHR, VIE
+        beach_props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ATH", "LCA", "LHR", "VIE"],
+                "specific_departure_date": "2027-07-15",
+                "specific_return_date": "2027-07-22",
+                "flex_days_plus_minus": 0,
+                "preferred_vacation_types": ["BEACH_AND_POOL"],
+                "weather_filter_mode": "SOFT_PRIORITIZE",
+            },
+            profile=self.default_profile,
+        )
+        self.assertGreater(len(beach_props), 0)
+        top_prop = beach_props[0]
+        self.assertIn(top_prop.itinerary.destination_iata, ("ATH", "LCA"))
+        self.assertIsNotNone(top_prop.weather_metrics)
+        self.assertGreaterEqual(top_prop.weather_suitability_score, 85.0)
+
+        # Verify typed CTOS formula: round(clamp(0.35*WSS + 0.35*VUS + 0.30*FBVS - 0.50*max(0, 60 - WSS), 0, 100), 1)
+        for p in beach_props:
+            wss = p.weather_suitability_score
+            vus = p.vacation_utilization_score
+            fbvs = p.flight_bonus_value_score
+            shortfall = max(0.0, 60.0 - wss)
+            expected_typed_ctos = round(
+                max(0.0, min(100.0, 0.35 * wss + 0.35 * vus + 0.30 * fbvs - 0.50 * shortfall)),
+                1,
+            )
+            self.assertAlmostEqual(
+                p.combined_trip_optimization_score, expected_typed_ctos, places=1
+            )
+
+        # (b) HARD_THRESHOLD filters out non-beach destinations (VIE/LHR) when ATH/LCA have >= 3 proposals
+        hard_props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ATH", "LCA", "VIE"],
+                "specific_departure_date": "2027-07-15",
+                "specific_return_date": "2027-07-22",
+                "flex_days_plus_minus": 0,
+                "preferred_vacation_types": ["BEACH_AND_POOL"],
+                "weather_filter_mode": "HARD_THRESHOLD",
+            },
+            profile=self.default_profile,
+        )
+        self.assertGreaterEqual(len(hard_props), 3)
+        for hp in hard_props:
+            self.assertGreaterEqual(hp.weather_suitability_score, 60.0)
+            self.assertNotEqual(hp.itinerary.destination_iata, "VIE")
+
+        # (c) HARD_THRESHOLD graceful fallback when threshold is impossibly high (99.9)
+        fallback_props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO", "ATH"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "preferred_vacation_types": ["SNOW_AND_SKI"],
+                "weather_filter_mode": "HARD_THRESHOLD",
+                "min_weather_suitability_score": 99.9,
+            },
+            profile=self.default_profile,
+        )
+        self.assertGreaterEqual(len(fallback_props), 1)
+        self.assertIsNotNone(self.planner.last_weather_fallback_message_he)
+
 
 if __name__ == "__main__":
     unittest.main()

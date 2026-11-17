@@ -65,6 +65,38 @@ export type OverlapPolicy =
   | 'CAMP_AWARE_ALL_CHILDREN_OFF'
   | 'WEIGHTED_MIN_ABSENCE';
 
+export type VacationType =
+  | 'ANY'
+  | 'BEACH_AND_POOL'
+  | 'NATURE_TRIP'
+  | 'URBAN_CULTURE'
+  | 'FAMILY_ATTRACTIONS_PARKS'
+  | 'SNOW_AND_SKI'
+  | 'WINTER_FESTIVE';
+
+export type WeatherFilterMode = 'SOFT_PRIORITIZE' | 'HARD_THRESHOLD';
+
+export interface DestinationWeatherMetrics {
+  destination_iata: string;
+  climate_profile: string;
+  avg_day_high_c: number;
+  avg_night_low_c: number;
+  sea_water_temp_c: number | null;
+  rainfall_mm_per_month: number;
+  rain_days_per_month: number;
+  estimated_rain_days_in_trip: number;
+  sunshine_hours_per_day: number;
+  uv_index: number;
+  humidity_pct: number;
+  snow_reliability_index: number;
+  scores_by_vacation_type: Record<VacationType, number>;
+  best_matching_vacation_type: VacationType;
+  overall_weather_suitability_score: number;
+  recommended_vacation_types: VacationType[];
+  weather_summary_he: string;
+  weather_summary_en: string;
+}
+
 export interface ChildFramework {
   id: string;
   child_name_he: string;
@@ -129,4 +161,7 @@ export interface FlightSearchQuery {
   allow_multi_club_per_passenger: boolean;
   max_stops: 0 | 1 | 2;
   checked_bags_count: number;
+  preferred_vacation_types?: VacationType[];
+  weather_filter_mode?: WeatherFilterMode;
+  min_weather_suitability_score?: number | null;
 }

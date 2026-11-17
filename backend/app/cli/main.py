@@ -197,6 +197,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum trip nights (default: 10)",
     )
     p_srch.add_argument(
+        "--vacation-type",
+        default=None,
+        help=(
+            "Preferred vacation style(s), comma-separated: "
+            "ANY | BEACH_AND_POOL | NATURE_TRIP | URBAN_CULTURE | "
+            "FAMILY_ATTRACTIONS_PARKS | SNOW_AND_SKI | WINTER_FESTIVE"
+        ),
+    )
+    p_srch.add_argument(
+        "--weather-filter-mode",
+        default="SOFT_PRIORITIZE",
+        help="Weather filter mode: SOFT_PRIORITIZE | HARD_THRESHOLD",
+    )
+    p_srch.add_argument(
+        "--min-weather-score",
+        type=float,
+        default=None,
+        help="Optional minimum weather suitability score threshold (0..100)",
+    )
+    p_srch.add_argument(
         "--export-json",
         default=None,
         help="Optional file path to export proposals JSON",
@@ -353,6 +373,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             "min_trip_nights": int(args.min_nights),
             "max_trip_nights": int(args.max_nights),
         }
+        if args.vacation_type:
+            vtypes = [
+                v.strip().upper()
+                for v in str(args.vacation_type).split(",")
+                if v.strip()
+            ]
+            search_payload["preferred_vacation_types"] = vtypes
+        if args.weather_filter_mode:
+            search_payload["weather_filter_mode"] = str(args.weather_filter_mode).strip().upper()
+        if args.min_weather_score is not None:
+            search_payload["min_weather_suitability_score"] = float(args.min_weather_score)
         resp = client.post("/api/v1/vacations/search", json=search_payload)
         if resp.status_code != 200:
             print(resp.text, file=sys.stderr)

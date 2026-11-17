@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS flight_search_queries (
     -- El Al & Multi-Club Bonus Filters:
     preferred_cabins_json TEXT NOT NULL DEFAULT '["ECONOMY","PREMIUM","BUSINESS"]',
     enabled_loyalty_programs_json TEXT NOT NULL DEFAULT '["ELAL_MATMID"]', -- Can include multiple clubs per passenger
+    preferred_vacation_types_json TEXT NOT NULL DEFAULT '[]',
+    weather_filter_mode TEXT NOT NULL DEFAULT 'SOFT_PRIORITIZE' CHECK (weather_filter_mode IN ('SOFT_PRIORITIZE', 'HARD_THRESHOLD')),
+    min_weather_suitability_score REAL CHECK (min_weather_suitability_score IS NULL OR (min_weather_suitability_score BETWEEN 0.0 AND 100.0)),
     allow_hybrid_bonus_cash INTEGER NOT NULL DEFAULT 1 CHECK (allow_hybrid_bonus_cash IN (0, 1)),
     direct_flights_only INTEGER NOT NULL DEFAULT 1 CHECK (direct_flights_only IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -269,6 +272,9 @@ CREATE TABLE IF NOT EXISTS vacation_option_proposals (
     -- Explicit Mathematical Scoring Breakdown (0 to 100):
     vacation_utilization_score REAL NOT NULL CHECK (vacation_utilization_score BETWEEN 0.0 AND 100.0), -- VUS
     flight_bonus_value_score REAL NOT NULL CHECK (flight_bonus_value_score BETWEEN 0.0 AND 100.0),   -- FBVS
+    weather_suitability_score REAL NOT NULL DEFAULT 0.0 CHECK (weather_suitability_score BETWEEN 0.0 AND 100.0), -- WSS
+    vacation_type_scores_json TEXT NOT NULL DEFAULT '{}',
+    weather_metrics_json TEXT,
     combined_trip_optimization_score REAL NOT NULL CHECK (combined_trip_optimization_score BETWEEN 0.0 AND 100.0), -- CTOS
     explanation_summary_he TEXT NOT NULL,         -- Hebrew explanation of why this option maximizes vacation + bonus value
     created_at TEXT NOT NULL DEFAULT (datetime('now'))

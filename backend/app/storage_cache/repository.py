@@ -146,10 +146,45 @@ class SQLiteRepository:
             self._memory_conn = None
 
     def init_schema(self) -> None:
-        """Execute the 8-table DDL and 4 index definitions."""
+        """Execute the 8-table DDL and 4 index definitions, plus idempotent column migrations."""
         ddl = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
         with self.connection() as conn:
             conn.executescript(ddl)
+            # Idempotent column migration for existing SQLite DBs while preserving tables_count == 8
+            q_cols = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(flight_search_queries)").fetchall()
+            }
+            if "preferred_vacation_types_json" not in q_cols:
+                conn.execute(
+                    "ALTER TABLE flight_search_queries ADD COLUMN preferred_vacation_types_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "weather_filter_mode" not in q_cols:
+                conn.execute(
+                    "ALTER TABLE flight_search_queries ADD COLUMN weather_filter_mode TEXT NOT NULL DEFAULT 'SOFT_PRIORITIZE'"
+                )
+            if "min_weather_suitability_score" not in q_cols:
+                conn.execute(
+                    "ALTER TABLE flight_search_queries ADD COLUMN min_weather_suitability_score REAL"
+                )
+
+            p_cols = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(vacation_option_proposals)").fetchall()
+            }
+            if "weather_suitability_score" not in p_cols:
+                conn.execute(
+                    "ALTER TABLE vacation_option_proposals ADD COLUMN weather_suitability_score REAL NOT NULL DEFAULT 0.0"
+                )
+            if "vacation_type_scores_json" not in p_cols:
+                conn.execute(
+                    "ALTER TABLE vacation_option_proposals ADD COLUMN vacation_type_scores_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "weather_metrics_json" not in p_cols:
+                conn.execute(
+                    "ALTER TABLE vacation_option_proposals ADD COLUMN weather_metrics_json TEXT"
+                )
+
             conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute("PRAGMA foreign_keys = ON;")
 
@@ -711,8 +746,10 @@ class SQLiteRepository:
                     direct_holiday_code, direct_target_year, min_trip_nights,
                     max_trip_nights, max_bridge_days_shift, overlap_policy,
                     preferred_cabins_json, enabled_loyalty_programs_json,
+                    preferred_vacation_types_json, weather_filter_mode,
+                    min_weather_suitability_score,
                     allow_hybrid_bonus_cash, direct_flights_only, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     qd["id"],
@@ -736,6 +773,9 @@ class SQLiteRepository:
                     qd["overlap_policy"],
                     qd["preferred_cabins_json"],
                     qd["enabled_loyalty_programs_json"],
+                    qd["preferred_vacation_types_json"],
+                    qd["weather_filter_mode"],
+                    qd["min_weather_suitability_score"],
                     1 if q.allow_hybrid_bonus_cash else 0,
                     1 if q.direct_flights_only else 0,
                     qd["created_at"],
@@ -831,9 +871,11 @@ class SQLiteRepository:
                     pto_efficiency_ratio, school_absence_penalty, childcare_coverage_gain,
                     per_child_impact_json, total_school_days_missed_across_children,
                     max_single_child_school_days_missed, vacation_utilization_score,
-                    flight_bonus_value_score, combined_trip_optimization_score,
+                    flight_bonus_value_score, weather_suitability_score,
+                    vacation_type_scores_json, weather_metrics_json,
+                    combined_trip_optimization_score,
                     explanation_summary_he, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pd["id"],
@@ -851,6 +893,9 @@ class SQLiteRepository:
                     prop.max_single_child_school_days_missed,
                     prop.vacation_utilization_score,
                     prop.flight_bonus_value_score,
+                    prop.weather_suitability_score,
+                    pd["vacation_type_scores_json"],
+                    pd["weather_metrics_json"],
                     prop.combined_trip_optimization_score,
                     pd["explanation_summary_he"],
                     pd["created_at"],

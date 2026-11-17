@@ -3243,6 +3243,47 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         self.assertEqual(i_resp.status_code, 200)
         self.assertIn("BEGIN:VCALENDAR", i_resp.text)
 
+        # Verify GET /api/v1/destinations/weather and typed vacation search
+        w_resp = client.get(
+            "/api/v1/destinations/weather?month=7&vacation_type=BEACH_AND_POOL"
+        )
+        self.assertEqual(w_resp.status_code, 200)
+        w_body = w_resp.json()
+        self.assertEqual(w_body["count"], 25)
+        self.assertEqual(len(w_body["vacation_types_catalog"]), 7)
+        top_dest = w_body["destinations"][0]
+        self.assertGreaterEqual(top_dest["weather_suitability_score"], 85.0)
+
+        typed_s_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "direct_holiday_code": "SUMMER_JULY",
+                "direct_target_year": 2027,
+                "destination_iatas": ["ATH", "LCA", "VIE"],
+                "preferred_vacation_types": ["BEACH_AND_POOL"],
+                "weather_filter_mode": "SOFT_PRIORITIZE",
+            },
+        )
+        self.assertEqual(typed_s_resp.status_code, 200)
+        typed_props = typed_s_resp.json()["proposals"]
+        self.assertGreater(len(typed_props), 0)
+        self.assertIn("weather_suitability_score", typed_props[0])
+        self.assertIsNotNone(typed_props[0].get("weather_metrics"))
+        self.assertIn(typed_props[0]["itinerary"]["destination_iata"], ("ATH", "LCA"))
+
+        bad_vt_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "preferred_vacation_types": ["INVALID_VACATION_STYLE"],
+            },
+        )
+        self.assertEqual(bad_vt_resp.status_code, 422)
+
     def test_f29_5_live_http_server_on_ephemeral_port_serves_api_and_health(
         self,
     ) -> None:
@@ -3447,6 +3488,18 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertIn("data-remove-wallet", app_js)
         self.assertIn("recalculateHouseholdPointsFromWallets", app_js)
         self.assertIn("אין משיכה של טיסות מהשרת", app_js)
+        # Verify vacation style & weather suitability controls in UI
+        for vtype_token in (
+            "BEACH_AND_POOL",
+            "NATURE_TRIP",
+            "URBAN_CULTURE",
+            "FAMILY_ATTRACTIONS_PARKS",
+            "SNOW_AND_SKI",
+            "WINTER_FESTIVE",
+            "weather_suitability_score",
+            "weather-telemetry-strip",
+        ):
+            self.assertIn(vtype_token, combined)
 
         # Verify live-fetch mode (`ELAL_LIVE_FETCH_ENABLED=1`) never returns fictitious flights
         # even when an existing database already had seeded proposals/itineraries referencing bonus rows
@@ -3535,6 +3588,50 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertGreater(after_body["count"], 0)
             self.assertEqual(after_body["proposals"][0]["itinerary"]["departure_date"], "2027-04-26")
             self.assertEqual(after_body["proposals"][0]["itinerary"]["return_date"], "2027-05-05")
+
+            # Verify one-way bonus in Hanukkah 2026 (2026-12-10 outbound only) respects window end_date and max_trip_nights<=10
+            han_sync_resp = live_client.post(
+                "/api/v1/elal-bonus/sync",
+                json={
+                    "origin": "TLV",
+                    "destinations": ["CDG"],
+                    "start_date": "2026-12-03",
+                    "end_date": "2026-12-18",
+                    "force_refresh": True,
+                    "rbd_payload": [
+                        {
+                            "destination_iata": "CDG",
+                            "direction": "OUTBOUND",
+                            "flight_number": "LY0319",
+                            "flight_date": "2026-12-10",
+                            "economy_seats": 2,
+                            "premium_seats": 0,
+                            "business_seats": 0,
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(han_sync_resp.status_code, 200)
+            han_search_resp = live_client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "HANUKKAH",
+                    "direct_target_year": 2026,
+                    "min_trip_nights": 2,
+                    "max_trip_nights": 10,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["ANYWHERE"],
+                },
+            )
+            self.assertEqual(han_search_resp.status_code, 200)
+            han_body = han_search_resp.json()
+            self.assertGreater(han_body["count"], 0)
+            for prop in han_body["proposals"]:
+                itin = prop["itinerary"]
+                self.assertGreaterEqual(itin["trip_nights"], 2)
+                self.assertLessEqual(itin["trip_nights"], 10)
+                self.assertTrue(itin["return_date"].startswith("2026-12-"))
         finally:
             if old_env is None:
                 os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)

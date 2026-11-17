@@ -284,17 +284,70 @@
             <label for="select-destination">יעד חופשה (או ANYWHERE לגילוי יעדים):</label>
             <select id="select-destination">
               <option value="ROM" selected>רומא, איטליה (ROM / FCO)</option>
+              <option value="MXP">מילאנו / דולומיטים, איטליה (MXP)</option>
               <option value="ATH">אתונה, יוון (ATH)</option>
+              <option value="RHO">רודוס, יוון (RHO)</option>
               <option value="LCA">לרנקה, קפריסין (LCA)</option>
+              <option value="PFO">פאפוס, קפריסין (PFO)</option>
+              <option value="TBS">טביליסי / גודאורי, גאורגיה (TBS)</option>
               <option value="LON">לונדון, בריטניה (LON / LHR / LTN)</option>
               <option value="PAR">פריז, צרפת (PAR / CDG)</option>
               <option value="MAD">מדריד, ספרד (MAD)</option>
               <option value="BCN">ברצלונה, ספרד (BCN)</option>
+              <option value="MUC">מינכן / טירול והאלפים, גרמניה (MUC)</option>
+              <option value="BER">ברלין, גרמניה (BER)</option>
+              <option value="VIE">וינה, אוסטריה (VIE)</option>
+              <option value="PRG">פראג, צ׳כיה (PRG)</option>
+              <option value="BUD">בודפשט, הונגריה (BUD)</option>
+              <option value="AMS">אמסטרדם, הולנד (AMS)</option>
               <option value="NYC">ניו יורק, ארה"ב (NYC / JFK / EWR)</option>
+              <option value="MIA">מיאמי / פלורידה, ארה"ב (MIA)</option>
+              <option value="FLL">פורט לודרדייל / פלורידה, ארה"ב (FLL)</option>
               <option value="BKK">בנגקוק, תאילנד (BKK)</option>
+              <option value="HKT">פוקט, תאילנד (HKT)</option>
               <option value="TYO">טוקיו, יפן (TYO / NRT)</option>
               <option value="ANYWHERE">🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)</option>
             </select>
+          </div>
+        </div>
+
+        <!-- Weather & Vacation Style Prioritization Bar -->
+        <div class="vacation-type-filter-box" id="vacation-type-filter-panel">
+          <div class="vacation-type-filter-header">
+            <div>
+              <strong id="vacation-type-title">🌤️ סגנון חופשה ותיעדוף מזג אוויר ביעד:</strong>
+              <span class="vacation-type-hint" id="vacation-type-hint">בחרו סגנון חופשה אחד או יותר כדי לתעדף יעדים עם מזג אוויר אידיאלי לתאריכי החופשה</span>
+            </div>
+            <div class="weather-mode-select-wrap">
+              <label for="select-weather-filter-mode" id="label-weather-filter-mode">אופן סינון מזג אוויר:</label>
+              <select id="select-weather-filter-mode">
+                <option value="SOFT_PRIORITIZE" selected>⭐ תעדוף חכם בציון הכללי (מומלץ)</option>
+                <option value="HARD_THRESHOLD">🔒 סינון קשיח (הסתר יעדים עם מזג אוויר לא מתאים)</option>
+              </select>
+            </div>
+          </div>
+          <div class="vacation-type-pills" id="vacation-type-selector" role="group" aria-label="בחירת סגנון חופשה לתיעדוף מזג אוויר">
+            <button type="button" class="vacation-type-pill active" data-vacation-type="ANY" data-he="🌍 הכל (ללא סינון)" data-en="🌍 All Styles (No Filter)">
+              🌍 הכל (ללא סינון)
+            </button>
+            <button type="button" class="vacation-type-pill" data-vacation-type="BEACH_AND_POOL" data-he="🏖️ חופשת בטן-גב (חוף ובריכה)" data-en="🏖️ Beach &amp; Pool">
+              🏖️ חופשת בטן-גב (חוף ובריכה)
+            </button>
+            <button type="button" class="vacation-type-pill" data-vacation-type="NATURE_TRIP" data-he="🥾 טיול בטבע ונופים" data-en="🥾 Nature &amp; Hiking">
+              🥾 טיול בטבע ונופים
+            </button>
+            <button type="button" class="vacation-type-pill" data-vacation-type="URBAN_CULTURE" data-he="🏛️ עיר, תרבות ושופינג" data-en="🏛️ Urban, Culture &amp; Shopping">
+              🏛️ עיר, תרבות ושופינג
+            </button>
+            <button type="button" class="vacation-type-pill" data-vacation-type="FAMILY_ATTRACTIONS_PARKS" data-he="🎢 פארקים ואטרקציות" data-en="🎢 Theme Parks &amp; Family">
+              🎢 פארקים ואטרקציות
+            </button>
+            <button type="button" class="vacation-type-pill" data-vacation-type="SNOW_AND_SKI" data-he="⛷️ חופשת שלג וסקי" data-en="⛷️ Snow &amp; Family Ski">
+              ⛷️ חופשת שלג וסקי
+            </button>
+            <button type="button" class="vacation-type-pill" data-vacation-type="WINTER_FESTIVE" data-he="🎄 שווקי חורף ואווירה אירופאית" data-en="🎄 Winter Markets &amp; Festive">
+              🎄 שווקי חורף ואווירה אירופאית
+            </button>
           </div>
         </div>
 
@@ -308,8 +361,8 @@
             <input type="number" id="input-max-nights" min="1" max="30" value="10" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="input-bridge-days">ימי גשר מותרים (±0..3):</label>
-            <input type="number" id="input-bridge-days" min="0" max="5" value="2" dir="ltr" />
+            <label for="input-bridge-days">גמישות סביב החג / ימי גשר (±0..5):</label>
+            <input type="number" id="input-bridge-days" min="0" max="5" value="3" dir="ltr" />
           </div>
         </div>
 

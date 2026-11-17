@@ -149,6 +149,61 @@ class FulfillmentStrategy(str, Enum):
     COMMERCIAL_CASH_ONLY = "COMMERCIAL_CASH_ONLY"
 
 
+class VacationType(str, Enum):
+    ANY = "ANY"
+    BEACH_AND_POOL = "BEACH_AND_POOL"
+    NATURE_TRIP = "NATURE_TRIP"
+    URBAN_CULTURE = "URBAN_CULTURE"
+    FAMILY_ATTRACTIONS_PARKS = "FAMILY_ATTRACTIONS_PARKS"
+    SNOW_AND_SKI = "SNOW_AND_SKI"
+    WINTER_FESTIVE = "WINTER_FESTIVE"
+
+
+class WeatherFilterMode(str, Enum):
+    SOFT_PRIORITIZE = "SOFT_PRIORITIZE"
+    HARD_THRESHOLD = "HARD_THRESHOLD"
+
+
+VACATION_TYPES = tuple(v.value for v in VacationType)
+WEATHER_FILTER_MODES = tuple(m.value for m in WeatherFilterMode)
+DEFAULT_VACATION_TYPE_THRESHOLDS: dict[str, float] = {
+    "ANY": 0.0,
+    "BEACH_AND_POOL": 60.0,
+    "NATURE_TRIP": 55.0,
+    "URBAN_CULTURE": 45.0,
+    "FAMILY_ATTRACTIONS_PARKS": 50.0,
+    "SNOW_AND_SKI": 65.0,
+    "WINTER_FESTIVE": 55.0,
+}
+VACATION_TYPE_LABELS_HE: dict[str, str] = {
+    "ANY": "כל סוגי החופשות",
+    "BEACH_AND_POOL": "חופשת בטן-גב (חוף ובריכה)",
+    "NATURE_TRIP": "טיול בטבע ונופים",
+    "URBAN_CULTURE": "טיול עירוני, תרבות ושופינג",
+    "FAMILY_ATTRACTIONS_PARKS": "פארקי שעשועים ואטרקציות משפחתיות",
+    "SNOW_AND_SKI": "חופשת שלג וסקי משפחתית",
+    "WINTER_FESTIVE": "שווקי חורף ואווירה אירופאית",
+}
+VACATION_TYPE_LABELS_EN: dict[str, str] = {
+    "ANY": "All Vacation Styles",
+    "BEACH_AND_POOL": "Beach & Pool Resort",
+    "NATURE_TRIP": "Nature & Scenic Hiking",
+    "URBAN_CULTURE": "Urban, Culture & Shopping",
+    "FAMILY_ATTRACTIONS_PARKS": "Theme Parks & Family Attractions",
+    "SNOW_AND_SKI": "Family Snow & Ski",
+    "WINTER_FESTIVE": "European Winter Markets & Festive",
+}
+VACATION_TYPE_ICONS: dict[str, str] = {
+    "ANY": "🌍",
+    "BEACH_AND_POOL": "🏖️",
+    "NATURE_TRIP": "🥾",
+    "URBAN_CULTURE": "🏛️",
+    "FAMILY_ATTRACTIONS_PARKS": "🎢",
+    "SNOW_AND_SKI": "⛷️",
+    "WINTER_FESTIVE": "🎄",
+}
+
+
 WORKWEEK_TYPES = ("SUN_THU", "SUN_FRI")
 PTO_WEIGHT_VALUES = (0.0, 0.5, 1.0)
 FLYCARD_TIERS = ("NONE", "FLY_CARD", "FLY_CARD_PREMIUM")
@@ -733,6 +788,9 @@ class FlightSearchQuery(_DomainModelBase):
     enabled_loyalty_programs: list[str] = field(
         default_factory=lambda: ["ELAL_MATMID"]
     )
+    preferred_vacation_types: list[str] = field(default_factory=list)
+    weather_filter_mode: str = "SOFT_PRIORITIZE"
+    min_weather_suitability_score: Optional[float] = None
     allow_hybrid_bonus_cash: bool = True
     direct_flights_only: bool = True
     created_at: Optional[str] = field(default_factory=_now_iso)
@@ -824,6 +882,52 @@ class FlightSearchQuery(_DomainModelBase):
             str(p).upper()
             for p in _parse_json_list(self.enabled_loyalty_programs, ["ELAL_MATMID"])
         ]
+        raw_vtypes = _parse_json_list(self.preferred_vacation_types, [])
+        norm_vtypes: list[str] = []
+        for vt in raw_vtypes:
+            vt_str = (
+                vt.value
+                if isinstance(vt, VacationType)
+                else str(vt or "").strip().upper()
+            )
+            if not vt_str:
+                continue
+            if vt_str not in VACATION_TYPES:
+                raise ValueError(
+                    f"Invalid vacation type {vt!r}: must be one of {VACATION_TYPES}"
+                )
+            if vt_str != "ANY" and vt_str not in norm_vtypes:
+                norm_vtypes.append(vt_str)
+        self.preferred_vacation_types = norm_vtypes
+
+        wfm_str = (
+            self.weather_filter_mode.value
+            if isinstance(self.weather_filter_mode, WeatherFilterMode)
+            else str(self.weather_filter_mode or "SOFT_PRIORITIZE").strip().upper()
+        )
+        if wfm_str not in WEATHER_FILTER_MODES:
+            raise ValueError(
+                f"Invalid weather_filter_mode {self.weather_filter_mode!r}: must be one of {WEATHER_FILTER_MODES}"
+            )
+        self.weather_filter_mode = wfm_str
+
+        if (
+            self.min_weather_suitability_score is not None
+            and self.min_weather_suitability_score != ""
+        ):
+            self.min_weather_suitability_score = float(
+                self.min_weather_suitability_score
+            )
+            if (
+                self.min_weather_suitability_score < 0.0
+                or self.min_weather_suitability_score > 100.0
+            ):
+                raise ValueError(
+                    f"min_weather_suitability_score must be between 0.0 and 100.0, got {self.min_weather_suitability_score}"
+                )
+        else:
+            self.min_weather_suitability_score = None
+
         self.allow_hybrid_bonus_cash = _parse_bool(self.allow_hybrid_bonus_cash, True)
         self.direct_flights_only = _parse_bool(self.direct_flights_only, True)
         if not self.created_at:
@@ -864,6 +968,10 @@ class FlightSearchQuery(_DomainModelBase):
             "preferred_cabins_json": json.dumps(self.preferred_cabins),
             "enabled_loyalty_programs": list(self.enabled_loyalty_programs),
             "enabled_loyalty_programs_json": json.dumps(self.enabled_loyalty_programs),
+            "preferred_vacation_types": list(self.preferred_vacation_types),
+            "preferred_vacation_types_json": json.dumps(self.preferred_vacation_types),
+            "weather_filter_mode": self.weather_filter_mode,
+            "min_weather_suitability_score": self.min_weather_suitability_score,
             "allow_hybrid_bonus_cash": self.allow_hybrid_bonus_cash,
             "direct_flights_only": self.direct_flights_only,
             "created_at": self.created_at,
@@ -885,6 +993,11 @@ class FlightSearchQuery(_DomainModelBase):
         programs = data.get("enabled_loyalty_programs")
         if programs is None:
             programs = data.get("enabled_loyalty_programs_json", ["ELAL_MATMID"])
+        vtypes = data.get("preferred_vacation_types")
+        if vtypes is None:
+            vtypes = data.get("vacation_types")
+        if vtypes is None:
+            vtypes = data.get("preferred_vacation_types_json", [])
 
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
@@ -914,6 +1027,13 @@ class FlightSearchQuery(_DomainModelBase):
             overlap_policy=str(data.get("overlap_policy") or "MAXIMIZE_EFFICIENCY_SCORE"),
             preferred_cabins=_parse_json_list(cabins, ["ECONOMY", "PREMIUM", "BUSINESS"]),
             enabled_loyalty_programs=_parse_json_list(programs, ["ELAL_MATMID"]),
+            preferred_vacation_types=_parse_json_list(vtypes, []),
+            weather_filter_mode=str(
+                data.get("weather_filter_mode")
+                or data.get("vacation_type_filter_mode")
+                or "SOFT_PRIORITIZE"
+            ),
+            min_weather_suitability_score=data.get("min_weather_suitability_score"),
             allow_hybrid_bonus_cash=_parse_bool(data.get("allow_hybrid_bonus_cash", True)),
             direct_flights_only=_parse_bool(data.get("direct_flights_only", True)),
             created_at=data.get("created_at") or _now_iso(),
@@ -1496,6 +1616,140 @@ class ChildTripImpact(_DomainModelBase):
 
 
 @dataclass
+class DestinationWeatherMetrics(_DomainModelBase):
+    destination_iata: str = "FCO"
+    avg_max_temp_c: float = 22.0
+    avg_min_temp_c: float = 12.0
+    sea_water_temp_c: Optional[float] = None
+    expected_rain_days_in_trip: float = 1.0
+    precipitation_mm: float = 35.0
+    sunshine_hours_per_day: float = 8.0
+    avg_humidity_pct: int = 60
+    uv_index_max: float = 6.0
+    snow_reliability_index: float = 0.0
+    climate_zone_label_he: str = ""
+    weather_summary_he: str = ""
+    below_threshold_warning: bool = False
+    overall_weather_suitability_score: float = 0.0
+    scores_by_vacation_type: dict[str, float] = field(default_factory=dict)
+    recommended_vacation_types: list[str] = field(default_factory=list)
+    best_matching_vacation_type: str = "URBAN_CULTURE"
+
+    def __post_init__(self) -> None:
+        self.destination_iata = str(self.destination_iata or "FCO").upper()
+        self.avg_max_temp_c = round(float(self.avg_max_temp_c), 1)
+        self.avg_min_temp_c = round(float(self.avg_min_temp_c), 1)
+        if self.sea_water_temp_c is not None and self.sea_water_temp_c != "":
+            self.sea_water_temp_c = round(float(self.sea_water_temp_c), 1)
+        else:
+            self.sea_water_temp_c = None
+        self.expected_rain_days_in_trip = round(
+            float(self.expected_rain_days_in_trip), 1
+        )
+        self.precipitation_mm = round(float(self.precipitation_mm), 1)
+        self.sunshine_hours_per_day = round(float(self.sunshine_hours_per_day), 1)
+        self.avg_humidity_pct = int(round(float(self.avg_humidity_pct)))
+        self.uv_index_max = round(float(self.uv_index_max), 1)
+        self.snow_reliability_index = round(float(self.snow_reliability_index), 2)
+        self.climate_zone_label_he = str(self.climate_zone_label_he or "")
+        self.weather_summary_he = str(self.weather_summary_he or "")
+        self.below_threshold_warning = _parse_bool(self.below_threshold_warning, False)
+        self.overall_weather_suitability_score = round(
+            float(self.overall_weather_suitability_score or 0.0), 1
+        )
+        self.scores_by_vacation_type = {
+            str(k).upper(): round(float(v), 1)
+            for k, v in _parse_json_dict(self.scores_by_vacation_type, {}).items()
+        }
+        self.recommended_vacation_types = [
+            str(x).upper()
+            for x in _parse_json_list(self.recommended_vacation_types, [])
+        ]
+        self.best_matching_vacation_type = str(
+            self.best_matching_vacation_type or "URBAN_CULTURE"
+        ).upper()
+
+    @property
+    def avg_day_high_c(self) -> float:
+        return self.avg_max_temp_c
+
+    @property
+    def avg_night_low_c(self) -> float:
+        return self.avg_min_temp_c
+
+    @property
+    def estimated_rain_days_in_trip(self) -> float:
+        return self.expected_rain_days_in_trip
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "destination_iata": self.destination_iata,
+            "avg_max_temp_c": self.avg_max_temp_c,
+            "avg_min_temp_c": self.avg_min_temp_c,
+            "avg_day_high_c": self.avg_max_temp_c,
+            "avg_night_low_c": self.avg_min_temp_c,
+            "sea_water_temp_c": self.sea_water_temp_c,
+            "expected_rain_days_in_trip": self.expected_rain_days_in_trip,
+            "estimated_rain_days_in_trip": self.expected_rain_days_in_trip,
+            "precipitation_mm": self.precipitation_mm,
+            "sunshine_hours_per_day": self.sunshine_hours_per_day,
+            "avg_humidity_pct": self.avg_humidity_pct,
+            "uv_index_max": self.uv_index_max,
+            "snow_reliability_index": self.snow_reliability_index,
+            "climate_zone_label_he": self.climate_zone_label_he,
+            "weather_summary_he": self.weather_summary_he,
+            "below_threshold_warning": self.below_threshold_warning,
+            "overall_weather_suitability_score": self.overall_weather_suitability_score,
+            "scores_by_vacation_type": dict(self.scores_by_vacation_type),
+            "recommended_vacation_types": list(self.recommended_vacation_types),
+            "best_matching_vacation_type": self.best_matching_vacation_type,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | Self) -> Self:
+        if isinstance(data, cls):
+            return data
+        return cls(
+            destination_iata=str(data.get("destination_iata") or "FCO"),
+            avg_max_temp_c=float(
+                data.get("avg_max_temp_c", data.get("avg_day_high_c", 22.0))
+            ),
+            avg_min_temp_c=float(
+                data.get("avg_min_temp_c", data.get("avg_night_low_c", 12.0))
+            ),
+            sea_water_temp_c=data.get("sea_water_temp_c"),
+            expected_rain_days_in_trip=float(
+                data.get(
+                    "expected_rain_days_in_trip",
+                    data.get("estimated_rain_days_in_trip", 1.0),
+                )
+            ),
+            precipitation_mm=float(data.get("precipitation_mm", 35.0)),
+            sunshine_hours_per_day=float(data.get("sunshine_hours_per_day", 8.0)),
+            avg_humidity_pct=int(round(float(data.get("avg_humidity_pct", 60)))),
+            uv_index_max=float(data.get("uv_index_max", 6.0)),
+            snow_reliability_index=float(data.get("snow_reliability_index", 0.0)),
+            climate_zone_label_he=str(data.get("climate_zone_label_he") or ""),
+            weather_summary_he=str(data.get("weather_summary_he") or ""),
+            below_threshold_warning=_parse_bool(
+                data.get("below_threshold_warning", False)
+            ),
+            overall_weather_suitability_score=float(
+                data.get("overall_weather_suitability_score", 0.0) or 0.0
+            ),
+            scores_by_vacation_type=_parse_json_dict(
+                data.get("scores_by_vacation_type"), {}
+            ),
+            recommended_vacation_types=_parse_json_list(
+                data.get("recommended_vacation_types"), []
+            ),
+            best_matching_vacation_type=str(
+                data.get("best_matching_vacation_type") or "URBAN_CULTURE"
+            ),
+        )
+
+
+@dataclass
 class VacationOptionProposal(_DomainModelBase):
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     search_query_id: str = ""
@@ -1512,6 +1766,10 @@ class VacationOptionProposal(_DomainModelBase):
     max_single_child_school_days_missed: int = 0
     vacation_utilization_score: float = 0.0
     flight_bonus_value_score: float = 0.0
+    weather_suitability_score: float = 0.0
+    vacation_type_scores: dict[str, float] = field(default_factory=dict)
+    recommended_vacation_types: list[str] = field(default_factory=list)
+    weather_metrics: Optional[DestinationWeatherMetrics] = None
     combined_trip_optimization_score: float = 0.0
     explanation_summary_he: str = ""
     itinerary: Optional[FlightItinerary] = None
@@ -1544,6 +1802,41 @@ class VacationOptionProposal(_DomainModelBase):
         )
         self.vacation_utilization_score = float(self.vacation_utilization_score)
         self.flight_bonus_value_score = float(self.flight_bonus_value_score)
+        self.weather_suitability_score = round(
+            float(self.weather_suitability_score or 0.0), 1
+        )
+        raw_vts = _parse_json_dict(self.vacation_type_scores, {})
+        self.vacation_type_scores = {
+            str(k).upper(): round(float(v), 1) for k, v in raw_vts.items()
+        }
+        self.recommended_vacation_types = [
+            str(x).upper()
+            for x in _parse_json_list(self.recommended_vacation_types, [])
+        ]
+        if not self.recommended_vacation_types and self.vacation_type_scores:
+            self.recommended_vacation_types = [
+                vt
+                for vt, sc in sorted(
+                    self.vacation_type_scores.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                if sc >= DEFAULT_VACATION_TYPE_THRESHOLDS.get(vt, 55.0)
+            ]
+        if self.weather_metrics is not None and not isinstance(
+            self.weather_metrics, DestinationWeatherMetrics
+        ):
+            if isinstance(self.weather_metrics, str):
+                wm_parsed = _parse_json_dict(self.weather_metrics, {})
+                self.weather_metrics = (
+                    DestinationWeatherMetrics.from_dict(wm_parsed)
+                    if wm_parsed
+                    else None
+                )
+            elif isinstance(self.weather_metrics, dict):
+                self.weather_metrics = DestinationWeatherMetrics.from_dict(
+                    self.weather_metrics
+                )
         self.combined_trip_optimization_score = float(
             self.combined_trip_optimization_score
         )
@@ -1558,6 +1851,7 @@ class VacationOptionProposal(_DomainModelBase):
 
     def to_dict(self) -> dict[str, Any]:
         impacts = [c.to_dict() for c in self.per_child_impact]
+        wm_dict = self.weather_metrics.to_dict() if self.weather_metrics else None
         return {
             "id": self.id,
             "search_query_id": self.search_query_id,
@@ -1576,6 +1870,12 @@ class VacationOptionProposal(_DomainModelBase):
             "max_single_child_school_days_missed": self.max_single_child_school_days_missed,
             "vacation_utilization_score": self.vacation_utilization_score,
             "flight_bonus_value_score": self.flight_bonus_value_score,
+            "weather_suitability_score": self.weather_suitability_score,
+            "vacation_type_scores": dict(self.vacation_type_scores),
+            "vacation_type_scores_json": json.dumps(self.vacation_type_scores),
+            "recommended_vacation_types": list(self.recommended_vacation_types),
+            "weather_metrics": wm_dict,
+            "weather_metrics_json": json.dumps(wm_dict) if wm_dict else None,
             "combined_trip_optimization_score": self.combined_trip_optimization_score,
             "explanation_summary_he": self.explanation_summary_he,
             "itinerary": self.itinerary.to_dict() if self.itinerary else None,
@@ -1592,6 +1892,12 @@ class VacationOptionProposal(_DomainModelBase):
         impacts = data.get("per_child_impact")
         if impacts is None:
             impacts = data.get("per_child_impact_json", [])
+        vts = data.get("vacation_type_scores")
+        if vts is None:
+            vts = data.get("vacation_type_scores_json", {})
+        wm = data.get("weather_metrics")
+        if wm is None and data.get("weather_metrics_json"):
+            wm = _parse_json_dict(data.get("weather_metrics_json"), {})
         itin_data = data.get("itinerary")
         itin = FlightItinerary.from_dict(itin_data) if itin_data else None
         return cls(
@@ -1620,6 +1926,16 @@ class VacationOptionProposal(_DomainModelBase):
                 data.get("vacation_utilization_score", 0.0)
             ),
             flight_bonus_value_score=float(data.get("flight_bonus_value_score", 0.0)),
+            weather_suitability_score=float(
+                data.get("weather_suitability_score", 0.0) or 0.0
+            ),
+            vacation_type_scores=_parse_json_dict(vts, {}),
+            recommended_vacation_types=_parse_json_list(
+                data.get("recommended_vacation_types"), []
+            ),
+            weather_metrics=(
+                DestinationWeatherMetrics.from_dict(wm) if wm else None
+            ),
             combined_trip_optimization_score=float(
                 data.get("combined_trip_optimization_score", 0.0)
             ),
@@ -1959,6 +2275,7 @@ class VacationComparisonMatrix(_DomainModelBase):
     best_by_cash_savings_id: Optional[str] = None
     best_by_per_id: Optional[str] = None
     best_by_minimal_absence_id: Optional[str] = None
+    best_by_weather_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.proposals = [
@@ -1977,6 +2294,7 @@ class VacationComparisonMatrix(_DomainModelBase):
             "best_by_cash_savings_id": self.best_by_cash_savings_id,
             "best_by_per_id": self.best_by_per_id,
             "best_by_minimal_absence_id": self.best_by_minimal_absence_id,
+            "best_by_weather_id": self.best_by_weather_id,
         }
 
     @classmethod
@@ -1993,4 +2311,5 @@ class VacationComparisonMatrix(_DomainModelBase):
             best_by_cash_savings_id=data.get("best_by_cash_savings_id"),
             best_by_per_id=data.get("best_by_per_id"),
             best_by_minimal_absence_id=data.get("best_by_minimal_absence_id"),
+            best_by_weather_id=data.get("best_by_weather_id"),
         )

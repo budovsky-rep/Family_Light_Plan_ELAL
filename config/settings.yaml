@@ -27,6 +27,11 @@ optimization_weights:
   vus_gamma_sap: 0.35
   ctos_calendar_weight: 0.55
   ctos_flight_weight: 0.45
+  ctos_filtered_weather_weight: 0.35
+  ctos_filtered_calendar_weight: 0.35
+  ctos_filtered_flight_weight: 0.30
+  ctos_sub_threshold_penalty_factor: 0.50
+  default_min_weather_suitability_score: 55.0
 
 framework_criticality_weights:
   DAYCARE_SUPERVISED: 0.25

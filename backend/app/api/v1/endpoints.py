@@ -50,8 +50,14 @@ from backend.app.schemas.domain import (
     LoyaltyProgramCode,
     MoEFrameworkType,
     OVERLAP_POLICIES,
+    VACATION_TYPES,
+    VACATION_TYPE_ICONS,
+    VACATION_TYPE_LABELS_EN,
+    VACATION_TYPE_LABELS_HE,
+    WEATHER_FILTER_MODES,
 )
 from backend.app.storage_cache.repository import SQLiteRepository
+from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
 from backend.app.vacation_optimizer.maximizer_engine import VacationMaximizerEngine
 
 
@@ -66,6 +72,8 @@ _VALID_OVERLAP_POLICIES = set(OVERLAP_POLICIES) | {
     "WEIGHTED_MIN_ABSENCE",
 }
 _VALID_EXTENSION_MODES = {e.value for e in HolidayExtensionMode}
+_VALID_VACATION_TYPES = set(VACATION_TYPES)
+_VALID_WEATHER_FILTER_MODES = set(WEATHER_FILTER_MODES)
 
 
 def _parse_iso_date_strict(val: Any, field_name: str) -> date:
@@ -226,6 +234,56 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
         t_year = payload.get("direct_target_year")
         if t_year is not None and (int(t_year) < 2024 or int(t_year) > 2040):
             raise ValueError(f"Invalid direct_target_year: {t_year!r}")
+
+    raw_vtypes = (
+        payload.get("preferred_vacation_types")
+        if "preferred_vacation_types" in payload
+        else (
+            payload.get("vacation_types")
+            if "vacation_types" in payload
+            else payload.get("preferred_vacation_type")
+        )
+    )
+    if raw_vtypes is not None:
+        if isinstance(raw_vtypes, str):
+            vlist = [v.strip().upper() for v in raw_vtypes.split(",") if v.strip()]
+        elif isinstance(raw_vtypes, list):
+            vlist = [str(v).strip().upper() for v in raw_vtypes if str(v).strip()]
+        else:
+            raise ValueError("preferred_vacation_types must be a list or comma-separated string")
+        for vt in vlist:
+            if vt not in _VALID_VACATION_TYPES:
+                raise ValueError(
+                    f"Invalid vacation_type: {vt!r}. Allowed: {sorted(_VALID_VACATION_TYPES)}"
+                )
+
+    raw_wmode = (
+        payload.get("weather_filter_mode")
+        if "weather_filter_mode" in payload
+        else payload.get("vacation_type_filter_mode")
+    )
+    if raw_wmode is not None and str(raw_wmode).strip():
+        wmode_str = str(raw_wmode).strip().upper()
+        if wmode_str not in _VALID_WEATHER_FILTER_MODES:
+            raise ValueError(
+                f"Invalid weather_filter_mode: {raw_wmode!r}. Allowed: {sorted(_VALID_WEATHER_FILTER_MODES)}"
+            )
+
+    raw_min_wss = payload.get("min_weather_suitability_score")
+    if raw_min_wss is not None and raw_min_wss != "":
+        if isinstance(raw_min_wss, bool) or not isinstance(raw_min_wss, (int, float)):
+            try:
+                min_wss_val = float(raw_min_wss)
+            except Exception as exc:
+                raise ValueError(
+                    f"min_weather_suitability_score must be a number in 0..100, got {raw_min_wss!r}"
+                ) from exc
+        else:
+            min_wss_val = float(raw_min_wss)
+        if min_wss_val < 0.0 or min_wss_val > 100.0:
+            raise ValueError(
+                f"min_weather_suitability_score must be between 0.0 and 100.0, got {min_wss_val}"
+            )
 
 
 class VacationPlannerAPIRouter:
@@ -515,8 +573,15 @@ class VacationPlannerAPIRouter:
                     query_data=query, profile=profile
                 )
                 live_mode = self.repository.is_live_fetch_mode()
-                status_msg_he = None
+                weather_fallback_he = getattr(
+                    self.planner_service, "last_weather_fallback_message_he", None
+                )
+                status_msg_he = weather_fallback_he
                 status_msg_en = None
+                if weather_fallback_he:
+                    status_msg_en = (
+                        "Strict weather threshold relaxed so you still see the highest-rated weather options."
+                    )
                 if not proposals and live_mode:
                     status_msg_he = (
                         "אין משיכה של טיסות מהשרת (לא נמצאו טיסות אמיתיות מסונכרנות במסד הנתונים עבור יעד ומועד זה. "
@@ -533,7 +598,107 @@ class VacationPlannerAPIRouter:
                     "live_fetch_mode": live_mode,
                     "status_message_he": status_msg_he,
                     "status_message_en": status_msg_en,
+                    "weather_fallback_message_he": weather_fallback_he,
                     "proposals": [p.to_dict() for p in proposals],
+                }
+                return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
+
+            # 8b. GET /api/v1/destinations/weather
+            if method_u == "GET" and path == "/api/v1/destinations/weather":
+                month_param = q_params.get("month")
+                start_param = q_params.get("start_date")
+                end_param = q_params.get("end_date")
+                if start_param and end_param:
+                    start_d = _parse_iso_date_strict(start_param, "start_date")
+                    end_d = _parse_iso_date_strict(end_param, "end_date")
+                    if end_d < start_d:
+                        raise ValueError(
+                            f"end_date ({end_d}) must be >= start_date ({start_d})"
+                        )
+                elif month_param:
+                    m_int = int(month_param)
+                    if m_int < 1 or m_int > 12:
+                        raise ValueError(f"month must be between 1 and 12, got {m_int}")
+                    start_d = date(2027, m_int, 10)
+                    end_d = date(2027, m_int, 17)
+                else:
+                    start_d = date(2027, 7, 10)
+                    end_d = date(2027, 7, 17)
+
+                vtype_raw = (
+                    q_params.get("vacation_type")
+                    or q_params.get("vacation_types")
+                    or "ANY"
+                )
+                vtypes = [
+                    v.strip().upper()
+                    for v in vtype_raw.split(",")
+                    if v.strip()
+                ] or ["ANY"]
+                for vt in vtypes:
+                    if vt not in _VALID_VACATION_TYPES:
+                        raise ValueError(
+                            f"Invalid vacation_type: {vt!r}. Allowed: {sorted(_VALID_VACATION_TYPES)}"
+                        )
+
+                dest_filter_raw = q_params.get("destination") or q_params.get("destinations")
+                allowed_iatas: Optional[set[str]] = None
+                if dest_filter_raw:
+                    raw_codes = [
+                        d.strip().upper()
+                        for d in dest_filter_raw.split(",")
+                        if d.strip()
+                    ]
+                    allowed_iatas = set(self.elal_adapter.expand_metro_iatas(raw_codes))
+
+                items: list[dict[str, Any]] = []
+                for iata_key, dest_entry in DESTINATION_CATALOG.items():
+                    iata = str(dest_entry.get("iata") or iata_key).upper()
+                    if allowed_iatas is not None and iata not in allowed_iatas:
+                        continue
+                    metrics = self.planner_service.weather_engine.evaluate_destination(
+                        destination_iata=iata,
+                        departure_date=start_d,
+                        return_date=end_d,
+                        preferred_vacation_types=vtypes,
+                    )
+                    items.append(
+                        {
+                            "iata": iata,
+                            "metro": dest_entry.get("metro"),
+                            "city": dest_entry.get("city"),
+                            "city_he": dest_entry.get("city_he"),
+                            "country": dest_entry.get("country"),
+                            "country_he": dest_entry.get("country_he"),
+                            "climate_profile": dest_entry.get("climate_profile"),
+                            "weather_suitability_score": metrics.overall_weather_suitability_score,
+                            "best_matching_vacation_type": metrics.best_matching_vacation_type,
+                            "weather_metrics": metrics.to_dict(),
+                        }
+                    )
+
+                items.sort(
+                    key=lambda x: (
+                        -float(x["weather_suitability_score"]),
+                        str(x["iata"]),
+                    )
+                )
+                catalog_types = [
+                    {
+                        "code": code,
+                        "label_he": VACATION_TYPE_LABELS_HE.get(code, code),
+                        "label_en": VACATION_TYPE_LABELS_EN.get(code, code),
+                        "icon": VACATION_TYPE_ICONS.get(code, "🌍"),
+                    }
+                    for code in VACATION_TYPES
+                ]
+                resp_payload = {
+                    "start_date": start_d.isoformat(),
+                    "end_date": end_d.isoformat(),
+                    "vacation_types": vtypes,
+                    "count": len(items),
+                    "vacation_types_catalog": catalog_types,
+                    "destinations": items,
                 }
                 return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
 
