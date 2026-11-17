@@ -388,42 +388,100 @@
     }
   }
 
+  const FRAMEWORK_SHORT_LABELS_HE = {
+    DAYCARE_SUPERVISED: 'מעונות יום (0–3)',
+    MUNICIPAL_GAN: 'גני ילדים',
+    ELEMENTARY_1_3: 'יסודי (א׳–ג׳)',
+    ELEMENTARY_4_6: 'יסודי (ד׳–ו׳)',
+    MIDDLE_SCHOOL_7_9: 'חטיבת ביניים (ז׳–ט׳)',
+    HIGH_SCHOOL_10_12: 'תיכון (י׳–י״ב)',
+    SPECIAL_ED: 'חינוך מיוחד',
+    RELIGIOUS_HAREDI: 'ממ״ד / חרדי'
+  };
+
+  const FRAMEWORK_SHORT_LABELS_EN = {
+    DAYCARE_SUPERVISED: 'Daycare (0–3)',
+    MUNICIPAL_GAN: 'Kindergarten',
+    ELEMENTARY_1_3: 'Elementary (1–3)',
+    ELEMENTARY_4_6: 'Elementary (4–6)',
+    MIDDLE_SCHOOL_7_9: 'Middle School (7–9)',
+    HIGH_SCHOOL_10_12: 'High School (10–12)',
+    SPECIAL_ED: 'Special Ed',
+    RELIGIOUS_HAREDI: 'Religious / Haredi'
+  };
+
+  function formatGroupedFrameworksLabel(frameworkCodes) {
+    const isHe = state.locale === 'he';
+    const labelsMap = isHe ? FRAMEWORK_SHORT_LABELS_HE : FRAMEWORK_SHORT_LABELS_EN;
+    const uniqueCodes = Array.from(new Set(frameworkCodes));
+    if (uniqueCodes.length >= 8) {
+      return isHe ? 'כל מסגרות החינוך' : 'All Educational Frameworks';
+    }
+    return uniqueCodes.map((code) => labelsMap[code] || code).join(' · ');
+  }
+
   function renderCalendarTable() {
     const tbody = document.getElementById('moe-calendar-tbody');
     const syncBadge = document.getElementById('calendar-sync-badge');
     if (!tbody || !state.calendarData) return;
 
+    const isHe = state.locale === 'he';
     if (syncBadge) {
-      syncBadge.textContent = `${state.calendarData.school_year} | ${state.calendarData.calendar_sync_source}`;
+      const syncSourceLabel = state.calendarData.calendar_sync_source === 'OFFICIAL_MOE_CIRCULAR'
+        ? (isHe ? 'חוזר מנכ״ל משרד החינוך' : 'Official MoE Circular')
+        : state.calendarData.calendar_sync_source;
+      syncBadge.textContent = `${state.calendarData.school_year} | ${syncSourceLabel}`;
     }
 
     const windows = state.calendarData.windows || [];
-    const seen = new Set();
-    const deduped = windows.filter((w) => {
-      const key = `${w.holiday_code}::${w.framework_type}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
+    const groupedMap = new Map();
+
+    windows.forEach((w) => {
+      const resumeDate = w.resumes_on_date || w.school_resume_date || w.resume_date || w.end_date || '';
+      const nitzFlag = Boolean(w.is_covered_by_nitzanim);
+      const nitzStart = w.nitzanim_start_date || '';
+      const nitzEnd = w.nitzanim_end_date || '';
+      const groupKey = `${w.holiday_code}::${w.start_date}::${w.end_date}::${resumeDate}::${nitzFlag}::${nitzStart}::${nitzEnd}`;
+
+      if (!groupedMap.has(groupKey)) {
+        groupedMap.set(groupKey, {
+          holiday_name_he: w.holiday_name_he,
+          holiday_name_en: w.holiday_name_en || w.holiday_name_he,
+          start_date: w.start_date,
+          end_date: w.end_date,
+          resume_date: resumeDate,
+          total_calendar_days: w.total_calendar_days || w.calendar_days_count,
+          is_covered_by_nitzanim: nitzFlag,
+          nitzanim_start_date: nitzStart,
+          nitzanim_end_date: nitzEnd,
+          frameworks: []
+        });
+      }
+      const group = groupedMap.get(groupKey);
+      if (!group.frameworks.includes(w.framework_type)) {
+        group.frameworks.push(w.framework_type);
+      }
     });
 
-    tbody.innerHTML = deduped
-      .slice(0, 28)
-      .map((w) => {
-        const nitzBadge = w.is_covered_by_nitzanim
-          ? `<span class="badge-camp">ניצנים (${w.nitzanim_start_date} עד ${w.nitzanim_end_date})</span>`
-          : '<span class="badge-vacation">חופשה מלאה</span>';
-        const resumeDate = w.school_resume_date || w.resume_date || w.end_date || '';
+    const groupedRows = Array.from(groupedMap.values());
+
+    tbody.innerHTML = groupedRows
+      .map((g) => {
+        const nitzBadge = g.is_covered_by_nitzanim
+          ? `<span class="badge-camp">${isHe ? `קייטנת ניצנים (${g.nitzanim_start_date} עד ${g.nitzanim_end_date})` : `Nitzanim (${g.nitzanim_start_date} to ${g.nitzanim_end_date})`}</span>`
+          : `<span class="badge-vacation">${isHe ? 'חופשה מלאה' : 'Full Vacation'}</span>`;
         const daysCount =
-          w.total_calendar_days ||
-          w.calendar_days_count ||
-          Math.max(1, Math.round((new Date(w.end_date) - new Date(w.start_date)) / 86400000) + 1);
+          g.total_calendar_days ||
+          Math.max(1, Math.round((new Date(g.end_date) - new Date(g.start_date)) / 86400000) + 1);
+        const fwLabel = formatGroupedFrameworksLabel(g.frameworks);
+        const holidayTitle = isHe ? g.holiday_name_he : g.holiday_name_en;
         return `
           <tr>
-            <td class="sticky-col">${w.holiday_name_he}</td>
-            <td><code>${w.framework_type}</code></td>
-            <td dir="ltr">${w.start_date}</td>
-            <td dir="ltr">${w.end_date}</td>
-            <td dir="ltr">${resumeDate}</td>
+            <td class="sticky-col">${holidayTitle}</td>
+            <td><span style="font-weight: 600; color: var(--text-primary); white-space: normal;">${fwLabel}</span></td>
+            <td dir="ltr">${g.start_date}</td>
+            <td dir="ltr">${g.end_date}</td>
+            <td dir="ltr">${g.resume_date}</td>
             <td dir="ltr">${daysCount}</td>
             <td>${nitzBadge}</td>
           </tr>
