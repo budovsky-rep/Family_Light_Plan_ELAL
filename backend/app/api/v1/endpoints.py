@@ -395,6 +395,30 @@ class VacationPlannerAPIRouter:
                 origin = str(body.get("origin", "TLV")).upper()
                 force_refresh = bool(body.get("force_refresh", False))
                 expanded = self.elal_adapter.expand_metro_iatas(destinations)
+
+                # If caller provided an external `rbd_payload` (e.g. from browser/partner sync), import it directly
+                if "rbd_payload" in body and body["rbd_payload"]:
+                    imported_rows = self.elal_adapter.parse_and_import_external_rbd_payload(
+                        raw_payload=body["rbd_payload"],
+                        default_origin=origin,
+                        default_destination=expanded[0] if expanded else "FCO",
+                    )
+                    resp_payload = {
+                        "status": "ok",
+                        "origin": origin,
+                        "requested_destination": destinations[0]
+                        if len(destinations) == 1
+                        else ",".join(destinations),
+                        "requested_destinations": destinations,
+                        "expanded_destinations": expanded,
+                        "start_date": start_d.isoformat(),
+                        "end_date": end_d.isoformat(),
+                        "records_synced": len(imported_rows),
+                        "live_fetch_status": "IMPORTED_LIVE_PAYLOAD" if imported_rows else "NO_FLIGHTS_FETCHED",
+                        "availability": [r.to_dict() for r in imported_rows],
+                    }
+                    return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
+
                 synced_res = self.elal_adapter.sync_award_availability(
                     destinations=destinations,
                     start_date=start_d,
@@ -403,6 +427,7 @@ class VacationPlannerAPIRouter:
                     force_refresh=force_refresh,
                 )
                 if isinstance(synced_res, dict):
+                    rec_cnt = int(synced_res.get("records_synced", 0))
                     resp_payload = {
                         **synced_res,
                         "status": "ok",
@@ -414,6 +439,7 @@ class VacationPlannerAPIRouter:
                         "expanded_destinations": expanded,
                         "start_date": start_d.isoformat(),
                         "end_date": end_d.isoformat(),
+                        "live_fetch_status": "OK" if rec_cnt > 0 else "NO_FLIGHTS_FETCHED_FROM_SERVER",
                     }
                 else:
                     resp_payload = {
@@ -427,6 +453,7 @@ class VacationPlannerAPIRouter:
                         "start_date": start_d.isoformat(),
                         "end_date": end_d.isoformat(),
                         "records_synced": len(synced_res),
+                        "live_fetch_status": "OK" if len(synced_res) > 0 else "NO_FLIGHTS_FETCHED_FROM_SERVER",
                         "availability": [
                             r.to_dict() if hasattr(r, "to_dict") else r
                             for r in synced_res
@@ -487,10 +514,25 @@ class VacationPlannerAPIRouter:
                 proposals = self.planner_service.search_vacations(
                     query_data=query, profile=profile
                 )
+                live_mode = self.repository.is_live_fetch_mode()
+                status_msg_he = None
+                status_msg_en = None
+                if not proposals and live_mode:
+                    status_msg_he = (
+                        "אין משיכה של טיסות מהשרת (לא נמצאו טיסות אמיתיות מסונכרנות במסד הנתונים עבור יעד ומועד זה. "
+                        "טיסות פיקטיביות מבוטלות במצב פרודקשן כדי למנוע הטעיה)."
+                    )
+                    status_msg_en = (
+                        "No flights fetched from the server (no live flights synced in the database for this route/date. "
+                        "Fictitious flights are disabled in production mode)."
+                    )
                 resp_payload = {
                     "query": query.to_dict(),
                     "expanded_destinations": expanded_dests,
                     "count": len(proposals),
+                    "live_fetch_mode": live_mode,
+                    "status_message_he": status_msg_he,
+                    "status_message_en": status_msg_en,
                     "proposals": [p.to_dict() for p in proposals],
                 }
                 return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)

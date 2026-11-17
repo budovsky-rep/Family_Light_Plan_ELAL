@@ -10,6 +10,7 @@ inventory (`2025-2028`).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -185,8 +186,16 @@ class SQLiteRepository:
             "tables_count": int(tables["cnt"]) if tables else 0,
         }
 
+    @staticmethod
+    def is_live_fetch_mode() -> bool:
+        """Return True when running in production live-fetch mode (`ELAL_LIVE_FETCH_ENABLED=1`),
+        where synthetic/seeded flight inventory must NEVER be fabricated.
+        """
+        return os.environ.get("ELAL_LIVE_FETCH_ENABLED", "0").strip() in ("1", "true", "TRUE")
+
     def seed_initial_data(self) -> None:
-        """Idempotently seed default profile, MoE calendars, and El Al award inventory."""
+        """Idempotently seed default profile, MoE calendars, and (only in offline/test mode) El Al award inventory."""
+        live_mode = self.is_live_fetch_mode()
         with self.connection() as conn:
             prof_row = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM family_profiles WHERE id = ?",
@@ -199,10 +208,17 @@ class SQLiteRepository:
             ).fetchone()
             has_moe_windows = bool(moe_row and int(moe_row["cnt"]) > 0)
 
-            bonus_row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM elal_bonus_availability"
-            ).fetchone()
-            has_bonus_rows = bool(bonus_row and int(bonus_row["cnt"]) > 0)
+            if live_mode:
+                # Purge any pre-seeded fictitious rows (which lack `#live` in source_url)
+                conn.execute(
+                    "DELETE FROM elal_bonus_availability WHERE source_url NOT LIKE '%#live%'"
+                )
+                has_bonus_rows = True
+            else:
+                bonus_row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM elal_bonus_availability"
+                ).fetchone()
+                has_bonus_rows = bool(bonus_row and int(bonus_row["cnt"]) > 0)
 
         if not has_default_profile:
             self.save_profile(build_default_family_profile())
@@ -210,7 +226,7 @@ class SQLiteRepository:
         if not has_moe_windows:
             self.upsert_moe_windows(load_bundled_moe_windows())
 
-        if not has_bonus_rows:
+        if not has_bonus_rows and not live_mode:
             self.upsert_elal_bonus(build_seeded_elal_bonus_availability())
 
     def get_profile(
@@ -626,6 +642,8 @@ class SQLiteRepository:
         direct_only: bool = True,
     ) -> list[dict[str, Any]]:
         """Return commercial flight offerings for a route and date pair."""
+        if self.is_live_fetch_mode():
+            return []
         dep = (
             departure_date
             if isinstance(departure_date, date)

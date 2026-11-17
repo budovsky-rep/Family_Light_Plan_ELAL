@@ -398,6 +398,174 @@ class ElAlRbdDataClientAdapter:
 
         return live_rows
 
+    def parse_and_import_external_rbd_payload(
+        self,
+        raw_payload: Any,
+        default_origin: str = "TLV",
+        default_destination: Optional[str] = None,
+    ) -> list[ElAlBonusAvailability]:
+        """Parse real El Al `GeneralRestServices-GetRbdAvailability` JSON (`AccumulatedOutput.resultSet`)
+        or pasted `rbddataclients` table text into verified `ElAlBonusAvailability` rows (`#live`).
+        """
+        now_dt = datetime.now(UTC).replace(microsecond=0)
+        fetched_iso = now_dt.isoformat().replace("+00:00", "Z")
+        expires_iso = (
+            (now_dt + timedelta(seconds=self.cache_ttl_seconds))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        live_source_url = f"{self.base_url.rstrip('/')}#live"
+
+        grouped: dict[tuple[str, str, date, str], dict[str, Any]] = {}
+
+        def _merge_flight_record(
+            orig_iata: str,
+            dest_iata: str,
+            f_date: date,
+            f_num: str,
+            rbd_code: str,
+            seat_cnt: int,
+            dep_hhmm: Optional[str] = None,
+            arr_hhmm: Optional[str] = None,
+        ) -> None:
+            orig_u = orig_iata.strip().upper()
+            dest_u = dest_iata.strip().upper()
+            direction = "INBOUND" if dest_u == "TLV" else "OUTBOUND"
+            route_dest = orig_u if direction == "INBOUND" else dest_u
+            clean_num = f_num.strip().upper()
+            if clean_num.isdigit():
+                clean_num = f"LY{int(clean_num):03d}"
+            elif clean_num.startswith("LY") and clean_num[2:].strip().isdigit():
+                clean_num = f"LY{int(clean_num[2:].strip()):03d}"
+
+            key = (route_dest, direction, f_date, clean_num)
+            entry = grouped.setdefault(
+                key,
+                {
+                    "dest_iata": route_dest,
+                    "direction": direction,
+                    "flight_date": f_date,
+                    "flight_number": clean_num,
+                    "econ_seats": 0,
+                    "prem_seats": 0,
+                    "biz_seats": 0,
+                    "dep_time": dep_hhmm,
+                    "arr_time": arr_hhmm,
+                },
+            )
+            if dep_hhmm:
+                entry["dep_time"] = dep_hhmm
+            if arr_hhmm:
+                entry["arr_time"] = arr_hhmm
+            rbd_u = rbd_code.strip().upper()
+            if rbd_u in CLASSIC_AWARD_RBDS["BUSINESS"]:
+                entry["biz_seats"] = max(entry["biz_seats"], seat_cnt)
+            elif rbd_u in CLASSIC_AWARD_RBDS["PREMIUM"]:
+                entry["prem_seats"] = max(entry["prem_seats"], seat_cnt)
+            else:
+                entry["econ_seats"] = max(entry["econ_seats"], seat_cnt)
+
+        payload_obj = raw_payload
+        if isinstance(raw_payload, str):
+            stripped = raw_payload.strip()
+            if stripped.startswith(("{", "[")):
+                try:
+                    payload_obj = json.loads(stripped)
+                except Exception:
+                    payload_obj = stripped
+
+        if isinstance(payload_obj, dict) and "AccumulatedOutput" in payload_obj:
+            res_sets = (
+                payload_obj.get("AccumulatedOutput", {}).get("resultSet") or []
+            )
+            for rs in res_sets:
+                for rec in (rs.get("Record") or []) if isinstance(rs, dict) else []:
+                    if not isinstance(rec, dict):
+                        continue
+                    route_str = str(rec.get("SegmentRoute") or "").strip().upper()
+                    if len(route_str) == 6:
+                        orig_c, dest_c = route_str[:3], route_str[3:]
+                    else:
+                        orig_c = default_origin
+                        dest_c = default_destination or "FCO"
+                    f_date = _parse_date(rec.get("SegmentDepDate") or date.today())
+                    carrier = str(rec.get("FlightCarrier") or "LY").strip().upper()
+                    f_num_raw = f"{carrier}{str(rec.get('FlightNumber') or '').strip()}"
+                    rbd_c = str(rec.get("RBD") or "E").strip().upper()
+                    avail_cnt, _ = parse_rbd_seat_indicator(rec.get("NewAvailability", 0))
+                    dep_raw = str(rec.get("SegmentDepTime") or "")
+                    arr_raw = str(rec.get("SegmentArrTime") or "")
+                    dep_t = dep_raw.split("T")[1][:5] if "T" in dep_raw else None
+                    arr_t = arr_raw.split("T")[1][:5] if "T" in arr_raw else None
+                    _merge_flight_record(
+                        orig_c, dest_c, f_date, f_num_raw, rbd_c, avail_cnt, dep_t, arr_t
+                    )
+        elif isinstance(payload_obj, list):
+            for item in payload_obj:
+                if not isinstance(item, dict):
+                    continue
+                if "AccumulatedOutput" in item:
+                    for sub in self.parse_and_import_external_rbd_payload(
+                        item, default_origin, default_destination
+                    ):
+                        grouped[
+                            (
+                                sub.destination_iata if sub.direction == "OUTBOUND" else sub.origin_iata,
+                                sub.direction,
+                                sub.flight_date,
+                                sub.flight_number,
+                            )
+                        ] = {
+                            "dest_iata": sub.destination_iata if sub.direction == "OUTBOUND" else sub.origin_iata,
+                            "direction": sub.direction,
+                            "flight_date": sub.flight_date,
+                            "flight_number": sub.flight_number,
+                            "econ_seats": sub.economy_award_seats,
+                            "prem_seats": sub.premium_award_seats,
+                            "biz_seats": sub.business_award_seats,
+                            "dep_time": sub.departure_time_local,
+                            "arr_time": sub.arrival_time_local,
+                        }
+                else:
+                    dest_c = str(item.get("destination_iata") or default_destination or "FCO").upper()
+                    f_date = _parse_date(item.get("flight_date") or item.get("date") or date.today())
+                    direction = str(item.get("direction") or "OUTBOUND").upper()
+                    orig_c = default_origin if direction == "OUTBOUND" else dest_c
+                    dest_target = dest_c if direction == "OUTBOUND" else default_origin
+                    f_num_raw = str(item.get("flight_number") or "LY001")
+                    e_cnt, _ = parse_rbd_seat_indicator(item.get("economy_seats", item.get("E", 0)))
+                    p_cnt, _ = parse_rbd_seat_indicator(item.get("premium_seats", item.get("P", 0)))
+                    b_cnt, _ = parse_rbd_seat_indicator(item.get("business_seats", item.get("I", 0)))
+                    if e_cnt > 0:
+                        _merge_flight_record(orig_c, dest_target, f_date, f_num_raw, "E", e_cnt)
+                    if p_cnt > 0:
+                        _merge_flight_record(orig_c, dest_target, f_date, f_num_raw, "P", p_cnt)
+                    if b_cnt > 0:
+                        _merge_flight_record(orig_c, dest_target, f_date, f_num_raw, "I", b_cnt)
+
+        rows: list[ElAlBonusAvailability] = []
+        for info in grouped.values():
+            r = _make_bonus_row(
+                dest_iata=info["dest_iata"],
+                flight_date=info["flight_date"],
+                direction=info["direction"],
+                econ_seats=info["econ_seats"],
+                prem_seats=info["prem_seats"],
+                biz_seats=info["biz_seats"],
+                flycard_promo=(info["flight_date"].weekday() == 1),
+                fetched_iso=fetched_iso,
+                expires_iso=expires_iso,
+                custom_flight_num=info["flight_number"],
+                custom_dep_time=info.get("dep_time"),
+                custom_arr_time=info.get("arr_time"),
+            )
+            r.source_url = live_source_url
+            rows.append(r)
+
+        if rows:
+            self.repository.upsert_elal_bonus(rows, ttl_seconds=self.cache_ttl_seconds)
+        return rows
+
     def _synthesize_live_or_seeded_records(
         self,
         expanded_destinations: list[str],
@@ -405,7 +573,24 @@ class ElAlRbdDataClientAdapter:
         end_date: date,
         origin: str = "TLV",
     ) -> list[ElAlBonusAvailability]:
-        """Generate or refresh `ElAlBonusAvailability` records for `expanded_destinations` in `[start_date, end_date]`."""
+        """Generate or refresh `ElAlBonusAvailability` records for `expanded_destinations` in `[start_date, end_date]`.
+
+        In production live mode (`ELAL_LIVE_FETCH_ENABLED=1`), NEVER fabricates synthetic or seeded
+        flights: returns only real live-fetched flights (or an empty list if none were fetched).
+        """
+        live_mode = os.environ.get("ELAL_LIVE_FETCH_ENABLED", "0").strip() in ("1", "true", "TRUE")
+        if live_mode:
+            live_fetched = self._try_live_http_fetch(
+                expanded_destinations=expanded_destinations,
+                start_date=start_date,
+                end_date=end_date,
+                origin=origin,
+            )
+            live_source_url = f"{self.base_url.rstrip('/')}#live"
+            for r in live_fetched:
+                r.source_url = live_source_url
+            return live_fetched
+
         now_dt = datetime.now(UTC).replace(microsecond=0)
         fetched_iso = now_dt.isoformat().replace("+00:00", "Z")
         expires_iso = (

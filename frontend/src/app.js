@@ -435,12 +435,27 @@
   function renderProposals() {
     const container = document.getElementById('proposals-container');
     if (!container) return;
+    const isHe = state.locale === 'he';
     if (!state.proposals || state.proposals.length === 0) {
-      container.innerHTML = '<p>לא נמצאו חלופות תואמות. נסה להרחיב את טווח הלילות או ימי הגשר.</p>';
+      const emptyMsg = state.statusMessageHe && isHe
+        ? state.statusMessageHe
+        : state.statusMessageEn && !isHe
+          ? state.statusMessageEn
+          : isHe
+            ? 'אין משיכה של טיסות מהשרת (לא נמצאו טיסות מסונכרנות במסד הנתונים עבור יעד ומועד זה).'
+            : 'No flights fetched from the server for this route and date window.';
+      container.innerHTML = `
+        <div class="proposal-card" style="border-inline-start-color: #ef4444; background: #fef2f2; padding: 18px;">
+          <strong style="color: #991b1b; font-size: 1rem;">
+            ⚠️ ${isHe ? 'אין משיכה של טיסות מהשרת' : 'No Flights Fetched From Server'}
+          </strong>
+          <p style="margin: 6px 0 0 0; font-size: 0.9rem; color: #7f1d1d;">
+            ${emptyMsg}
+          </p>
+        </div>
+      `;
       return;
     }
-
-    const isHe = state.locale === 'he';
     container.innerHTML = state.proposals
       .map((p, idx) => {
         const it = p.itinerary || {};
@@ -638,6 +653,8 @@
 
     const res = await apiSend('POST', '/api/v1/vacations/search', payload);
     state.proposals = res.proposals || [];
+    state.statusMessageHe = res.status_message_he || null;
+    state.statusMessageEn = res.status_message_en || null;
     state.selectedProposalIds = new Set(state.proposals.slice(0, 2).map((p) => p.id));
     renderProposals();
   }
@@ -919,7 +936,7 @@
           start_date: '2027-04-10',
           end_date: '2027-04-28',
           origin: 'TLV',
-          force_refresh: false
+          force_refresh: true
         });
         await runVacationSearch();
       });

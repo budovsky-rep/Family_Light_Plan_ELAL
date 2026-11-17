@@ -3446,6 +3446,34 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         # Verify wallet removal button (`data-remove-wallet`) and automatic family points calculation
         self.assertIn("data-remove-wallet", app_js)
         self.assertIn("recalculateHouseholdPointsFromWallets", app_js)
+        self.assertIn("אין משיכה של טיסות מהשרת", app_js)
+
+        # Verify live-fetch mode (`ELAL_LIVE_FETCH_ENABLED=1`) never returns fictitious flights
+        old_env = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        try:
+            os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
+            live_db, _live_repo = self.make_isolated_env(auto_seed=True)
+            live_client = self.get_client(live_db)
+            live_resp = live_client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "PESACH",
+                    "direct_target_year": 2027,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["MAD"],
+                },
+            )
+            self.assertEqual(live_resp.status_code, 200)
+            live_body = live_resp.json()
+            self.assertEqual(live_body["count"], 0)
+            self.assertEqual(live_body["proposals"], [])
+            self.assertIn("אין משיכה של טיסות מהשרת", str(live_body.get("status_message_he") or ""))
+        finally:
+            if old_env is None:
+                os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            else:
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_env
 
     def test_f31_4_all_eight_component_files_exist_and_implement_ui_zones(self) -> None:
         comp_root = PROJECT_ROOT / "frontend" / "src" / "components"

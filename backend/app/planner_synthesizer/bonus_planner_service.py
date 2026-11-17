@@ -1858,6 +1858,11 @@ class BonusVacationPlannerService:
         if dest_iata not in DESTINATION_CATALOG:
             return out_rows, in_rows
 
+        # In production live mode (`ELAL_LIVE_FETCH_ENABLED=1`), NEVER fabricate fictitious
+        # bonus flights when no real award seats exist in the database.
+        if self.repository.is_live_fetch_mode():
+            return out_rows, in_rows
+
         meta = DESTINATION_CATALOG[dest_iata]
         if not include_sundor and str(meta.get("operating_carrier")) == "2U":
             return out_rows, in_rows
@@ -1947,6 +1952,35 @@ class BonusVacationPlannerService:
 
         selected: list[CandidateVacationWindow] = []
         seen_pairs: set[tuple[date, date]] = set()
+
+        # 0. In live mode (or when real award flights exist in DB), include any candidate windows
+        #    whose departure & return dates match actual available award flights in SQLite!
+        if self.repository.is_live_fetch_mode():
+            min_d = min(w.start_date for w in all_windows)
+            max_d = max(w.end_date for w in all_windows)
+            cached_awards = self.repository.get_cached_elal_bonus(
+                destinations=expanded_destinations,
+                start_date=min_d,
+                end_date=max_d,
+                include_expired=False,
+            )
+            out_dates = {
+                a.flight_date
+                for a in cached_awards
+                if a.direction == "OUTBOUND"
+                and (a.economy_award_seats > 0 or a.premium_award_seats > 0 or a.business_award_seats > 0)
+            }
+            in_dates = {
+                a.flight_date
+                for a in cached_awards
+                if a.direction == "INBOUND"
+                and (a.economy_award_seats > 0 or a.premium_award_seats > 0 or a.business_award_seats > 0)
+            }
+            for w in all_windows:
+                pair = (w.start_date, w.end_date)
+                if (w.start_date in out_dates or w.end_date in in_dates) and pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    selected.append(w)
 
         # 1. Include any canonical benchmark windows present in `all_windows`
         for w in all_windows:
