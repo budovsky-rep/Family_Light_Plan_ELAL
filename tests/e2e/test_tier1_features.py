@@ -3482,6 +3482,59 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertEqual(live_body["count"], 0)
             self.assertEqual(live_body["proposals"], [])
             self.assertIn("אין משיכה של טיסות מהשרת", str(live_body.get("status_message_he") or ""))
+
+            # Now simulate the Chrome Extension pushing the real MAD table rows (2027-04-26 -> 2027-05-05)
+            sync_resp = live_client.post(
+                "/api/v1/elal-bonus/sync",
+                json={
+                    "origin": "TLV",
+                    "destinations": ["MAD"],
+                    "start_date": "2027-04-20",
+                    "end_date": "2027-05-06",
+                    "force_refresh": True,
+                    "rbd_payload": [
+                        {
+                            "destination_iata": "MAD",
+                            "direction": "OUTBOUND",
+                            "flight_number": "LY0395",
+                            "flight_date": "2027-04-26",
+                            "economy_seats": 2,
+                            "premium_seats": 0,
+                            "business_seats": 0,
+                        },
+                        {
+                            "destination_iata": "MAD",
+                            "direction": "INBOUND",
+                            "flight_number": "LY0398",
+                            "flight_date": "2027-05-05",
+                            "economy_seats": 2,
+                            "premium_seats": 0,
+                            "business_seats": 0,
+                        },
+                    ],
+                },
+            )
+            self.assertEqual(sync_resp.status_code, 200)
+            self.assertEqual(sync_resp.json()["records_synced"], 2)
+
+            after_sync_resp = live_client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-04-26",
+                    "specific_return_date": "2027-05-05",
+                    "flex_days_plus_minus": 0,
+                    "min_trip_nights": 8,
+                    "max_trip_nights": 10,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["MAD"],
+                },
+            )
+            self.assertEqual(after_sync_resp.status_code, 200)
+            after_body = after_sync_resp.json()
+            self.assertGreater(after_body["count"], 0)
+            self.assertEqual(after_body["proposals"][0]["itinerary"]["departure_date"], "2027-04-26")
+            self.assertEqual(after_body["proposals"][0]["itinerary"]["return_date"], "2027-05-05")
         finally:
             if old_env is None:
                 os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)

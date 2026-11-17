@@ -418,6 +418,18 @@ class ElAlRbdDataClientAdapter:
 
         grouped: dict[tuple[str, str, date, str], dict[str, Any]] = {}
 
+        # Ensure existing live rows for the same (dest_iata, direction, flight_date, flight_number)
+        # preserve seats from other cabins when syncing Economy, then Premium, then Business separately!
+        existing_live_by_key: dict[tuple[str, str, date, str], ElAlBonusAvailability] = {}
+        try:
+            cached_existing = self.repository.get_cached_elal_bonus(include_expired=False)
+            for ex in cached_existing:
+                if "#live" in str(ex.source_url or ""):
+                    ex_dest = ex.destination_iata if ex.direction == "OUTBOUND" else ex.origin_iata
+                    existing_live_by_key[(ex_dest, ex.direction, ex.flight_date, ex.flight_number)] = ex
+        except Exception:
+            pass
+
         def _merge_flight_record(
             orig_iata: str,
             dest_iata: str,
@@ -439,6 +451,7 @@ class ElAlRbdDataClientAdapter:
                 clean_num = f"LY{int(clean_num[2:].strip()):03d}"
 
             key = (route_dest, direction, f_date, clean_num)
+            prev = existing_live_by_key.get(key)
             entry = grouped.setdefault(
                 key,
                 {
@@ -446,11 +459,11 @@ class ElAlRbdDataClientAdapter:
                     "direction": direction,
                     "flight_date": f_date,
                     "flight_number": clean_num,
-                    "econ_seats": 0,
-                    "prem_seats": 0,
-                    "biz_seats": 0,
-                    "dep_time": dep_hhmm,
-                    "arr_time": arr_hhmm,
+                    "econ_seats": prev.economy_award_seats if prev else 0,
+                    "prem_seats": prev.premium_award_seats if prev else 0,
+                    "biz_seats": prev.business_award_seats if prev else 0,
+                    "dep_time": dep_hhmm or (prev.departure_time_local if prev else None),
+                    "arr_time": arr_hhmm or (prev.arrival_time_local if prev else None),
                 },
             )
             if dep_hhmm:
@@ -458,9 +471,9 @@ class ElAlRbdDataClientAdapter:
             if arr_hhmm:
                 entry["arr_time"] = arr_hhmm
             rbd_u = rbd_code.strip().upper()
-            if rbd_u in CLASSIC_AWARD_RBDS["BUSINESS"]:
+            if rbd_u in CLASSIC_AWARD_RBDS["BUSINESS"] or rbd_u == "BUSINESS":
                 entry["biz_seats"] = max(entry["biz_seats"], seat_cnt)
-            elif rbd_u in CLASSIC_AWARD_RBDS["PREMIUM"]:
+            elif rbd_u in CLASSIC_AWARD_RBDS["PREMIUM"] or rbd_u == "PREMIUM":
                 entry["prem_seats"] = max(entry["prem_seats"], seat_cnt)
             else:
                 entry["econ_seats"] = max(entry["econ_seats"], seat_cnt)
