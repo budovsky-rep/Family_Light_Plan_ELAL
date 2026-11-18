@@ -918,8 +918,14 @@ class ElAlRbdDataClientAdapter:
                 )
                 row.flycard_promo_active = False
                 if route_dest in DESTINATION_CATALOG:
+                    cat_meta = DESTINATION_CATALOG[route_dest]
                     row.economy_points_per_pax = compute_live_seasonal_economy_points(
                         route_dest, row.flight_date
+                    )
+                    row.taxes_usd_per_pax = float(
+                        cat_meta["outbound_taxes_usd"]
+                        if row.direction == "OUTBOUND"
+                        else cat_meta["inbound_taxes_usd"]
                     )
 
             # 5. Preferred cabins filter (when explicitly specified by caller)

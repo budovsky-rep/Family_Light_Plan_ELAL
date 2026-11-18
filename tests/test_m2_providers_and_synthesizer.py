@@ -1261,6 +1261,53 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(len(inf_allocs), 1)
         self.assertEqual(inf_allocs[0].points_used, 0)
 
+        # Verify live-only DB never fabricates a synthetic return flight on 2027-04-28 when no live inbound exists
+        live_only_repo = SQLiteRepository(":memory:", auto_seed=False)
+        live_only_cal = MoECalendarService(live_only_repo)
+        live_only_max = VacationMaximizerEngine(live_only_cal)
+        live_only_adapter = ElAlRbdDataClientAdapter(live_only_repo)
+        live_only_planner = BonusVacationPlannerService(
+            repository=live_only_repo,
+            calendar_service=live_only_cal,
+            maximizer=live_only_max,
+            elal_adapter=live_only_adapter,
+            commercial_adapter=AllAirlinesSearchAdapter(live_only_repo),
+        )
+        live_only_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "LCA",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY5131",
+                    "flight_date": "2027-04-20",
+                    "economy_seats": 2,
+                    "dep_time": "06:30",
+                    "arr_time": "07:40",
+                },
+                {
+                    "destination_iata": "LCA",
+                    "direction": "INBOUND",
+                    "flight_number": "LY5132",
+                    "flight_date": "2027-04-26",
+                    "economy_seats": 2,
+                    "dep_time": "08:45",
+                    "arr_time": "09:50",
+                },
+            ]
+        )
+        no_return_props = live_only_planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA"],
+                "specific_departure_date": "2027-04-20",
+                "specific_return_date": "2027-04-28",
+                "flex_days_plus_minus": 0,
+            },
+            profile=prof_4,
+        )
+        self.assertEqual(len(no_return_props), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

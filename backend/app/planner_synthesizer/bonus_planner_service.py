@@ -2298,7 +2298,39 @@ class BonusVacationPlannerService:
             if isinstance(query.airline_selection_mode, Enum)
             else str(query.airline_selection_mode).strip().upper()
         )
+        live_only_inventory = self._has_live_only_inventory()
         n_seated, _ = FamilyBaggageNormalizer.count_seated_and_lap_passengers(active_profile)
+
+        # In live-synced DB mode, check which destinations have both outbound and inbound live inventory
+        # across the candidate search span so we never invent synthetic return dates (e.g. 2027-04-28 LCA)
+        # when real bidirectional flights exist, while still allowing one-way fallback if a route only has 1 direction.
+        dests_with_bidirectional_live: set[str] = set()
+        if live_only_inventory and candidate_windows:
+            min_cand = min(w.start_date for w in candidate_windows)
+            max_cand = max(w.end_date for w in candidate_windows)
+            for d_check in active_destinations:
+                has_out = bool(
+                    self.elal_adapter.get_award_availability(
+                        destinations=[d_check],
+                        start_date=min_cand,
+                        end_date=max_cand,
+                        origin=query.origin_iata,
+                        include_sundor_flights=query.include_sundor_flights,
+                        direction="OUTBOUND",
+                    )
+                )
+                has_in = bool(
+                    self.elal_adapter.get_award_availability(
+                        destinations=[d_check],
+                        start_date=min_cand,
+                        end_date=max_cand,
+                        origin=query.origin_iata,
+                        include_sundor_flights=query.include_sundor_flights,
+                        direction="INBOUND",
+                    )
+                )
+                if has_out and has_in:
+                    dests_with_bidirectional_live.add(d_check)
 
         raw_proposals: list[VacationOptionProposal] = []
 
@@ -2375,6 +2407,13 @@ class BonusVacationPlannerService:
                     out_aw = out_awards[0] if out_awards else None
                     in_aw = in_awards[0] if in_awards else None
                     if out_aw is None and in_aw is None:
+                        continue
+                    # In live-synced DB mode, when a destination has real bidirectional inventory in the
+                    # search span, never fabricate a missing outbound/inbound leg on dates with no live flight
+                    # (e.g. avoids inventing LY412 on 2027-04-28 when real returns exist on 2027-04-26).
+                    if dest_iata in dests_with_bidirectional_live and (
+                        out_aw is None or in_aw is None
+                    ):
                         continue
 
                     # Evaluate all 6 bonus strategies on (out_aw, in_aw)
