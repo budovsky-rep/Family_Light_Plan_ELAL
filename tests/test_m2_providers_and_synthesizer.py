@@ -1150,6 +1150,117 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         for p_other in non_elal:
             self.assertIsNone(p_other.itinerary.elal_google_flights_url)
 
+    def test_infant_age_reclassification_live_no_tuesday_discount_and_two_plus_banner_flag(
+        self,
+    ) -> None:
+        """21. Verify:
+        (a) Editing a child's age to 1 with stale `CHILD`/`YOUTH` type auto-reclassifies to `INFANT_LAP` (0 pts, no seat consumed).
+        (b) Live-synced (`#live`) flights on Tuesdays (`2027-04-20` Pesach LCA) do NOT apply 50% Tuesday FlyCard discounts and reflect peak seasonal Classic rates (`9,000` one-way vs `7,500` off-peak).
+        (c) 2 adults + 1 child (age 5) + 1 infant (age 1) = 3 seated passengers -> `requires_two_plus_seat_verification=True` (54,000 pts total, not 45,000), whereas 2 adults + 1 infant (age 1) = 2 seated passengers -> `requires_two_plus_seat_verification=False` (36,000 pts total).
+        """
+        from backend.app.schemas.domain import FamilyProfile
+
+        iso_repo = SQLiteRepository(":memory:", auto_seed=True)
+        iso_cal = MoECalendarService(iso_repo)
+        iso_max = VacationMaximizerEngine(iso_cal)
+        iso_adapter = ElAlRbdDataClientAdapter(iso_repo)
+        iso_planner = BonusVacationPlannerService(
+            repository=iso_repo,
+            calendar_service=iso_cal,
+            maximizer=iso_max,
+            elal_adapter=iso_adapter,
+            commercial_adapter=AllAirlinesSearchAdapter(iso_repo),
+        )
+
+        # Import live Tuesday outbound (2027-04-20) + Monday inbound (2027-04-26) + off-peak Feb row for LCA
+        imported = iso_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "LCA",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY5131",
+                    "flight_date": "2027-04-20",  # Tuesday in Pesach
+                    "economy_seats": 2,
+                    "dep_time": "06:30",
+                    "arr_time": "07:40",
+                },
+                {
+                    "destination_iata": "LCA",
+                    "direction": "INBOUND",
+                    "flight_number": "LY5132",
+                    "flight_date": "2027-04-26",
+                    "economy_seats": 2,
+                    "dep_time": "08:45",
+                    "arr_time": "09:50",
+                },
+                {
+                    "destination_iata": "LCA",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY411",
+                    "flight_date": "2027-02-09",  # Tuesday off-peak
+                    "economy_seats": 2,
+                    "dep_time": "07:30",
+                    "arr_time": "08:35",
+                },
+            ]
+        )
+        by_fn = {r.flight_number: r for r in imported}
+        self.assertFalse(by_fn["LY5131"].flycard_promo_active)
+        self.assertEqual(by_fn["LY5131"].economy_points_per_pax, 9000)
+        self.assertFalse(by_fn["LY411"].flycard_promo_active)
+        self.assertEqual(by_fn["LY411"].economy_points_per_pax, 7500)
+
+        # Family matching user's screenshot: 2 adults + child #1 (age 1 with stale 'CHILD' type!) + child #2 (age 5)
+        prof_4 = FamilyProfile.from_dict(
+            {
+                **self.default_profile.to_dict(),
+                "adults_count": 2,
+                "children": [
+                    {
+                        "id": "ch-1",
+                        "child_name": "ילד 1",
+                        "child_age_years": 1,
+                        "passenger_Current_type": "CHILD",  # stale type before age edit fix!
+                        "framework_type": "DAYCARE_SUPERVISED",
+                    },
+                    {
+                        "id": "ch-2",
+                        "child_name": "ילד 2",
+                        "child_age_years": 5,
+                        "passenger_Current_type": "CHILD",
+                        "framework_type": "MUNICIPAL_GAN",
+                    },
+                ],
+            }
+        )
+        self.assertEqual(prof_4.children[0].passenger_Current_type, "INFANT_LAP")
+
+        props = iso_planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA"],
+                "specific_departure_date": "2027-04-20",
+                "specific_return_date": "2027-04-26",
+                "flex_days_plus_minus": 0,
+            },
+            profile=prof_4,
+        )
+        full_bonus = [
+            p
+            for p in props
+            if p.itinerary and p.itinerary.fulfillment_strategy.value == "FULL_BONUS_SAME_CABIN"
+        ]
+        self.assertGreater(len(full_bonus), 0)
+        it4 = full_bonus[0].itinerary
+        assert it4 is not None
+        # 3 seated passengers * (9,000 + 9,000) = 54,000 pts; infant (age 1) = 0 pts
+        self.assertEqual(it4.total_matmid_points, 54000)
+        self.assertTrue(it4.requires_two_plus_seat_verification)
+        inf_allocs = [a for a in it4.family_ticket_allocation if a.passenger_id == "CHILD_1"]
+        self.assertEqual(len(inf_allocs), 1)
+        self.assertEqual(inf_allocs[0].points_used, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

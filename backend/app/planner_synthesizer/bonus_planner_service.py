@@ -210,9 +210,13 @@ def _build_passenger_specs(profile: FamilyProfile) -> list[_PassengerSpec]:
     for j, child in enumerate(profile.children or [], start=1):
         pid = f"CHILD_{j}"
         age = int(child.child_age_years)
-        f_type = str(
-            child.passenger_Current_type or classify_passenger_type(age)
-        ).upper()
+        raw_f_type = str(child.passenger_Current_type or "").upper()
+        if age < 2:
+            f_type = "INFANT_SEAT" if raw_f_type == "INFANT_SEAT" else "INFANT_LAP"
+        elif age <= 11:
+            f_type = "CHILD"
+        else:
+            f_type = "YOUTH"
         req_seat = f_type != "INFANT_LAP"
         under_12 = (age < 12) or (f_type in ("INFANT_LAP", "INFANT_SEAT", "CHILD"))
         c_name = child.child_name or f"ילד {j}"
@@ -2010,6 +2014,7 @@ class BonusVacationPlannerService:
         if live_only or any("#live" in str(r.source_url or "") for r in out_rows + in_rows):
             out_rows.sort(
                 key=lambda r: (
+                    0 if "#live" in str(r.source_url or "") else 1,
                     -(r.economy_award_seats + r.premium_award_seats + r.business_award_seats),
                     -r.premium_award_seats,
                     -r.economy_award_seats,
@@ -2018,6 +2023,7 @@ class BonusVacationPlannerService:
             )
             in_rows.sort(
                 key=lambda r: (
+                    0 if "#live" in str(r.source_url or "") else 1,
                     -(r.economy_award_seats + r.premium_award_seats + r.business_award_seats),
                     -r.premium_award_seats,
                     -r.economy_award_seats,

@@ -54,6 +54,37 @@ CLASSIC_AWARD_RBDS: dict[str, tuple[str, ...]] = {
     "BUSINESS": ("I", "W"),
 }
 
+
+def is_elal_peak_award_season(flight_date: date) -> bool:
+    """Return True when `flight_date` falls within El Al's peak / holiday Classic Award windows
+    (Pesach, Shavuot, Summer school break Jun 20 - Aug 31, High Holidays / Sukkot, Hanukkah / late Dec).
+    """
+    m, d = flight_date.month, flight_date.day
+    if m == 4 and 8 <= d <= 30:
+        return True
+    if m == 6 and d >= 6:
+        return True
+    if m in (7, 8):
+        return True
+    if m == 9 and d >= 24:
+        return True
+    if m == 10 and d <= 28:
+        return True
+    if m == 12 and d >= 4:
+        return True
+    return False
+
+
+def compute_live_seasonal_economy_points(dest_iata: str, flight_date: date) -> int:
+    """Compute realistic one-way El Al Classic Award Economy points for live-synced (`#live`) rows,
+    without artificial 50% Tuesday FlyCard discounts and with a +20% peak/holiday seasonal adjustment.
+    """
+    meta = DESTINATION_CATALOG.get(dest_iata.strip().upper(), {})
+    base_econ = int(meta.get("economy_points", 15000))
+    if is_elal_peak_award_season(flight_date):
+        return int(round((base_econ * 1.20) / 250.0) * 250)
+    return base_econ
+
 COMMERCIAL_REVENUE_RBDS: dict[str, tuple[str, ...]] = {
     "ECONOMY": ("Y", "S", "M", "Q", "B", "H", "V", "N", "K", "L", "T", "O", "G"),
     "PREMIUM": ("W", "Q", "B", "P"),
@@ -388,9 +419,10 @@ class ElAlRbdDataClientAdapter:
                             econ_seats=econ_cnt,
                             prem_seats=prem_cnt,
                             biz_seats=biz_cnt,
-                            flycard_promo=(f_date.weekday() == 1),
+                            flycard_promo=False,
                             fetched_iso=fetched_iso,
                             expires_iso=expires_iso,
+                            custom_econ_pts=compute_live_seasonal_economy_points(dest, f_date),
                         )
                         live_rows.append(row)
             except Exception:
@@ -591,12 +623,15 @@ class ElAlRbdDataClientAdapter:
                 econ_seats=info["econ_seats"],
                 prem_seats=info["prem_seats"],
                 biz_seats=info["biz_seats"],
-                flycard_promo=(info["flight_date"].weekday() == 1),
+                flycard_promo=False,
                 fetched_iso=fetched_iso,
                 expires_iso=expires_iso,
                 custom_flight_num=info["flight_number"],
                 custom_dep_time=info.get("dep_time"),
                 custom_arr_time=info.get("arr_time"),
+                custom_econ_pts=compute_live_seasonal_economy_points(
+                    info["dest_iata"], info["flight_date"]
+                ),
             )
             r.source_url = live_source_url
             rows.append(r)
@@ -874,6 +909,18 @@ class ElAlRbdDataClientAdapter:
             row.economy_seats_is_two_plus = row.economy_award_seats >= 2
             row.premium_seats_is_two_plus = row.premium_award_seats >= 2
             row.business_seats_is_two_plus = row.business_award_seats >= 2
+
+            # Normalize existing live-synced (`#live`) rows in DB so they never carry
+            # synthetic Tuesday 50% FlyCard discounts and reflect peak/holiday seasonal rates
+            if "#live" in str(row.source_url or ""):
+                route_dest = (
+                    row.destination_iata if row.direction == "OUTBOUND" else row.origin_iata
+                )
+                row.flycard_promo_active = False
+                if route_dest in DESTINATION_CATALOG:
+                    row.economy_points_per_pax = compute_live_seasonal_economy_points(
+                        route_dest, row.flight_date
+                    )
 
             # 5. Preferred cabins filter (when explicitly specified by caller)
             if norm_cabins:

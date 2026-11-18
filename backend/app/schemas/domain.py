@@ -414,6 +414,17 @@ class ChildFramework(_DomainModelBase):
             raise ValueError(
                 f"Invalid passenger_Current_type: {self.passenger_Current_type!r}"
             )
+        else:
+            # Keep passenger_Current_type strictly aligned with child_age_years when age is edited
+            if self.child_age_years < 2 and self.passenger_Current_type not in (
+                "INFANT_LAP",
+                "INFANT_SEAT",
+            ):
+                self.passenger_Current_type = "INFANT_LAP"
+            elif 2 <= self.child_age_years <= 11 and self.passenger_Current_type != "CHILD":
+                self.passenger_Current_type = "CHILD"
+            elif self.child_age_years >= 12 and self.passenger_Current_type != "YOUTH":
+                self.passenger_Current_type = "YOUTH"
 
         if self.framework_type is None or self.framework_type == "":
             self.framework_type = None

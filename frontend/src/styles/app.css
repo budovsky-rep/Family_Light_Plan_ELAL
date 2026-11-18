@@ -1075,6 +1075,21 @@ input[type="date"] {
   white-space: nowrap;
 }
 
+.two-plus-verify-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-inline-start: 4px solid #f59e0b;
+  border-radius: 10px;
+  padding-block: 9px;
+  padding-inline: 13px;
+  font-size: 0.81rem;
+  line-height: 1.5;
+  color: #78350f;
+}
+
 /* Legacy Mobile Bottom Navigation Bar — Hidden in Desktop Layout */
 .mobile-bottom-nav {
   display: none !important;

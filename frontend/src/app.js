@@ -704,17 +704,46 @@
             `;
           }
           const allocList = it.family_ticket_allocation || it.passenger_allocations || [];
+          const seatedCount = allocList.filter((a) => {
+            const pts = Number(a.points_used ?? a.points_charged ?? 0);
+            const cash = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
+            const tax = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
+            return pts > 0 || cash > 0 || tax > 0;
+          }).length;
+          const twoPlusVerifyBannerHtml = it.requires_two_plus_seat_verification
+            ? `
+              <div class="two-plus-verify-banner">
+                <strong>ℹ️ ${isHe ? `שימו לב למכסת 2+ מושבי בונוס קלאסי באל על (${seatedCount} מושבים נדרשים):` : `Note on EL AL 2+ Classic Award Seat Cap (${seatedCount} seats needed):`}</strong>
+                <span>
+                  ${
+                    isHe
+                      ? `מחשבון הזמינות של אל על מאשר שיש לפחות 2 מושבי בונוס קלאסי בטיסה זו (המקסימום שהמחשבון חושף). אם בחיפוש באתר אל על ל-${seatedCount} מושבים יחד מופיע מחיר נקודות גבוה של Cash & Points, חפשו באתר אל על עבור 2 נוסעים בלבד למימוש הבונוס הקלאסי המוזל והשלימו את היתר בהזמנה נפרדת (או בחרו בהצעת "שילוב בונוס + מזומן").`
+                      : `EL AL's calculator confirms at least 2 Classic Award seats on this flight (its maximum reported indicator). If searching for ${seatedCount} seated passengers together on elal.com switches pricing to higher Cash & Points rates, search for 2 passengers to claim the Classic Award rate and book the remaining passenger separately.`
+                  }
+                </span>
+              </div>
+            `
+            : '';
         const allocRows = allocList
           .map(
-            (a, aIdx) => `
+            (a, aIdx) => {
+              const ptsVal = Number(a.points_used ?? a.points_charged ?? 0);
+              const taxVal = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
+              const cashVal = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
+              const isLapInfant = ptsVal === 0 && taxVal === 0 && cashVal === 0 && String(a.rbd_code || '') !== 'Y';
+              const modeLabel = isLapInfant
+                ? (isHe ? 'תינוק ללא מושב — על הברכיים (INFANT_LAP)' : 'Lap Infant — No Separate Seat (INFANT_LAP)')
+                : `${a.ticket_mode || a.outbound_ticket_kind || ''} (${a.cabin_class || a.outbound_cabin || 'ECONOMY'})`;
+              return `
               <tr>
                 <td>${formatGenericPassengerLabel(a, aIdx)}</td>
-                <td><code>${a.program_code || a.program_used || 'CASH'}</code></td>
-                <td>${a.ticket_mode || a.outbound_ticket_kind || ''} (${a.cabin_class || a.outbound_cabin || 'ECONOMY'})</td>
-                <td dir="ltr">${Number(a.points_used ?? a.points_charged ?? 0).toLocaleString()} pts</td>
-                <td dir="ltr">$${Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0).toFixed(0)} + $${Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0).toFixed(0)}</td>
+                <td><code>${isLapInfant ? 'INFANT' : (a.program_code || a.program_used || 'CASH')}</code></td>
+                <td>${modeLabel}</td>
+                <td dir="ltr">${ptsVal.toLocaleString()} pts</td>
+                <td dir="ltr">$${taxVal.toFixed(0)} + $${cashVal.toFixed(0)}</td>
               </tr>
-            `
+            `;
+            }
           )
           .join('');
 
@@ -827,6 +856,8 @@
             </div>
 
             ${weatherStripHtml}
+
+            ${twoPlusVerifyBannerHtml}
 
             <p style="margin: 0; font-size: 0.88rem; color: var(--text-secondary);">
               ${summaryText}
@@ -1114,6 +1145,16 @@
         if (!state.profile) return;
         state.profile.adults_count = Number(document.getElementById('prof-adults-count').value || 2);
         state.profile.annual_pto_budget = Number(document.getElementById('prof-pto-budget').value || 18);
+        (state.profile.children || []).forEach((ch) => {
+          const ageNum = Number(ch.child_age_years ?? 6);
+          if (ageNum < 2) {
+            if (ch.passenger_Current_type !== 'INFANT_SEAT') ch.passenger_Current_type = 'INFANT_LAP';
+          } else if (ageNum <= 11) {
+            ch.passenger_Current_type = 'CHILD';
+          } else {
+            ch.passenger_Current_type = 'YOUTH';
+          }
+        });
         recalculateHouseholdPointsFromWallets();
         state.profile = await apiSend('PUT', '/api/v1/profile', state.profile);
         renderProfileControls();
@@ -1131,6 +1172,7 @@
           id: `child-custom-${Date.now()}`,
           child_name_he: `ילד/ה ${nextIdx}`,
           child_age_years: defaultAge,
+          passenger_Current_type: 'CHILD',
           framework_type: state.dateSelectionMode === 'SPECIFIC_DATES' ? null : suggestFrameworkByAge(defaultAge),
           school_week_days: 5,
           holiday_extension_mode: 'NITZANIM_FULL_WITH_JULY',
@@ -1190,6 +1232,8 @@
         const idx = Number(target.getAttribute('data-child-age'));
         const newAge = Number(target.value || 0);
         state.profile.children[idx].child_age_years = newAge;
+        state.profile.children[idx].passenger_Current_type =
+          newAge < 2 ? 'INFANT_LAP' : newAge <= 11 ? 'CHILD' : 'YOUTH';
         if (state.dateSelectionMode !== 'SPECIFIC_DATES') {
           state.profile.children[idx].framework_type = suggestFrameworkByAge(newAge);
         }
