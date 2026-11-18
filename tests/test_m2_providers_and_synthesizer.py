@@ -1036,6 +1036,124 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(out_rows[0].economy_award_seats, 2)
         self.assertEqual(out_rows[0].premium_award_seats, 2)
 
+    def test_elal_booking_deep_link_url_flight_preselection_and_non_elal_exclusion(
+        self,
+    ) -> None:
+        """20. Verify El Al `booking_deep_link_url` pre-selects proposed LY flights without forcing login (`bonus=false`),
+        uses 0-based month indices, maps passenger ages (`ADT`/`CHD`/`INF`), supports Open-Jaw (`journeyType=2`),
+        and excludes non-El Al carriers.
+        """
+        from urllib.parse import parse_qs, urlparse
+        from backend.app.schemas.domain import FamilyProfile
+
+        # Custom family: 2 adults + 1 teenager (14 -> ADT) + 1 child (7 -> CHD) + 1 lap infant (1 -> INF)
+        mixed_profile = FamilyProfile.from_dict(
+            {
+                **self.default_profile.to_dict(),
+                "adults_count": 2,
+                "children": [
+                    {
+                        "id": "c-teen",
+                        "child_name": "נועה",
+                        "child_age_years": 14,
+                        "framework_type": "MIDDLE_SCHOOL_7_9",
+                    },
+                    {
+                        "id": "c-child",
+                        "child_name": "אורי",
+                        "child_age_years": 7,
+                        "framework_type": "ELEMENTARY_1_3",
+                    },
+                    {
+                        "id": "c-inf",
+                        "child_name": "גיל",
+                        "child_age_years": 1,
+                        "passenger_Current_type": "INFANT_LAP",
+                        "framework_type": "DAYCARE_SUPERVISED",
+                    },
+                ],
+            }
+        )
+
+        proposals = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+            },
+            profile=mixed_profile,
+        )
+        self.assertGreater(len(proposals), 0)
+        itin = proposals[0].itinerary
+        assert itin is not None
+        self.assertTrue(itin.is_elal_flight)
+
+        parsed = urlparse(itin.booking_deep_link_url)
+        self.assertEqual(parsed.scheme, "https")
+        self.assertEqual(parsed.netloc, "booking.elal.com")
+        self.assertEqual(parsed.path, "/booking/flights")
+
+        qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        self.assertEqual(qs["agentPCCode"], "GGL")
+        self.assertEqual(qs["bonus"], "false")
+        self.assertEqual(qs["journeyType"], "1")
+        self.assertEqual(qs["origin"], "TLV")
+        self.assertEqual(qs["destination"], "FCO")
+        self.assertEqual(qs["departDay"], "11")
+        self.assertEqual(qs["departMonth"], "3")  # April -> 0-based index 3
+        self.assertEqual(qs["returnDay"], "18")
+        self.assertEqual(qs["returnMonth"], "3")
+        self.assertEqual(qs["airlineOutSegment1"], "LY")
+        self.assertEqual(qs["airlineInSegment1"], "LY")
+        out_digits = "".join(ch for ch in itin.outbound_legs[0].flight_number if ch.isdigit()).lstrip("0")
+        in_digits = "".join(ch for ch in itin.inbound_legs[0].flight_number if ch.isdigit()).lstrip("0")
+        self.assertEqual(qs["flightNumberOutSegment1"], out_digits)
+        self.assertEqual(qs["flightNumberInSegment1"], in_digits)
+        self.assertEqual(qs["ADT"], "3")  # 2 parents + 14yo youth
+        self.assertEqual(qs["CHD"], "1")  # 7yo child
+        self.assertEqual(qs["INF"], "1")  # 1yo lap infant
+
+        # Verify Open-Jaw sets journeyType=2 and returnFrom != destination
+        oj_proposals = [
+            p
+            for p in self.planner.search_vacations(
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["MXP"],
+                    "specific_departure_date": "2027-04-11",
+                    "specific_return_date": "2027-04-18",
+                    "flex_days_plus_minus": 0,
+                },
+                profile=self.default_profile,
+            )
+            if p.itinerary and p.itinerary.return_origin_iata != p.itinerary.destination_iata
+        ]
+        for oj_p in oj_proposals:
+            oj_qs = {k: v[0] for k, v in parse_qs(urlparse(oj_p.itinerary.booking_deep_link_url).query).items()}
+            self.assertEqual(oj_qs["journeyType"], "2")
+            self.assertEqual(oj_qs["returnFrom"], oj_p.itinerary.return_origin_iata)
+
+        # Verify non-El Al flights in ALL_AIRLINES mode do NOT get a booking.elal.com link
+        all_air_props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "ALL_AIRLINES",
+                "destination_iatas": ["FCO", "ATH"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+            },
+            profile=self.default_profile,
+        )
+        non_elal = [p for p in all_air_props if p.itinerary and not p.itinerary.is_elal_flight]
+        self.assertGreater(len(non_elal), 0)
+        for p_other in non_elal:
+            self.assertNotIn("booking.elal.com", p_other.itinerary.booking_deep_link_url)
+
 
 if __name__ == "__main__":
     unittest.main()

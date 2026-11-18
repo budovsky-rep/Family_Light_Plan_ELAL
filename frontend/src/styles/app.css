@@ -1029,6 +1029,52 @@ input[type="date"] {
   font-weight: 700;
 }
 
+/* Direct EL AL Flight Booking Action & Leg Telemetry Badges */
+.btn-elal-book {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding-block: 6px;
+  padding-inline: 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #082038 0%, #0369a1 100%);
+  color: #ffffff;
+  border: 1px solid #0284c7;
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 700;
+  box-shadow: 0 3px 10px rgba(3, 105, 161, 0.22);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
+}
+
+.btn-elal-book:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 5px 14px rgba(3, 105, 161, 0.3);
+}
+
+.route-endpoint-end {
+  align-items: flex-end;
+}
+
+.route-flight-meta {
+  display: inline-block;
+  margin-block-start: 2px;
+  padding-block: 2px;
+  padding-inline: 7px;
+  border-radius: 6px;
+  background: #e0f2fe;
+  border: 1px solid #bae6fd;
+  color: #075985;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Legacy Mobile Bottom Navigation Bar — Hidden in Desktop Layout */
 .mobile-bottom-nav {
   display: none !important;

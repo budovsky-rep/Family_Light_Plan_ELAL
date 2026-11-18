@@ -552,6 +552,87 @@
       .join('');
   }
 
+  function extractElAlFlightDigitsJs(flightNum, fallbackDigits) {
+    const raw = String(flightNum || '').trim();
+    const m = raw.match(/(\d+)/);
+    if (!m) return fallbackDigits;
+    const stripped = m[1].replace(/^0+/, '');
+    return stripped || '0';
+  }
+
+  function resolveElAlBookingUrl(it, isHe) {
+    if (!it || !it.is_elal_flight) return null;
+    const langCode = isHe ? 'he' : 'en';
+    const existingUrl = String(it.booking_deep_link_url || '').trim();
+    if (existingUrl.startsWith('https://booking.elal.com/booking/flights')) {
+      return existingUrl.replace(/([?&])lang=(he|en)\b/i, `$1lang=${langCode}`);
+    }
+
+    // Fallback builder for cached itineraries created prior to DeepLinkResolver upgrade
+    const orig = String(it.origin_iata || 'TLV').toUpperCase();
+    const dest = String(it.destination_iata || 'FCO').toUpperCase();
+    const retOrig = String(it.return_origin_iata || dest).toUpperCase();
+    const journeyType = retOrig === dest ? '1' : '2';
+    const depParts = String(it.departure_date || '2027-04-11').split('-').map(Number);
+    const retParts = String(it.return_date || '2027-04-18').split('-').map(Number);
+    const outLeg = (it.outbound_legs && it.outbound_legs[0]) || {};
+    const inLeg = (it.inbound_legs && it.inbound_legs[0]) || {};
+    const outFn = extractElAlFlightDigitsJs(outLeg.flight_number, '381');
+    const inFn = extractElAlFlightDigitsJs(inLeg.flight_number, '384');
+
+    const prof = state.profile || {};
+    let adt = Math.max(1, Number(prof.adults_count || 2));
+    let chd = 0;
+    let inf = 0;
+    (prof.children || []).forEach((c) => {
+      const age = Number(c.child_age_years ?? 6);
+      const pType = String(c.passenger_Current_type || '').toUpperCase();
+      if (pType === 'INFANT_LAP' || (!pType && age < 2)) {
+        inf += 1;
+      } else if (age < 12 || pType === 'CHILD' || pType === 'INFANT_SEAT') {
+        chd += 1;
+      } else {
+        adt += 1;
+      }
+    });
+    inf = Math.min(inf, adt);
+
+    const params = new URLSearchParams();
+    params.set('agentPCCode', 'GGL');
+    params.set('lang', langCode);
+    params.set('market', 'IL');
+    params.set('journeyType', journeyType);
+    params.set('cabin', 'Economy');
+    params.set('bonus', 'false');
+    params.set('origin', orig);
+    params.set('destination', dest);
+    params.set('departDay', String(depParts[2] || 1));
+    params.set('departMonth', String(Math.max(0, (depParts[1] || 1) - 1)));
+    params.set('airlineOutSegment1', 'LY');
+    params.set('flightNumberOutSegment1', outFn);
+    params.set('rbdOutSegment1', 'Y');
+    params.set('returnFrom', retOrig);
+    params.set('returnTo', orig);
+    params.set('returnDay', String(retParts[2] || 1));
+    params.set('returnMonth', String(Math.max(0, (retParts[1] || 1) - 1)));
+    params.set('airlineInSegment1', 'LY');
+    params.set('flightNumberInSegment1', inFn);
+    params.set('rbdInSegment1', 'Y');
+    params.set('ADT', String(adt));
+    if (chd > 0) params.set('CHD', String(chd));
+    if (inf > 0) params.set('INF', String(inf));
+    return `https://booking.elal.com/booking/flights?${params.toString()}`;
+  }
+
+  function formatLegFlightBadge(leg) {
+    if (!leg || !leg.flight_number) return '';
+    const fn = String(leg.flight_number).trim();
+    const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
+    const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
+    const times = depT && arrT ? ` · ${depT}–${arrT}` : depT ? ` · ${depT}` : '';
+    return `<span class="route-flight-meta">${fn}${times}</span>`;
+  }
+
   function renderProposals() {
     const container = document.getElementById('proposals-container');
     if (!container) return;
@@ -665,6 +746,22 @@
         const summaryText = buildIntuitiveProposalSummary(p);
         const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
         const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
+        const elalBookUrl = resolveElAlBookingUrl(it, isHe);
+        const outLeg = (it.outbound_legs && it.outbound_legs[0]) || null;
+        const inLeg = (it.inbound_legs && it.inbound_legs[0]) || null;
+        const outFlightBadgeHtml = formatLegFlightBadge(outLeg);
+        const inFlightBadgeHtml = formatLegFlightBadge(inLeg);
+        const returnOriginLabel =
+          it.return_origin_iata && it.return_origin_iata !== it.destination_iata
+            ? `${it.destination_iata} / ${it.return_origin_iata}`
+            : it.destination_iata;
+        const elalBookBtnHtml = elalBookUrl
+          ? `
+                <a class="btn-elal-book" href="${elalBookUrl}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת הטיסה המוצעת באתר ההזמנות של אל על (ללא צורך בהתחברות מראש)' : 'Open this proposed flight directly on EL AL Booking'}">
+                  ✈️ ${isHe ? 'להזמנת הטיסה באל על ↗' : 'Book Flight on EL AL ↗'}
+                </a>
+            `
+          : '';
 
         return `
           <article class="proposal-card tier-${tierCode}">
@@ -680,7 +777,8 @@
                   </div>
                 </div>
               </div>
-              <div style="display: flex; gap: 8px; align-items: center;">
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                ${elalBookBtnHtml}
                 <label style="font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 4px; cursor: pointer;">
                   <input type="checkbox" data-compare-id="${p.id}" ${checked} /> ${isHe ? 'השווה חלופה' : 'Compare'}
                 </label>
@@ -695,6 +793,7 @@
               <div class="route-endpoint">
                 <span class="route-iata">${it.origin_iata || 'TLV'}</span>
                 <span class="route-date">${it.departure_date}</span>
+                ${outFlightBadgeHtml}
               </div>
               <div class="route-arc-Track">
                 <span class="route-nights-pill">${it.trip_nights} ${isHe ? 'לילות חופשה' : 'Nights'} · ${stratText}</span>
@@ -706,9 +805,10 @@
                   <span>●</span>
                 </div>
               </div>
-              <div class="route-endpoint">
-                <span class="route-iata">${it.destination_iata}</span>
+              <div class="route-endpoint route-endpoint-end">
+                <span class="route-iata">${returnOriginLabel}</span>
                 <span class="route-date">${it.return_date}</span>
+                ${inFlightBadgeHtml}
               </div>
             </div>
 
