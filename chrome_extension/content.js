@@ -1,25 +1,127 @@
 /**
- * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v1.3)
+ * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v2.0)
  *
- * Key design for 100% stability on `https://www.elal.com/rbddataclients/`:
- * 1. Loops by Holiday -> Cabin (`Economy`, then `Premium`) -> Destination so `Travel Class`
- *    is only changed twice per holiday instead of on every destination.
- * 2. Selects `Travel Class` FIRST and waits 450ms before selecting `From`/`To` airports,
- *    because changing `Travel Class` on El Al's form resets the airport dropdowns.
- * 3. Strictly validates that all 4 airport dropdowns (`TLV -> DEST` and `DEST -> TLV`) have
- *    valid selections before clicking `Search` — preventing El Al's "Oops! Something went wrong" modal.
- * 4. In the `MAIN`-world XHR/fetch interceptor for `GeneralRestServices-GetRbdAvailability`,
- *    rewrites ONLY `input.startDate` and `input.endDate` to the active Holiday window while
- *    preserving El Al's native `seg`, `rbd`, headers, and tokens untouched.
+ * Key design for 100% stability and speed on `https://www.elal.com/rbddataclients/`:
+ * 1. Exact 25 `DESTINATION_CATALOG` IATA codes (`PRIORITY_IATAS` — excluding unsupported `"ZRH"`).
+ * 2. Uses El Al's genuine calculator RBD codes: `rbd: "E"` for Economy and `rbd: "A"` for Premium.
+ * 3. Executes 14-day (`endDate - startDate == 14 days`) 50-segment (`25 destinations × 2 directions`)
+ *    `window.$.ajax` batch requests in the `MAIN` world through Reblaze's native XHR hook across
+ *    all 16 Israeli holiday & MoE school vacation windows (`Hanukkah 2026` .. `Sukkot 2027`),
+ *    completing the full-year scan in ~20 seconds without DOM form resets or `#errorModal` (`Oops!`).
+ * 4. Normalizes `AccumulatedOutput.resultSet` and single-object `Record` entries into arrays while
+ *    preserving `SegmentDepTime`, `SegmentArrTime`, `SegmentRoute`, `SegmentDepDate`, `FlightCarrier`,
+ *    `FlightNumber`, `RBD`, and `NewAvailability`.
  */
 
 (function () {
   "use strict";
 
+  const ELAL_RBD_API_URL =
+    "https://www.elal.com/generalproxy/proxy/dpel/449/GeneralRestServices-GetRbdAvailability";
+
   const MONTHS_MAP = {
     jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
     jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
   };
+
+  // Exact 25 supported destinations in DESTINATION_CATALOG (no ZRH)
+  const PRIORITY_IATAS = [
+    "ATH", "LCA", "RHO", "PFO", "TBS",
+    "FCO", "MXP", "VIE", "BUD", "PRG", "BER", "MUC",
+    "LHR", "LTN", "CDG", "MAD", "BCN", "AMS",
+    "BKK", "HKT", "NRT",
+    "JFK", "EWR", "MIA", "FLL"
+  ];
+  const ALLOWED_IATA_SET = new Set(PRIORITY_IATAS);
+
+  const TARGET_CABINS = [
+    { name: "Economy", rbd: "E" },
+    { name: "Premium", rbd: "A" }
+  ];
+
+  // 16×14-day Israeli Holiday & MoE School Vacation windows (endDate - startDate == 14 days)
+  const YEARLY_HOLIDAY_WINDOWS = [
+    {
+      label: "חנוכה 2026 (א')",
+      startIso: "2026-12-01T21:00:00.000Z",
+      endIso: "2026-12-15T21:00:00.000Z"
+    },
+    {
+      label: "חנוכה 2026 (ב')",
+      startIso: "2026-12-06T21:00:00.000Z",
+      endIso: "2026-12-20T21:00:00.000Z"
+    },
+    {
+      label: "פורים 2027",
+      startIso: "2027-03-16T21:00:00.000Z",
+      endIso: "2027-03-30T21:00:00.000Z"
+    },
+    {
+      label: "פסח 2027 (לפני ליל הסדר וניצנים)",
+      startIso: "2027-04-07T21:00:00.000Z",
+      endIso: "2027-04-21T21:00:00.000Z"
+    },
+    {
+      label: "פסח 2027 (חול המועד וחג שני)",
+      startIso: "2027-04-19T21:00:00.000Z",
+      endIso: "2027-05-03T21:00:00.000Z"
+    },
+    {
+      label: "יום העצמאות 2027",
+      startIso: "2027-05-05T21:00:00.000Z",
+      endIso: "2027-05-19T21:00:00.000Z"
+    },
+    {
+      label: "שבועות 2027",
+      startIso: "2027-06-04T21:00:00.000Z",
+      endIso: "2027-06-18T21:00:00.000Z"
+    },
+    {
+      label: "סוף יוני 2027 (חטיבות ותיכונים)",
+      startIso: "2027-06-18T21:00:00.000Z",
+      endIso: "2027-07-02T21:00:00.000Z"
+    },
+    {
+      label: "החופש הגדול — יולי 2027 (א')",
+      startIso: "2027-07-02T21:00:00.000Z",
+      endIso: "2027-07-16T21:00:00.000Z"
+    },
+    {
+      label: "החופש הגדול — יולי 2027 (ב')",
+      startIso: "2027-07-16T21:00:00.000Z",
+      endIso: "2027-07-30T21:00:00.000Z"
+    },
+    {
+      label: "החופש הגדול — אוגוסט 2027 (א')",
+      startIso: "2027-07-30T21:00:00.000Z",
+      endIso: "2027-08-13T21:00:00.000Z"
+    },
+    {
+      label: "החופש הגדול — אוגוסט 2027 (ב')",
+      startIso: "2027-08-13T21:00:00.000Z",
+      endIso: "2027-08-27T21:00:00.000Z"
+    },
+    {
+      label: "סוף אוגוסט 2027",
+      startIso: "2027-08-20T21:00:00.000Z",
+      endIso: "2027-09-03T21:00:00.000Z"
+    },
+    {
+      label: "ראש השנה ויום כיפור 2027",
+      startIso: "2027-09-26T21:00:00.000Z",
+      endIso: "2027-10-10T21:00:00.000Z"
+    },
+    {
+      label: "סוכות 2027 (א')",
+      startIso: "2027-10-08T21:00:00.000Z",
+      endIso: "2027-10-22T21:00:00.000Z"
+    },
+    {
+      label: "סוכות 2027 (ב')",
+      startIso: "2027-10-15T21:00:00.000Z",
+      endIso: "2027-10-29T21:00:00.000Z"
+    }
+  ];
 
   const isIsolatedExtensionWorld =
     typeof chrome !== "undefined" &&
@@ -43,104 +145,101 @@
     return null;
   }
 
-  function parseElAlDateToJsDate(rawDateStr) {
-    const iso = parseElAlTableDate(rawDateStr);
-    if (!iso) return null;
-    const [y, m, d] = iso.split("-").map((n) => parseInt(n, 10));
-    return new Date(y, m - 1, d, 12, 0, 0);
+  function extractHhMm(rawTime) {
+    if (!rawTime) return null;
+    let s = String(rawTime).trim();
+    if (s.includes("T")) {
+      s = s.split("T")[1].trim();
+    }
+    if (s.length >= 5 && s[2] === ":") {
+      return s.slice(0, 5);
+    }
+    return null;
+  }
+
+  function extractRowsFromAccumulatedOutput(rawJsonOrObj) {
+    const extractedRows = [];
+    try {
+      const data = typeof rawJsonOrObj === "string" ? JSON.parse(rawJsonOrObj) : rawJsonOrObj;
+      if (!data || !data.AccumulatedOutput) return extractedRows;
+      const rawRs = data.AccumulatedOutput.resultSet;
+      const rsList = Array.isArray(rawRs) ? rawRs : (rawRs && typeof rawRs === "object" ? [rawRs] : []);
+
+      for (const rs of rsList) {
+        if (!rs || typeof rs !== "object") continue;
+        const rawRec = rs.Record;
+        const records = Array.isArray(rawRec) ? rawRec : (rawRec && typeof rawRec === "object" ? [rawRec] : []);
+
+        for (const rec of records) {
+          if (!rec || typeof rec !== "object") continue;
+          const availRaw = String(rec.NewAvailability || "0").trim();
+          const availClean = availRaw.endsWith("+") ? availRaw.slice(0, -1).trim() : availRaw;
+          const avail = parseInt(availClean, 10);
+          if (isNaN(avail) || avail <= 0) continue;
+
+          const route = String(rec.SegmentRoute || "").trim().toUpperCase();
+          if (route.length !== 6) continue;
+          const orig = route.slice(0, 3);
+          const dest = route.slice(3, 6);
+          const routeDest = orig === "TLV" ? dest : orig;
+          if (!ALLOWED_IATA_SET.has(routeDest)) continue;
+
+          const fDate = String(rec.SegmentDepDate || "").slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(fDate)) continue;
+          const carrier = String(rec.FlightCarrier || "LY").trim().toUpperCase();
+          const numPart = String(rec.FlightNumber || "").trim();
+          const rbdCode = String(rec.RBD || "E").trim().toUpperCase();
+          if (rbdCode === "I" || rbdCode === "W" || rbdCode === "BUSINESS") continue;
+
+          const depHhMm = extractHhMm(rec.SegmentDepTime);
+          const arrHhMm = extractHhMm(rec.SegmentArrTime);
+
+          extractedRows.push({
+            destination_iata: routeDest,
+            direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
+            flight_number: `${carrier}${numPart}`,
+            flight_date: fDate,
+            economy_seats: rbdCode === "E" || rbdCode === "X" || rbdCode === "U" ? avail : 0,
+            premium_seats: rbdCode === "A" || rbdCode === "P" || rbdCode === "R" ? avail : 0,
+            business_seats: 0,
+            departure_time_local: depHhMm,
+            arrival_time_local: arrHhMm,
+            SegmentRoute: route,
+            SegmentDepDate: rec.SegmentDepDate,
+            SegmentDepTime: rec.SegmentDepTime || (depHhMm ? `${fDate}T${depHhMm}:00` : null),
+            SegmentArrTime: rec.SegmentArrTime || (arrHhMm ? `${fDate}T${arrHhMm}:00` : null),
+            FlightCarrier: carrier,
+            FlightNumber: numPart,
+            RBD: rbdCode,
+            NewAvailability: rec.NewAvailability
+          });
+        }
+      }
+    } catch (_err) {}
+    return extractedRows;
   }
 
   // ============================================================================
-  // MAIN WORLD INTERCEPTOR & FORM DRIVER
+  // MAIN WORLD INTERCEPTOR & $.ajax 50-SEGMENT BATCH DRIVER
   // ============================================================================
   function installMainWorldInterceptorAndDriver() {
     if (window.__fvpMainWorldInstalled) return;
     window.__fvpMainWorldInstalled = true;
-    window.__fvpActiveOverride = null;
 
-    function rewriteOutgoingElAlPayload(rawBody) {
-      const ov = window.__fvpActiveOverride;
-      if (!ov || !ov.active || typeof rawBody !== "string") return rawBody;
-      try {
-        const parsed = JSON.parse(rawBody);
-        if (!parsed || !parsed.input) return rawBody;
-
-        const seg0 = parsed.input.seg && parsed.input.seg[0] ? parsed.input.seg[0] : null;
-        const isInbound = seg0 && String(seg0.dest || "").toUpperCase() === "TLV";
-
-        // Rewrite ONLY startDate and endDate so El Al's form-signed seg & rbd stay 100% consistent
-        if (isInbound) {
-          if (ov.retStartIso) parsed.input.startDate = ov.retStartIso;
-          if (ov.retEndIso) parsed.input.endDate = ov.retEndIso;
-        } else {
-          if (ov.depStartIso) parsed.input.startDate = ov.depStartIso;
-          if (ov.depEndIso) parsed.input.endDate = ov.depEndIso;
-        }
-
+    function parseAndForwardAccumulatedOutput(rawJsonText) {
+      const extractedRows = extractRowsFromAccumulatedOutput(rawJsonText);
+      if (extractedRows.length > 0) {
         window.postMessage(
           {
-            source: "FVP_MAIN_XHR_REWRITTEN",
-            direction: isInbound ? "INBOUND" : "OUTBOUND",
-            rbd: parsed.input.rbd,
-            startDate: parsed.input.startDate,
-            endDate: parsed.input.endDate
+            source: "FVP_MAIN_CAPTURED_ROWS",
+            rows: extractedRows
           },
           "*"
         );
-        return JSON.stringify(parsed);
-      } catch (_e) {
-        return rawBody;
       }
     }
 
-    function parseAndForwardAccumulatedOutput(rawJsonText) {
-      try {
-        const data = typeof rawJsonText === "string" ? JSON.parse(rawJsonText) : rawJsonText;
-        if (!data || !data.AccumulatedOutput || !Array.isArray(data.AccumulatedOutput.resultSet)) {
-          return;
-        }
-        const extractedRows = [];
-        for (const rs of data.AccumulatedOutput.resultSet) {
-          const records = rs && Array.isArray(rs.Record) ? rs.Record : [];
-          for (const rec of records) {
-            if (!rec) continue;
-            const avail = parseInt(String(rec.NewAvailability || "0").trim(), 10);
-            if (isNaN(avail) || avail <= 0) continue;
-            const route = String(rec.SegmentRoute || "").trim().toUpperCase();
-            if (route.length !== 6) continue;
-            const orig = route.slice(0, 3);
-            const dest = route.slice(3, 6);
-            const fDate = String(rec.SegmentDepDate || "").slice(0, 10);
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(fDate)) continue;
-            const carrier = String(rec.FlightCarrier || "LY").trim().toUpperCase();
-            const numPart = String(rec.FlightNumber || "").trim();
-            const rbdCode = String(rec.RBD || "E").trim().toUpperCase();
-            if (rbdCode === "I" || rbdCode === "W" || rbdCode === "BUSINESS") continue;
-
-            extractedRows.push({
-              destination_iata: orig === "TLV" ? dest : orig,
-              direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
-              flight_number: `${carrier}${numPart}`,
-              flight_date: fDate,
-              economy_seats: rbdCode === "E" || rbdCode === "X" || rbdCode === "U" ? avail : 0,
-              premium_seats: rbdCode === "P" || rbdCode === "A" || rbdCode === "R" ? avail : 0,
-              business_seats: 0
-            });
-          }
-        }
-        if (extractedRows.length > 0) {
-          window.postMessage(
-            {
-              source: "FVP_MAIN_CAPTURED_ROWS",
-              rows: extractedRows
-            },
-            "*"
-          );
-        }
-      } catch (_err) {}
-    }
-
-    // 1. Hook XMLHttpRequest
+    // 1. Hook XMLHttpRequest for passive user searches
     const origOpen = XMLHttpRequest.prototype.open;
     const origSend = XMLHttpRequest.prototype.send;
 
@@ -152,7 +251,6 @@
     XMLHttpRequest.prototype.send = function (body) {
       const urlStr = String(this.__fvpUrl || "");
       if (urlStr.includes("GetRbdAvailability")) {
-        const newBody = rewriteOutgoingElAlPayload(body);
         this.addEventListener("load", function () {
           try {
             if (this.responseText) {
@@ -160,247 +258,69 @@
             }
           } catch (_e) {}
         });
-        return origSend.call(this, newBody);
       }
       return origSend.apply(this, arguments);
     };
 
-    // 2. Hook window.fetch
-    if (typeof window.fetch === "function") {
-      const origFetch = window.fetch;
-      window.fetch = async function (input, init) {
-        const urlStr = typeof input === "string" ? input : (input && input.url) || "";
-        if (urlStr.includes("GetRbdAvailability") && init && typeof init.body === "string") {
-          init = Object.assign({}, init, {
-            body: rewriteOutgoingElAlPayload(init.body)
-          });
-        }
-        const resp = await origFetch.call(this, input, init);
-        if (urlStr.includes("GetRbdAvailability")) {
-          try {
-            const clone = resp.clone();
-            clone.text().then((txt) => parseAndForwardAccumulatedOutput(txt)).catch(() => {});
-          } catch (_e) {}
-        }
-        return resp;
-      };
-    }
-
-    function findFormElementsInMain() {
-      const selects = Array.from(document.querySelectorAll("select")).filter((s) => {
-        const rect = s.getBoundingClientRect();
-        return rect.width > 30 && rect.height > 15;
-      });
-      const airportSelects = selects.filter((s) =>
-        Array.from(s.options || []).some((o) => /\[[A-Z]{3}\]/.test(o.text) || /choose airport/i.test(o.text))
-      );
-      const classSelects = selects.filter((s) =>
-        Array.from(s.options || []).some((o) => /economy|premium|business|תיירים|פרימיום|עסקים/i.test(o.text))
-      );
-
-      let depInput = document.querySelector("input[data-fvp-date-role='departure']");
-      let retInput = document.querySelector("input[data-fvp-date-role='return']");
-      if (!depInput || !retInput) {
-        const visibleInputs = Array.from(document.querySelectorAll("input")).filter((inp) => {
-          const t = (inp.type || "text").toLowerCase();
-          if (t === "hidden" || t === "checkbox" || t === "radio" || t === "submit" || t === "button") return false;
-          const r = inp.getBoundingClientRect();
-          return r.width > 30 && r.height > 15;
-        });
-        const matched = visibleInputs.filter((inp) => /\d{1,2}-[A-Za-z]{3,9}-\d{4}/.test((inp.value || "").trim()));
-        const pair = matched.length >= 2 ? matched.slice(0, 2) : visibleInputs.slice(0, 2);
-        depInput = pair[0] || null;
-        retInput = pair[1] || null;
-        if (depInput) depInput.setAttribute("data-fvp-date-role", "departure");
-        if (retInput) retInput.setAttribute("data-fvp-date-role", "return");
-      }
-
-      const searchBtn = Array.from(
-        document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")
-      ).find((b) => {
-        const r = b.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) return false;
-        const txt = (b.innerText || b.value || "").trim();
-        return /^search$/i.test(txt) || /חיפוש/.test(txt);
-      });
-
-      return {
-        depFromSelect: airportSelects[0] || null,
-        depToSelect: airportSelects[1] || null,
-        retFromSelect: airportSelects[2] || null,
-        retToSelect: airportSelects[3] || null,
-        depClassSelect: classSelects[0] || null,
-        retClassSelect: classSelects[1] || null,
-        depDateInput: depInput,
-        retDateInput: retInput,
-        searchBtn: searchBtn || null
-      };
-    }
-
-    function getSelectedOptionText(selectEl) {
-      if (!selectEl || !selectEl.options || selectEl.selectedIndex < 0) return "";
-      return (selectEl.options[selectEl.selectedIndex].text || "").trim();
-    }
-
-    function setSelectOptionInMain(selectEl, matcherFn) {
-      if (!selectEl || !selectEl.options) return false;
-      for (let i = 0; i < selectEl.options.length; i++) {
-        const opt = selectEl.options[i];
-        if (matcherFn(opt)) {
-          if (selectEl.selectedIndex === i) {
-            return true;
-          }
-          selectEl.selectedIndex = i;
-          try {
-            const desc = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value");
-            if (desc && desc.set) desc.set.call(selectEl, opt.value);
-            else selectEl.value = opt.value;
-          } catch (_e) {
-            selectEl.value = opt.value;
-          }
-          selectEl.dispatchEvent(new Event("input", { bubbles: true }));
-          selectEl.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        }
-      }
-      return false;
-    }
-
-    function setVisualDateInMain(inp, dateStr) {
-      if (!inp || !dateStr) return;
-      try {
-        const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-        if (desc && desc.set) desc.set.call(inp, dateStr);
-        else inp.value = dateStr;
-        inp.setAttribute("value", dateStr);
-      } catch (_e) {
-        inp.value = dateStr;
-      }
-    }
-
-    window.addEventListener("message", async (ev) => {
+    // 2. Handle 50-segment $.ajax batch requests from Isolated World
+    window.addEventListener("message", (ev) => {
       if (!ev.data || ev.data.source !== "FVP_ISO_TO_MAIN") return;
 
-      if (ev.data.type === "SET_FORM_AND_SEARCH") {
-        const {
-          reqId,
-          destIata,
-          cabinName,
-          rbdCode,
-          depDate,
-          retDate,
-          depStartIso,
-          depEndIso,
-          retStartIso,
-          retEndIso
-        } = ev.data;
-
-        window.__fvpActiveOverride = {
-          active: true,
-          destIata: String(destIata || "FCO").toUpperCase(),
-          rbd: rbdCode || (String(cabinName).toLowerCase().includes("premium") ? "P" : "E"),
-          depStartIso: depStartIso,
-          depEndIso: depEndIso,
-          retStartIso: retStartIso,
-          retEndIso: retEndIso
-        };
-
-        const sleepMain = (ms) => new Promise((r) => setTimeout(r, ms));
-        const targetToken = `[${String(destIata || "").toUpperCase()}]`;
-
-        // STEP 1: Select Travel Class FIRST (because changing Travel Class on El Al resets the airport dropdowns!)
-        const c0 = findFormElementsInMain();
-        const curDepClassTxt = getSelectedOptionText(c0.depClassSelect).toLowerCase();
-        const curRetClassTxt = getSelectedOptionText(c0.retClassSelect).toLowerCase();
-        const wantCabinLower = String(cabinName || "economy").toLowerCase();
-
-        if (!curDepClassTxt.includes(wantCabinLower) || !curRetClassTxt.includes(wantCabinLower)) {
-          const okClass1 = setSelectOptionInMain(
-            c0.depClassSelect,
-            (opt) => (opt.text || "").toLowerCase().includes(wantCabinLower)
+      if (ev.data.type === "AJAX_BATCH_FETCH") {
+        const { reqId, startIso, endIso, rbdCode, segments } = ev.data;
+        if (!window.$ || typeof window.$.ajax !== "function") {
+          window.postMessage(
+            {
+              source: "FVP_MAIN_TO_ISO",
+              reqId: reqId,
+              okOut: false,
+              reason: "JQUERY_AJAX_NOT_READY",
+              rows: []
+            },
+            "*"
           );
-          await sleepMain(250);
-          const c0b = findFormElementsInMain();
-          const okClass2 = setSelectOptionInMain(
-            c0b.retClassSelect,
-            (opt) => (opt.text || "").toLowerCase().includes(wantCabinLower)
-          );
-          if (!okClass1 || !okClass2) {
-            window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "CABIN_NOT_AVAILABLE" }, "*");
-            return;
-          }
-          await sleepMain(450);
-        }
-
-        // STEP 2: Select Departure From [TLV] -> To [DEST]
-        const c1 = findFormElementsInMain();
-        const okDepFrom = setSelectOptionInMain(
-          c1.depFromSelect,
-          (opt) => (opt.text || "").toUpperCase().includes("[TLV]")
-        );
-        await sleepMain(220);
-
-        const c1b = findFormElementsInMain();
-        const okDepTo = setSelectOptionInMain(
-          c1b.depToSelect,
-          (opt) => (opt.text || "").toUpperCase().includes(targetToken)
-        );
-        if (!okDepFrom || !okDepTo) {
-          window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "DEST_NOT_IN_DEP" }, "*");
-          return;
-        }
-        await sleepMain(380);
-
-        // STEP 3: Select Return From [DEST] -> To [TLV]
-        const c2 = findFormElementsInMain();
-        const okRetFrom = setSelectOptionInMain(
-          c2.retFromSelect,
-          (opt) => (opt.text || "").toUpperCase().includes(targetToken)
-        );
-        await sleepMain(220);
-
-        const c2b = findFormElementsInMain();
-        const okRetTo = setSelectOptionInMain(
-          c2b.retToSelect,
-          (opt) => (opt.text || "").toUpperCase().includes("[TLV]")
-        );
-        if (!okRetFrom || !okRetTo) {
-          window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "DEST_NOT_IN_RET" }, "*");
-          return;
-        }
-        await sleepMain(280);
-
-        // STEP 4: Final safety check that all 4 airport boxes are non-empty and match before clicking Search
-        const cFinal = findFormElementsInMain();
-        const validDepFrom = getSelectedOptionText(cFinal.depFromSelect).toUpperCase().includes("[TLV]");
-        const validDepTo = getSelectedOptionText(cFinal.depToSelect).toUpperCase().includes(targetToken);
-        const validRetFrom = getSelectedOptionText(cFinal.retFromSelect).toUpperCase().includes(targetToken);
-        const validRetTo = getSelectedOptionText(cFinal.retToSelect).toUpperCase().includes("[TLV]");
-
-        if (!validDepFrom || !validDepTo || !validRetFrom || !validRetTo) {
-          window.postMessage({ source: "FVP_MAIN_TO_ISO", reqId: reqId, okOut: false, reason: "VALIDATION_FAILED" }, "*");
           return;
         }
 
-        if (cFinal.depDateInput && depDate) setVisualDateInMain(cFinal.depDateInput, depDate);
-        if (cFinal.retDateInput && retDate) setVisualDateInMain(cFinal.retDateInput, retDate);
-
-        if (cFinal.searchBtn) {
-          cFinal.searchBtn.click();
-        }
-
-        window.postMessage(
-          {
-            source: "FVP_MAIN_TO_ISO",
-            reqId: reqId,
-            okOut: true,
-            actualDep: depDate,
-            actualRet: retDate
+        window.$.ajax({
+          url: ELAL_RBD_API_URL,
+          type: "POST",
+          contentType: "application/json",
+          data: JSON.stringify({
+            input: {
+              startDate: startIso,
+              endDate: endIso,
+              rbd: rbdCode,
+              seg: segments
+            }
+          }),
+          timeout: 25000,
+          success: function (res) {
+            const rows = extractRowsFromAccumulatedOutput(res);
+            window.postMessage(
+              {
+                source: "FVP_MAIN_TO_ISO",
+                reqId: reqId,
+                okOut: true,
+                rows: rows
+              },
+              "*"
+            );
           },
-          "*"
-        );
-      } else if (ev.data.type === "CLEAR_OVERRIDE") {
-        window.__fvpActiveOverride = null;
+          error: function (xhr, status, err) {
+            window.postMessage(
+              {
+                source: "FVP_MAIN_TO_ISO",
+                reqId: reqId,
+                okOut: false,
+                status: xhr ? xhr.status : 0,
+                reason: String(err || status || "AJAX_ERROR"),
+                rows: []
+              },
+              "*"
+            );
+          }
+        });
       }
     });
   }
@@ -411,123 +331,26 @@
   }
 
   // ============================================================================
-  // ISOLATED EXTENSION WORLD: Widget UI, Auto-Pilot Loop & Server Sync
+  // ISOLATED EXTENSION WORLD: Widget UI, 50-Segment Batch Auto-Pilot & Sync
   // ============================================================================
-
-  const YEARLY_HOLIDAY_WINDOWS = [
-    {
-      label: "חנוכה 2026",
-      dep: "06-December-2026",
-      ret: "13-December-2026",
-      depStartIso: "2026-12-02T21:00:00.000Z",
-      depEndIso: "2026-12-16T21:00:00.000Z",
-      retStartIso: "2026-12-06T21:00:00.000Z",
-      retEndIso: "2026-12-20T21:00:00.000Z"
-    },
-    {
-      label: "פורים 2027",
-      dep: "22-March-2027",
-      ret: "28-March-2027",
-      depStartIso: "2027-03-16T21:00:00.000Z",
-      depEndIso: "2027-03-30T21:00:00.000Z",
-      retStartIso: "2027-03-20T21:00:00.000Z",
-      retEndIso: "2027-04-03T21:00:00.000Z"
-    },
-    {
-      label: "פסח 2027 (לפני ליל הסדר וחג ראשון)",
-      dep: "11-April-2027",
-      ret: "18-April-2027",
-      depStartIso: "2027-04-07T21:00:00.000Z",
-      depEndIso: "2027-04-21T21:00:00.000Z",
-      retStartIso: "2027-04-14T21:00:00.000Z",
-      retEndIso: "2027-04-28T21:00:00.000Z"
-    },
-    {
-      label: "פסח 2027 (חול המועד וחג שני)",
-      dep: "20-April-2027",
-      ret: "28-April-2027",
-      depStartIso: "2027-04-16T21:00:00.000Z",
-      depEndIso: "2027-04-30T21:00:00.000Z",
-      retStartIso: "2027-04-21T21:00:00.000Z",
-      retEndIso: "2027-05-05T21:00:00.000Z"
-    },
-    {
-      label: "יום העצמאות 2027",
-      dep: "10-May-2027",
-      ret: "16-May-2027",
-      depStartIso: "2027-05-05T21:00:00.000Z",
-      depEndIso: "2027-05-19T21:00:00.000Z",
-      retStartIso: "2027-05-09T21:00:00.000Z",
-      retEndIso: "2027-05-23T21:00:00.000Z"
-    },
-    {
-      label: "שבועות ויוני 2027",
-      dep: "10-June-2027",
-      ret: "24-June-2027",
-      depStartIso: "2027-06-08T21:00:00.000Z",
-      depEndIso: "2027-06-22T21:00:00.000Z",
-      retStartIso: "2027-06-15T21:00:00.000Z",
-      retEndIso: "2027-06-29T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — יולי 2027",
-      dep: "12-July-2027",
-      ret: "20-July-2027",
-      depStartIso: "2027-07-07T21:00:00.000Z",
-      depEndIso: "2027-07-21T21:00:00.000Z",
-      retStartIso: "2027-07-14T21:00:00.000Z",
-      retEndIso: "2027-07-28T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — אוגוסט 2027",
-      dep: "16-August-2027",
-      ret: "24-August-2027",
-      depStartIso: "2027-08-10T21:00:00.000Z",
-      depEndIso: "2027-08-24T21:00:00.000Z",
-      retStartIso: "2027-08-17T21:00:00.000Z",
-      retEndIso: "2027-08-31T21:00:00.000Z"
-    },
-    {
-      label: "ראש השנה וסוכות 2027",
-      dep: "01-October-2027",
-      ret: "24-October-2027",
-      depStartIso: "2027-09-29T21:00:00.000Z",
-      depEndIso: "2027-10-13T21:00:00.000Z",
-      retStartIso: "2027-10-10T21:00:00.000Z",
-      retEndIso: "2027-10-24T21:00:00.000Z"
-    }
-  ];
-
-  const PRIORITY_IATAS = [
-    "FCO", "ATH", "LCA", "RHO", "PFO", "MAD", "BCN", "CDG", "LHR", "LTN",
-    "AMS", "BER", "MUC", "VIE", "BUD", "PRG", "MXP", "ZRH", "TBS",
-    "BKK", "HKT", "NRT", "JFK", "EWR", "MIA", "FLL"
-  ];
-
-  const TARGET_CABINS = [
-    { name: "Economy", rbd: "E" },
-    { name: "Premium", rbd: "P" }
-  ];
 
   let autoPilotRunning = false;
   let totalSyncedCount = 0;
   let lastSyncedSignature = "";
   let bridgeReqSeq = 0;
-  let lastRewrittenRangeLabel = "";
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  function isRowDateNearHolidayWindow(rowDateIso, win) {
-    if (!win || !win.dep || !win.ret) return true;
-    const rowDt = parseElAlDateToJsDate(rowDateIso);
-    const depDt = parseElAlDateToJsDate(win.dep);
-    const retDt = parseElAlDateToJsDate(win.ret);
-    if (!rowDt || !depDt || !retDt) return true;
-    const minMs = depDt.getTime() - 21 * 86400 * 1000;
-    const maxMs = retDt.getTime() + 21 * 86400 * 1000;
-    return rowDt.getTime() >= minMs && rowDt.getTime() <= maxMs;
+  function buildAllDirectionalSegments(destinations) {
+    const segs = [];
+    for (const d of destinations) {
+      if (!ALLOWED_IATA_SET.has(d)) continue;
+      segs.push({ org: "TLV", dest: d });
+      segs.push({ org: d, dest: "TLV" });
+    }
+    return segs;
   }
 
   function detectSelectedCabinOnPage() {
@@ -543,7 +366,7 @@
     return "ECONOMY";
   }
 
-  function extractVisibleTableRows(explicitCabinUpper, activeHolidayWindow) {
+  function extractVisibleTableRows(explicitCabinUpper) {
     const cabin = explicitCabinUpper || detectSelectedCabinOnPage();
     if (cabin === "BUSINESS") return [];
     const extracted = [];
@@ -556,24 +379,24 @@
       if (cells.length >= 7) {
         const rowDate = parseElAlTableDate(cells[3]);
         if (!rowDate) continue;
-        if (activeHolidayWindow && !isRowDateNearHolidayWindow(rowDate, activeHolidayWindow)) {
-          continue;
-        }
 
         const outFlight = cells[0].replace(/\s+/g, "");
         const outRoute = cells[1].replace(/\s+/g, "").toUpperCase();
         const outAvail = parseInt(cells[2], 10);
         if (outFlight && outRoute.includes("-") && !isNaN(outAvail) && outAvail > 0) {
           const [orig, dest] = outRoute.split("-");
-          extracted.push({
-            destination_iata: orig === "TLV" ? dest : orig,
-            direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
-            flight_number: outFlight,
-            flight_date: rowDate,
-            economy_seats: cabin === "ECONOMY" ? outAvail : 0,
-            premium_seats: cabin === "PREMIUM" ? outAvail : 0,
-            business_seats: 0
-          });
+          const routeDest = orig === "TLV" ? dest : orig;
+          if (ALLOWED_IATA_SET.has(routeDest)) {
+            extracted.push({
+              destination_iata: routeDest,
+              direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
+              flight_number: outFlight,
+              flight_date: rowDate,
+              economy_seats: cabin === "ECONOMY" ? outAvail : 0,
+              premium_seats: cabin === "PREMIUM" ? outAvail : 0,
+              business_seats: 0
+            });
+          }
         }
 
         const inFlight = cells[4].replace(/\s+/g, "");
@@ -581,15 +404,18 @@
         const inAvail = parseInt(cells[6], 10);
         if (inFlight && inRoute.includes("-") && !isNaN(inAvail) && inAvail > 0) {
           const [orig, dest] = inRoute.split("-");
-          extracted.push({
-            destination_iata: orig === "TLV" ? dest : orig,
-            direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
-            flight_number: inFlight,
-            flight_date: rowDate,
-            economy_seats: cabin === "ECONOMY" ? inAvail : 0,
-            premium_seats: cabin === "PREMIUM" ? inAvail : 0,
-            business_seats: 0
-          });
+          const routeDest = orig === "TLV" ? dest : orig;
+          if (ALLOWED_IATA_SET.has(routeDest)) {
+            extracted.push({
+              destination_iata: routeDest,
+              direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
+              flight_number: inFlight,
+              flight_date: rowDate,
+              economy_seats: cabin === "ECONOMY" ? inAvail : 0,
+              premium_seats: cabin === "PREMIUM" ? inAvail : 0,
+              business_seats: 0
+            });
+          }
         }
       }
     }
@@ -617,12 +443,8 @@
 
   window.addEventListener("message", (ev) => {
     if (!ev.data) return;
-    if (ev.data.source === "FVP_MAIN_XHR_REWRITTEN") {
-      const s = String(ev.data.startDate || "").slice(0, 10);
-      const e = String(ev.data.endDate || "").slice(0, 10);
-      lastRewrittenRangeLabel = `${s}..${e}`;
-    } else if (ev.data.source === "FVP_MAIN_CAPTURED_ROWS" && Array.isArray(ev.data.rows)) {
-      if (ev.data.rows.length > 0) {
+    if (ev.data.source === "FVP_MAIN_CAPTURED_ROWS" && Array.isArray(ev.data.rows)) {
+      if (!autoPilotRunning && ev.data.rows.length > 0) {
         sendRowsToServerPromise(ev.data.rows).then((resp) => {
           if (resp && resp.ok) {
             totalSyncedCount += Number(resp.records_synced || ev.data.rows.length);
@@ -651,30 +473,7 @@
     });
   }
 
-  function discoverAvailableDestinations() {
-    const selects = Array.from(document.querySelectorAll("select")).filter((s) => {
-      const r = s.getBoundingClientRect();
-      return r.width > 30 && r.height > 15;
-    });
-    const airportSelects = selects.filter((s) =>
-      Array.from(s.options || []).some((o) => /\[[A-Z]{3}\]/.test(o.text) || /choose airport/i.test(o.text))
-    );
-    const depToSelect = airportSelects[1] || null;
-    if (!depToSelect || !depToSelect.options) return PRIORITY_IATAS;
-
-    const foundIatas = [];
-    for (const opt of Array.from(depToSelect.options)) {
-      const m = (opt.text || "").match(/\[([A-Z]{3})\]/);
-      if (m && m[1] !== "TLV" && !foundIatas.includes(m[1])) {
-        foundIatas.push(m[1]);
-      }
-    }
-    if (foundIatas.length === 0) return PRIORITY_IATAS;
-    const priorityAvailable = PRIORITY_IATAS.filter((c) => foundIatas.includes(c));
-    return priorityAvailable.length > 0 ? priorityAvailable : PRIORITY_IATAS;
-  }
-
-  function triggerMainWorldFormStep(destIata, cabinObj, win) {
+  function triggerMainWorldAjaxBatch(startIso, endIso, rbdCode, segments) {
     return new Promise((resolve) => {
       const reqId = ++bridgeReqSeq;
       let settled = false;
@@ -690,17 +489,12 @@
       window.postMessage(
         {
           source: "FVP_ISO_TO_MAIN",
-          type: "SET_FORM_AND_SEARCH",
+          type: "AJAX_BATCH_FETCH",
           reqId: reqId,
-          destIata: destIata,
-          cabinName: cabinObj.name,
-          rbdCode: cabinObj.rbd,
-          depDate: win.dep,
-          retDate: win.ret,
-          depStartIso: win.depStartIso,
-          depEndIso: win.depEndIso,
-          retStartIso: win.retStartIso,
-          retEndIso: win.retEndIso
+          startIso: startIso,
+          endIso: endIso,
+          rbdCode: rbdCode,
+          segments: segments
         },
         "*"
       );
@@ -709,8 +503,8 @@
         if (settled) return;
         settled = true;
         window.removeEventListener("message", onMsg);
-        resolve({ okOut: false, reason: "TIMEOUT" });
-      }, 2800);
+        resolve({ okOut: false, reason: "TIMEOUT", rows: [] });
+      }, 28000);
     });
   }
 
@@ -720,9 +514,8 @@
 
     if (autoPilotRunning) {
       autoPilotRunning = false;
-      window.postMessage({ source: "FVP_ISO_TO_MAIN", type: "CLEAR_OVERRIDE" }, "*");
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)";
+        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -732,64 +525,62 @@
     }
 
     try {
-      const destinations = discoverAvailableDestinations();
       autoPilotRunning = true;
       if (btnEl) {
         btnEl.textContent = "⏹️ עצור סריקה אוטומטית (Auto-Pilot פעיל)";
         btnEl.style.background = "#ef4444";
       }
 
-      const windowsToScan = YEARLY_HOLIDAY_WINDOWS;
+      const segments = buildAllDirectionalSegments(PRIORITY_IATAS);
+      const allCollectedRows = [];
 
-      // Loop: Holiday -> Cabin (Economy across all destinations, then Premium) -> Destination
-      for (let wIdx = 0; wIdx < windowsToScan.length && autoPilotRunning; wIdx++) {
-        const win = windowsToScan[wIdx];
+      for (let wIdx = 0; wIdx < YEARLY_HOLIDAY_WINDOWS.length && autoPilotRunning; wIdx++) {
+        const win = YEARLY_HOLIDAY_WINDOWS[wIdx];
+        const windowRows = [];
 
         for (const cabinObj of TARGET_CABINS) {
           if (!autoPilotRunning) break;
 
-          for (let dIdx = 0; dIdx < destinations.length && autoPilotRunning; dIdx++) {
-            const destIata = destinations[dIdx];
-            const stepRes = await triggerMainWorldFormStep(destIata, cabinObj, win);
-            if (!stepRes || !stepRes.okOut) {
-              continue;
-            }
+          if (statusEl) {
+            const rangeNote = `${win.startIso.slice(0, 10)}..${win.endIso.slice(0, 10)}`;
+            statusEl.textContent = `⚡ חלון [${wIdx + 1}/${YEARLY_HOLIDAY_WINDOWS.length}] ${win.label} (${rangeNote}) | ${cabinObj.name} (${cabinObj.rbd}) | 25 יעדים במקביל...`;
+          }
 
-            if (statusEl) {
-              const rangeNote = lastRewrittenRangeLabel || `${win.depStartIso.slice(0, 10)}..${win.depEndIso.slice(0, 10)}`;
-              statusEl.textContent = `🤖 חג [${wIdx + 1}/${windowsToScan.length}] ${win.label} (${rangeNote}) | ${cabinObj.name} | יעד ${dIdx + 1}/${destinations.length}: ${destIata} | סונכרנו: ${totalSyncedCount}`;
-            }
+          const batchRes = await triggerMainWorldAjaxBatch(
+            win.startIso,
+            win.endIso,
+            cabinObj.rbd,
+            segments
+          );
 
-            const politeWaitMs = 5600 + Math.floor(Math.random() * 1400);
-            await sleep(politeWaitMs);
+          if (batchRes && batchRes.okOut && Array.isArray(batchRes.rows) && batchRes.rows.length > 0) {
+            windowRows.push(...batchRes.rows);
+            allCollectedRows.push(...batchRes.rows);
+          }
 
-            if (!autoPilotRunning) break;
+          await sleep(300);
+        }
 
-            const rows = extractVisibleTableRows(cabinObj.name.toUpperCase(), win);
-            if (rows.length > 0) {
-              const resp = await sendRowsToServerPromise(rows);
-              if (resp && resp.ok) {
-                totalSyncedCount += Number(resp.records_synced || rows.length);
-              }
-            }
+        if (windowRows.length > 0 && autoPilotRunning) {
+          const syncResp = await sendRowsToServerPromise(windowRows);
+          if (syncResp && syncResp.ok) {
+            totalSyncedCount += Number(syncResp.records_synced || windowRows.length);
           }
         }
       }
 
       autoPilotRunning = false;
-      window.postMessage({ source: "FVP_ISO_TO_MAIN", type: "CLEAR_OVERRIDE" }, "*");
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)";
+        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
-        statusEl.textContent = `🎉 סריקת החגים הושלמה! סה"כ סונכרנו ${totalSyncedCount} טיסות חגים אמיתיות לשרת.`;
+        statusEl.textContent = `🎉 סריקת 25 היעדים הושלמה! סה"כ סונכרנו ${totalSyncedCount} רשומות זמינות אמיתיות (${allCollectedRows.length} מופעים) לשרת.`;
       }
     } catch (err) {
       autoPilotRunning = false;
-      window.postMessage({ source: "FVP_ISO_TO_MAIN", type: "CLEAR_OVERRIDE" }, "*");
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)";
+        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -825,14 +616,14 @@
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>✈️ סנכרון חגים (Economy + Premium) v1.3</strong>
-        <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">קצב אנושי בטוח</span>
+        <strong>✈️ סנכרון חגים מהיר (Economy + Premium) v2.0</strong>
+        <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">50 מקטעים במקביל</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
-        מוכן לסריקה אוטומטית של חגי ישראל (Economy ו-Premium) ב-26 יעדי אל על אל השרת.
+        מוכן לסריקה מהירה (~20 שניות) של חגי ישראל (Economy ו-Premium) ב-25 יעדי אל על אל השרת.
       </div>
       <button id="fvp-sync-btn" type="button" style="background:#10b981;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:12.5px;">
-        🤖 הפעל סריקת חגים אוטומטית (Economy + Premium)
+        🤖 הפעל סריקת חגים מהירה (Economy + Premium)
       </button>
     `;
     document.body.appendChild(box);

@@ -511,8 +511,8 @@ class VacationMaximizerEngine:
             scan_end = macro_end + timedelta(days=max(b_max, 3))
             total_span = (scan_end - scan_start).days + 1
 
-            # For long summer months (July / August), step departure dates cleanly to avoid combinatorial explosion
-            step = 2 if total_span > 24 else 1
+            # For long spans (> 40 days), step departure dates cleanly to avoid combinatorial explosion
+            step = 2 if total_span > 40 else 1
 
             for offset_s in range(0, total_span, step):
                 s_d = scan_start + timedelta(days=offset_s)

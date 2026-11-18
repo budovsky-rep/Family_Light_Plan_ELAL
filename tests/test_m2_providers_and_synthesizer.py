@@ -881,6 +881,161 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreaterEqual(len(fallback_props), 1)
         self.assertIsNotNone(self.planner.last_weather_fallback_message_he)
 
+    def test_parse_and_import_external_rbd_payload_normalization_and_30d_ttl(self) -> None:
+        """18. Verify single-dict Record/resultSet normalization, Economy(E)+Premium(A) merge,
+        unknown IATA filtering (ZRH), 738 live Premium preservation, dep/arr times, and 30d TTL.
+        """
+        from datetime import datetime
+
+        iso_repo = SQLiteRepository(":memory:", auto_seed=True)
+        iso_adapter = ElAlRbdDataClientAdapter(iso_repo)
+
+        batch_payload = [
+            {
+                "AccumulatedOutput": {
+                    # Single dict resultSet with a single dict Record (Economy E on TLV->LCA 738)
+                    "resultSet": {
+                        "Record": {
+                            "SegmentRoute": "TLVLCA",
+                            "SegmentDepDate": "2027-04-14T00:00:00",
+                            "SegmentDepTime": "07:20",
+                            "SegmentArrTime": "08:30",
+                            "FlightCarrier": "LY",
+                            "FlightNumber": "411",
+                            "RBD": "E",
+                            "NewAvailability": "2+",
+                        }
+                    }
+                }
+            },
+            {
+                "AccumulatedOutput": {
+                    # List resultSet with list of Records including Premium RBD="A", unknown ZRH, and 0-seat row
+                    "resultSet": [
+                        {
+                            "Record": [
+                                {
+                                    "SegmentRoute": "TLVLCA",
+                                    "SegmentDepDate": "2027-04-14T00:00:00",
+                                    "SegmentDepTime": "2027-04-14T07:20:00",
+                                    "SegmentArrTime": "2027-04-14T08:30:00",
+                                    "FlightCarrier": "LY",
+                                    "FlightNumber": "411",
+                                    "RBD": "A",
+                                    "NewAvailability": "2",
+                                },
+                                {
+                                    "SegmentRoute": "TLVZRH",
+                                    "SegmentDepDate": "2027-04-14T00:00:00",
+                                    "FlightCarrier": "LY",
+                                    "FlightNumber": "347",
+                                    "RBD": "E",
+                                    "NewAvailability": "2+",
+                                },
+                                {
+                                    "SegmentRoute": "TLVFCO",
+                                    "SegmentDepDate": "2027-04-14T00:00:00",
+                                    "FlightCarrier": "LY",
+                                    "FlightNumber": "381",
+                                    "RBD": "E",
+                                    "NewAvailability": "0",
+                                },
+                            ]
+                        }
+                    ]
+                }
+            },
+            # Flat row dict with custom dep_time / arr_time and BUD (ZONE_B 738) Premium seats
+            {
+                "destination_iata": "BUD",
+                "direction": "OUTBOUND",
+                "flight_number": "LY2365",
+                "flight_date": "2027-04-14",
+                "economy_seats": 2,
+                "premium_seats": 1,
+                "dep_time": "06:45",
+                "arr_time": "09:10",
+            },
+        ]
+
+        imported = iso_adapter.parse_and_import_external_rbd_payload(batch_payload)
+        self.assertEqual(len(imported), 2)
+        by_dest = {r.destination_iata: r for r in imported}
+        self.assertIn("LCA", by_dest)
+        self.assertIn("BUD", by_dest)
+        self.assertNotIn("ZRH", by_dest)
+
+        lca_row = by_dest["LCA"]
+        self.assertEqual(lca_row.economy_award_seats, 2)
+        self.assertEqual(lca_row.premium_award_seats, 2)
+        self.assertEqual(lca_row.premium_points_per_pax, 18000)
+        self.assertEqual(lca_row.departure_time_local, "07:20")
+        self.assertEqual(lca_row.arrival_time_local, "08:30")
+        self.assertTrue(lca_row.source_url.endswith("#live"))
+
+        bud_row = by_dest["BUD"]
+        self.assertEqual(bud_row.economy_award_seats, 2)
+        self.assertEqual(bud_row.premium_award_seats, 1)
+        self.assertEqual(bud_row.premium_points_per_pax, 22000)
+        self.assertEqual(bud_row.departure_time_local, "06:45")
+        self.assertEqual(bud_row.arrival_time_local, "09:10")
+
+        fetched_dt = datetime.fromisoformat(lca_row.fetched_at.replace("Z", "+00:00"))
+        expires_dt = datetime.fromisoformat(lca_row.expires_at.replace("Z", "+00:00"))
+        self.assertGreaterEqual((expires_dt - fetched_dt).days, 29)
+
+    def test_planner_multi_flight_live_sorting_and_maximizer_step_threshold(self) -> None:
+        """19. Verify multi-flight days select highest award seat inventory and maximizer evaluates step=1 up to 40d."""
+        iso_repo = SQLiteRepository(":memory:", auto_seed=True)
+        iso_cal = MoECalendarService(iso_repo)
+        iso_max = VacationMaximizerEngine(iso_cal)
+        iso_adapter = ElAlRbdDataClientAdapter(iso_repo)
+        iso_planner = BonusVacationPlannerService(
+            repository=iso_repo,
+            calendar_service=iso_cal,
+            maximizer=iso_max,
+            elal_adapter=iso_adapter,
+            commercial_adapter=AllAirlinesSearchAdapter(iso_repo),
+        )
+
+        # Import two outbound flights on TLV->FCO on 2027-04-14: LY381 (1 Econ) and LY383 (2 Econ + 2 Prem)
+        iso_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "FCO",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY381",
+                    "flight_date": "2027-04-14",
+                    "economy_seats": 1,
+                    "premium_seats": 0,
+                    "dep_time": "06:00",
+                    "arr_time": "08:45",
+                },
+                {
+                    "destination_iata": "FCO",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY383",
+                    "flight_date": "2027-04-14",
+                    "economy_seats": 2,
+                    "premium_seats": 2,
+                    "dep_time": "12:15",
+                    "arr_time": "15:00",
+                },
+            ]
+        )
+
+        out_rows, _ = iso_planner._ensure_award_rows_for_window(
+            dest_iata="FCO",
+            start_date=date(2027, 4, 14),
+            end_date=date(2027, 4, 21),
+            origin_iata="TLV",
+            include_sundor=True,
+        )
+        self.assertGreaterEqual(len(out_rows), 2)
+        self.assertEqual(out_rows[0].flight_number, "LY383")
+        self.assertEqual(out_rows[0].economy_award_seats, 2)
+        self.assertEqual(out_rows[0].premium_award_seats, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

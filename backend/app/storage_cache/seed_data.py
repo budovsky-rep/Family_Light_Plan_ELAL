@@ -1758,8 +1758,10 @@ def _make_bonus_row(
         else float(meta["outbound_taxes_usd"] if is_out else meta["inbound_taxes_usd"])
     )
 
-    if meta["aircraft_type"] == "738":
+    if meta["aircraft_type"] == "738" and custom_flight_num is None:
         prem_seats = 0
+    if prem_seats > 0 and prem_pts <= 0:
+        prem_pts = 18000 if meta.get("award_zone") == "ZONE_A" else 22000
 
     return ElAlBonusAvailability(
         id=f"{f_num}_{flight_date.isoformat()}",

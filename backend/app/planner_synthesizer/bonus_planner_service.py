@@ -1874,6 +1874,27 @@ class BonusVacationPlannerService:
             f"{low_cpp_warn}{weather_tail}"
         )
 
+    def _has_live_only_inventory(self) -> bool:
+        """Return True if running in live fetch mode or if all cached rows in SQLite are `#live` rows."""
+        if self.repository.is_live_fetch_mode():
+            return True
+        try:
+            with self.repository.connection() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total_cnt, "
+                    "SUM(CASE WHEN source_url LIKE '%#live%' THEN 1 ELSE 0 END) AS live_cnt "
+                    "FROM elal_bonus_availability"
+                ).fetchone()
+                if (
+                    row
+                    and int(row["total_cnt"] or 0) > 0
+                    and int(row["live_cnt"] or 0) == int(row["total_cnt"] or 0)
+                ):
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _ensure_award_rows_for_window(
         self,
         dest_iata: str,
@@ -1900,12 +1921,31 @@ class BonusVacationPlannerService:
             direction="INBOUND",
         )
 
+        live_only = self._has_live_only_inventory()
+        if live_only or any("#live" in str(r.source_url or "") for r in out_rows + in_rows):
+            out_rows.sort(
+                key=lambda r: (
+                    -(r.economy_award_seats + r.premium_award_seats + r.business_award_seats),
+                    -r.premium_award_seats,
+                    -r.economy_award_seats,
+                    r.flight_number,
+                )
+            )
+            in_rows.sort(
+                key=lambda r: (
+                    -(r.economy_award_seats + r.premium_award_seats + r.business_award_seats),
+                    -r.premium_award_seats,
+                    -r.economy_award_seats,
+                    r.flight_number,
+                )
+            )
+
         if dest_iata not in DESTINATION_CATALOG:
             return out_rows, in_rows
 
-        # In production live mode (`ELAL_LIVE_FETCH_ENABLED=1`), NEVER fabricate fictitious
-        # bonus flights when no real award seats exist in the database.
-        if self.repository.is_live_fetch_mode():
+        # In production live mode (`ELAL_LIVE_FETCH_ENABLED=1`) or live-only DB, NEVER fabricate
+        # fictitious bonus flights when no real award seats exist in the database.
+        if live_only:
             return out_rows, in_rows
 
         meta = DESTINATION_CATALOG[dest_iata]
@@ -2001,7 +2041,7 @@ class BonusVacationPlannerService:
         # 0. In live mode (or when real award flights exist in DB), prioritize candidate windows
         #    where the SAME destination has BOTH an outbound award on `w.start_date` AND an inbound
         #    award on `w.end_date`, followed by windows matching at least one direction.
-        if self.repository.is_live_fetch_mode():
+        if self._has_live_only_inventory():
             min_d = min(w.start_date for w in all_windows)
             max_d = max(w.end_date for w in all_windows)
             cached_awards = self.repository.get_cached_elal_bonus(
@@ -2024,8 +2064,11 @@ class BonusVacationPlannerService:
                     in_dates.add(a.flight_date)
                     in_by_dest.setdefault(a.origin_iata, set()).add(a.flight_date)
 
+            live_cap = 20 if len(expanded_destinations) <= 6 else 12
             # First priority: windows with round-trip award availability on the same destination
             for w in all_windows:
+                if len(selected) >= live_cap:
+                    break
                 pair = (w.start_date, w.end_date)
                 if pair in seen_pairs:
                     continue
@@ -2039,6 +2082,8 @@ class BonusVacationPlannerService:
 
             # Second priority: windows with one-way award availability
             for w in all_windows:
+                if len(selected) >= live_cap:
+                    break
                 pair = (w.start_date, w.end_date)
                 if (w.start_date in out_dates or w.end_date in in_dates) and pair not in seen_pairs:
                     seen_pairs.add(pair)
