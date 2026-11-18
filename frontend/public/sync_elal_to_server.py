@@ -380,32 +380,87 @@ def push_records_to_server(
     start_d: date | str,
     end_d: date | str,
     accumulated_payloads: list[dict[str, Any]] | dict[str, Any],
+    batch_size: int = 800,
+    timeout_seconds: float = 180.0,
 ) -> int:
-    """POST collected `AccumulatedOutput` payloads to `{server_url}/api/v1/elal-bonus/sync`."""
+    """POST collected `AccumulatedOutput` payloads to `{server_url}/api/v1/elal-bonus/sync` in safe chunks."""
     if not accumulated_payloads:
         return 0
     endpoint = f"{server_url.rstrip('/')}/api/v1/elal-bonus/sync"
     destinations_list = [dest_iata] if isinstance(dest_iata, str) else list(dest_iata)
     start_str = start_d.isoformat() if isinstance(start_d, date) else str(start_d)
     end_str = end_d.isoformat() if isinstance(end_d, date) else str(end_d)
-    body = {
-        "origin": "TLV",
-        "destinations": destinations_list,
-        "start_date": start_str,
-        "end_date": end_str,
-        "force_refresh": True,
-        "rbd_payload": accumulated_payloads,
-    }
-    data_bytes = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        endpoint,
-        data=data_bytes,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60.0) as resp:
-        res_json = json.loads(resp.read().decode("utf-8"))
-        return int(res_json.get("records_synced", 0))
+
+    def _post_chunk(chunk_payload: Any) -> int:
+        body = {
+            "origin": "TLV",
+            "destinations": destinations_list,
+            "start_date": start_str,
+            "end_date": end_str,
+            "force_refresh": True,
+            "rbd_payload": chunk_payload,
+        }
+        data_bytes = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint,
+            data=data_bytes,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            res_json = json.loads(resp.read().decode("utf-8"))
+            return int(res_json.get("records_synced", 0))
+
+    # Split consolidated `AccumulatedOutput` records into batches so slow VMs never hit HTTP timeouts
+    if (
+        isinstance(accumulated_payloads, dict)
+        and isinstance(accumulated_payloads.get("AccumulatedOutput"), dict)
+    ):
+        rs_list = accumulated_payloads["AccumulatedOutput"].get("resultSet") or []
+        all_recs: list[dict[str, Any]] = []
+        for rs in rs_list if isinstance(rs_list, list) else [rs_list]:
+            if isinstance(rs, dict):
+                recs = rs.get("Record") or []
+                if isinstance(recs, dict):
+                    all_recs.append(recs)
+                elif isinstance(recs, list):
+                    all_recs.extend(r for r in recs if isinstance(r, dict))
+
+        if len(all_recs) > batch_size:
+            all_recs.sort(
+                key=lambda r: (
+                    str(r.get("SegmentRoute") or ""),
+                    str(r.get("SegmentDepDate") or ""),
+                    str(r.get("FlightNumber") or ""),
+                )
+            )
+            total_synced = 0
+            total_batches = (len(all_recs) + batch_size - 1) // batch_size
+            for b_idx in range(total_batches):
+                chunk = all_recs[b_idx * batch_size : (b_idx + 1) * batch_size]
+                chunk_payload = {"AccumulatedOutput": {"resultSet": [{"Record": chunk}]}}
+                synced = _post_chunk(chunk_payload)
+                total_synced += synced
+                print(
+                    f"  -> Remote sync batch {b_idx + 1}/{total_batches} "
+                    f"({len(chunk)} raw -> {synced} rows synced)"
+                )
+            return total_synced
+
+    if isinstance(accumulated_payloads, list) and len(accumulated_payloads) > batch_size:
+        total_synced = 0
+        total_batches = (len(accumulated_payloads) + batch_size - 1) // batch_size
+        for b_idx in range(total_batches):
+            chunk = accumulated_payloads[b_idx * batch_size : (b_idx + 1) * batch_size]
+            synced = _post_chunk(chunk)
+            total_synced += synced
+            print(
+                f"  -> Remote sync batch {b_idx + 1}/{total_batches} "
+                f"({len(chunk)} items -> {synced} rows synced)"
+            )
+        return total_synced
+
+    return _post_chunk(accumulated_payloads)
 
 
 def sync_payload_to_local_db(
