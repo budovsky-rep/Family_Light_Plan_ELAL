@@ -1335,6 +1335,7 @@ class FlightItinerary(_DomainModelBase):
     cents_per_point_value: Optional[float] = None
     rbddataclients_verify_url: Optional[str] = "https://www.elal.com/rbddataclients/"
     booking_deep_link_url: str = "https://www.elal.com/"
+    elal_google_flights_url: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.departure_date = _parse_date(self.departure_date)
@@ -1426,6 +1427,7 @@ class FlightItinerary(_DomainModelBase):
             "cents_per_point_value": self.cents_per_point_value,
             "rbddataclients_verify_url": self.rbddataclients_verify_url,
             "booking_deep_link_url": self.booking_deep_link_url,
+            "elal_google_flights_url": self.elal_google_flights_url,
         }
 
     @classmethod
@@ -1492,6 +1494,11 @@ class FlightItinerary(_DomainModelBase):
             ),
             booking_deep_link_url=str(
                 data.get("booking_deep_link_url") or "https://www.elal.com/"
+            ),
+            elal_google_flights_url=(
+                str(data["elal_google_flights_url"])
+                if data.get("elal_google_flights_url")
+                else None
             ),
         )
 

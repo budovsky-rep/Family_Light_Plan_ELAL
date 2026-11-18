@@ -1036,17 +1036,17 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(out_rows[0].economy_award_seats, 2)
         self.assertEqual(out_rows[0].premium_award_seats, 2)
 
-    def test_elal_booking_deep_link_url_flight_preselection_and_non_elal_exclusion(
+    def test_elal_google_flights_handoff_url_and_non_elal_exclusion(
         self,
     ) -> None:
-        """20. Verify El Al `booking_deep_link_url` pre-selects proposed LY flights without forcing login (`bonus=false`),
-        uses 0-based month indices, maps passenger ages (`ADT`/`CHD`/`INF`), supports Open-Jaw (`journeyType=2`),
-        and excludes non-El Al carriers.
+        """20. Verify El Al `elal_google_flights_url` pre-filters Google Flights to EL AL nonstop
+        with exact dates, passenger breakdown (`adults`/`children`/`infants`), Open-Jaw multi-city
+        routing, WAF-safe `booking_deep_link_url`, and `None` for non-El Al carriers.
         """
         from urllib.parse import parse_qs, urlparse
         from backend.app.schemas.domain import FamilyProfile
 
-        # Custom family: 2 adults + 1 teenager (14 -> ADT) + 1 child (7 -> CHD) + 1 lap infant (1 -> INF)
+        # Custom family: 2 adults + 1 teenager (14 -> adult) + 1 child (7 -> child) + 1 lap infant (1 -> infant)
         mixed_profile = FamilyProfile.from_dict(
             {
                 **self.default_profile.to_dict(),
@@ -1090,33 +1090,25 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         itin = proposals[0].itinerary
         assert itin is not None
         self.assertTrue(itin.is_elal_flight)
+        self.assertEqual(itin.booking_deep_link_url, "https://www.elal.com/heb/israel")
+        self.assertIsNotNone(itin.elal_google_flights_url)
 
-        parsed = urlparse(itin.booking_deep_link_url)
+        parsed = urlparse(str(itin.elal_google_flights_url))
         self.assertEqual(parsed.scheme, "https")
-        self.assertEqual(parsed.netloc, "booking.elal.com")
-        self.assertEqual(parsed.path, "/booking/flights")
+        self.assertEqual(parsed.netloc, "www.google.com")
+        self.assertEqual(parsed.path, "/travel/flights")
 
         qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-        self.assertEqual(qs["agentPCCode"], "GGL")
-        self.assertEqual(qs["bonus"], "false")
-        self.assertEqual(qs["journeyType"], "1")
-        self.assertEqual(qs["origin"], "TLV")
-        self.assertEqual(qs["destination"], "FCO")
-        self.assertEqual(qs["departDay"], "11")
-        self.assertEqual(qs["departMonth"], "3")  # April -> 0-based index 3
-        self.assertEqual(qs["returnDay"], "18")
-        self.assertEqual(qs["returnMonth"], "3")
-        self.assertEqual(qs["airlineOutSegment1"], "LY")
-        self.assertEqual(qs["airlineInSegment1"], "LY")
-        out_digits = "".join(ch for ch in itin.outbound_legs[0].flight_number if ch.isdigit()).lstrip("0")
-        in_digits = "".join(ch for ch in itin.inbound_legs[0].flight_number if ch.isdigit()).lstrip("0")
-        self.assertEqual(qs["flightNumberOutSegment1"], out_digits)
-        self.assertEqual(qs["flightNumberInSegment1"], in_digits)
-        self.assertEqual(qs["ADT"], "3")  # 2 parents + 14yo youth
-        self.assertEqual(qs["CHD"], "1")  # 7yo child
-        self.assertEqual(qs["INF"], "1")  # 1yo lap infant
+        self.assertEqual(qs["curr"], "USD")
+        self.assertEqual(qs["gl"], "IL")
+        self.assertEqual(qs["hl"], "en")
+        q_str = qs["q"]
+        self.assertIn("Flights to FCO from TLV", q_str)
+        self.assertIn("on 2027-04-11 through 2027-04-18", q_str)
+        self.assertIn("3 adults, 1 child and 1 infant", q_str)
+        self.assertIn("nonstop on EL AL", q_str)
 
-        # Verify Open-Jaw sets journeyType=2 and returnFrom != destination
+        # Verify Open-Jaw constructs two explicit directional legs in Google Flights query
         oj_proposals = [
             p
             for p in self.planner.search_vacations(
@@ -1133,11 +1125,15 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             if p.itinerary and p.itinerary.return_origin_iata != p.itinerary.destination_iata
         ]
         for oj_p in oj_proposals:
-            oj_qs = {k: v[0] for k, v in parse_qs(urlparse(oj_p.itinerary.booking_deep_link_url).query).items()}
-            self.assertEqual(oj_qs["journeyType"], "2")
-            self.assertEqual(oj_qs["returnFrom"], oj_p.itinerary.return_origin_iata)
+            oj_qs = {
+                k: v[0]
+                for k, v in parse_qs(urlparse(str(oj_p.itinerary.elal_google_flights_url)).query).items()
+            }
+            self.assertIn(f"from TLV to {oj_p.itinerary.destination_iata}", oj_qs["q"])
+            self.assertIn(f"and from {oj_p.itinerary.return_origin_iata} to TLV", oj_qs["q"])
+            self.assertIn("nonstop on EL AL", oj_qs["q"])
 
-        # Verify non-El Al flights in ALL_AIRLINES mode do NOT get a booking.elal.com link
+        # Verify non-El Al flights in ALL_AIRLINES mode have elal_google_flights_url = None
         all_air_props = self.planner.search_vacations(
             {
                 "date_selection_mode": "SPECIFIC_DATES",
@@ -1152,7 +1148,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         non_elal = [p for p in all_air_props if p.itinerary and not p.itinerary.is_elal_flight]
         self.assertGreater(len(non_elal), 0)
         for p_other in non_elal:
-            self.assertNotIn("booking.elal.com", p_other.itinerary.booking_deep_link_url)
+            self.assertIsNone(p_other.itinerary.elal_google_flights_url)
 
 
 if __name__ == "__main__":

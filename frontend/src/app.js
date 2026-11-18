@@ -552,33 +552,19 @@
       .join('');
   }
 
-  function extractElAlFlightDigitsJs(flightNum, fallbackDigits) {
-    const raw = String(flightNum || '').trim();
-    const m = raw.match(/(\d+)/);
-    if (!m) return fallbackDigits;
-    const stripped = m[1].replace(/^0+/, '');
-    return stripped || '0';
-  }
-
-  function resolveElAlBookingUrl(it, isHe) {
+  function resolveElAlBookingUrl(it) {
     if (!it || !it.is_elal_flight) return null;
-    const langCode = isHe ? 'he' : 'en';
-    const existingUrl = String(it.booking_deep_link_url || '').trim();
-    if (existingUrl.startsWith('https://booking.elal.com/booking/flights')) {
-      return existingUrl.replace(/([?&])lang=(he|en)\b/i, `$1lang=${langCode}`);
+    const serverGfUrl = String(it.elal_google_flights_url || '').trim();
+    if (serverGfUrl.startsWith('https://www.google.com/travel/flights')) {
+      return serverGfUrl;
     }
 
-    // Fallback builder for cached itineraries created prior to DeepLinkResolver upgrade
+    // Client-side fallback builder for cached El Al itineraries
     const orig = String(it.origin_iata || 'TLV').toUpperCase();
     const dest = String(it.destination_iata || 'FCO').toUpperCase();
     const retOrig = String(it.return_origin_iata || dest).toUpperCase();
-    const journeyType = retOrig === dest ? '1' : '2';
-    const depParts = String(it.departure_date || '2027-04-11').split('-').map(Number);
-    const retParts = String(it.return_date || '2027-04-18').split('-').map(Number);
-    const outLeg = (it.outbound_legs && it.outbound_legs[0]) || {};
-    const inLeg = (it.inbound_legs && it.inbound_legs[0]) || {};
-    const outFn = extractElAlFlightDigitsJs(outLeg.flight_number, '381');
-    const inFn = extractElAlFlightDigitsJs(inLeg.flight_number, '384');
+    const depIso = String(it.departure_date || '2027-04-11');
+    const retIso = String(it.return_date || '2027-04-18');
 
     const prof = state.profile || {};
     let adt = Math.max(1, Number(prof.adults_count || 2));
@@ -597,31 +583,27 @@
     });
     inf = Math.min(inf, adt);
 
+    const paxParts = [adt === 1 ? '1 adult' : `${adt} adults`];
+    if (chd > 0) paxParts.push(chd === 1 ? '1 child' : `${chd} children`);
+    if (inf > 0) paxParts.push(inf === 1 ? '1 infant' : `${inf} infants`);
+    const paxPhrase =
+      paxParts.length === 1
+        ? paxParts[0]
+        : paxParts.length === 2
+          ? `${paxParts[0]} and ${paxParts[1]}`
+          : `${paxParts[0]}, ${paxParts[1]} and ${paxParts[2]}`;
+
+    const qStr =
+      retOrig === dest
+        ? `Flights to ${dest} from ${orig} on ${depIso} through ${retIso} with ${paxPhrase} nonstop on EL AL`
+        : `Flights from ${orig} to ${dest} on ${depIso} and from ${retOrig} to ${orig} on ${retIso} with ${paxPhrase} nonstop on EL AL`;
+
     const params = new URLSearchParams();
-    params.set('agentPCCode', 'GGL');
-    params.set('lang', langCode);
-    params.set('market', 'IL');
-    params.set('journeyType', journeyType);
-    params.set('cabin', 'Economy');
-    params.set('bonus', 'false');
-    params.set('origin', orig);
-    params.set('destination', dest);
-    params.set('departDay', String(depParts[2] || 1));
-    params.set('departMonth', String(Math.max(0, (depParts[1] || 1) - 1)));
-    params.set('airlineOutSegment1', 'LY');
-    params.set('flightNumberOutSegment1', outFn);
-    params.set('rbdOutSegment1', 'Y');
-    params.set('returnFrom', retOrig);
-    params.set('returnTo', orig);
-    params.set('returnDay', String(retParts[2] || 1));
-    params.set('returnMonth', String(Math.max(0, (retParts[1] || 1) - 1)));
-    params.set('airlineInSegment1', 'LY');
-    params.set('flightNumberInSegment1', inFn);
-    params.set('rbdInSegment1', 'Y');
-    params.set('ADT', String(adt));
-    if (chd > 0) params.set('CHD', String(chd));
-    if (inf > 0) params.set('INF', String(inf));
-    return `https://booking.elal.com/booking/flights?${params.toString()}`;
+    params.set('q', qStr);
+    params.set('curr', 'USD');
+    params.set('gl', 'IL');
+    params.set('hl', 'en');
+    return `https://www.google.com/travel/flights?${params.toString()}`;
   }
 
   function formatLegFlightBadge(leg) {
@@ -746,7 +728,7 @@
         const summaryText = buildIntuitiveProposalSummary(p);
         const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
         const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
-        const elalBookUrl = resolveElAlBookingUrl(it, isHe);
+        const elalBookUrl = resolveElAlBookingUrl(it);
         const outLeg = (it.outbound_legs && it.outbound_legs[0]) || null;
         const inLeg = (it.inbound_legs && it.inbound_legs[0]) || null;
         const outFlightBadgeHtml = formatLegFlightBadge(outLeg);
@@ -757,8 +739,8 @@
             : it.destination_iata;
         const elalBookBtnHtml = elalBookUrl
           ? `
-                <a class="btn-elal-book" href="${elalBookUrl}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת הטיסה המוצעת באתר ההזמנות של אל על (ללא צורך בהתחברות מראש)' : 'Open this proposed flight directly on EL AL Booking'}">
-                  ✈️ ${isHe ? 'להזמנת הטיסה באל על ↗' : 'Book Flight on EL AL ↗'}
+                <a class="btn-elal-book" href="${elalBookUrl}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת טיסת אל על ב-Google Flights למעבר מאומת ישירות להזמנה באל על' : 'Open EL AL flight on Google Flights for verified handoff to EL AL booking'}">
+                  ✈️ ${isHe ? 'להזמנת טיסת אל על (Google Flights) ↗' : 'Book EL AL Flight (Google Flights) ↗'}
                 </a>
             `
           : '';

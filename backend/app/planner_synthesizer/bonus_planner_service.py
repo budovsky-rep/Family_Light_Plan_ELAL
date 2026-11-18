@@ -231,67 +231,24 @@ def _build_passenger_specs(profile: FamilyProfile) -> list[_PassengerSpec]:
     return specs
 
 
-def _extract_elal_flight_digits(flight_number: str, fallback_digits: str = "381") -> str:
-    """Extract numeric flight number without carrier prefix or leading zeros for El Al DeepLinkResolver."""
-    raw = str(flight_number or "").strip().upper()
-    m = re.search(r"(\d+)", raw)
-    if not m:
-        return fallback_digits
-    digits = m.group(1).lstrip("0")
-    return digits or "0"
-
-
-def build_elal_booking_deep_link(
+def build_elal_google_flights_url(
     origin_iata: str,
     dest_iata: str,
     return_origin_iata: str,
     dep_date: date,
     ret_date: date,
-    outbound_legs: list[FlightLeg],
-    inbound_legs: list[FlightLeg],
     passengers: list[_PassengerSpec],
     allocations: list[PassengerTicketAllocation],
-    lang: str = "he",
 ) -> str:
-    """Build an official El Al `DeepLinkResolver` URL (`https://booking.elal.com/booking/flights?...`)
-    that opens the proposed outbound & inbound El Al flights directly without requiring prior Matmid login.
+    """Build a WAF-safe Google Flights search URL pre-filtered to EL AL (`LY`), nonstop,
+    exact outbound/return dates, cabin class, and family passenger breakdown (`adults`, `children`, `infants`).
 
-    Key protocol rules from El Al's production `DeepLinkResolver` (`search-widget_prod.js`):
-    - `agentPCCode=GGL` activates `sourceCode=102` deep-link flight resolution.
-    - `bonus=false` opens the flight selection/booking page immediately without forcing login first
-      (users can toggle points / sign in on the page if desired).
-    - `departMonth` and `returnMonth` use 0-based month indices (`0` = Jan .. `11` = Dec).
-    - `journeyType`: `"1"` for standard Round-Trip, `"2"` for Open-Jaw (`return_origin_iata != dest_iata`).
-    - `cabin`: `"Economy"`, `"Premium"`, or `"Business"` (with commercial RBD `"Y"`, `"W"`, or `"C"`).
+    Clicking 'Book with EL AL' from Google Flights generates an official partner-signed handoff
+    into `booking.elal.com` that passes EL AL's F5 BIG-IP WAF without `Request Not Allowed` errors.
     """
     orig = str(origin_iata or "TLV").strip().upper()
     dest = str(dest_iata or "FCO").strip().upper()
     ret_orig = str(return_origin_iata or dest).strip().upper()
-    journey_type = "1" if ret_orig == dest else "2"
-
-    seated_cabins = [
-        str(a.cabin_class or "ECONOMY").strip().upper()
-        for a in allocations
-        if int(a.points_used or 0) > 0 or float(a.cash_fare_usd or 0.0) > 0 or float(a.taxes_usd or 0.0) > 0
-    ]
-    if seated_cabins and all(c == "BUSINESS" for c in seated_cabins):
-        cabin_param = "Business"
-        comm_rbd = "C"
-    elif seated_cabins and all(c == "PREMIUM" for c in seated_cabins):
-        cabin_param = "Premium"
-        comm_rbd = "W"
-    else:
-        cabin_param = "Economy"
-        comm_rbd = "Y"
-
-    out_fn = _extract_elal_flight_digits(
-        outbound_legs[0].flight_number if outbound_legs else "",
-        fallback_digits="381",
-    )
-    in_fn = _extract_elal_flight_digits(
-        inbound_legs[0].flight_number if inbound_legs else "",
-        fallback_digits="384",
-    )
 
     adt_count = max(
         1,
@@ -300,35 +257,49 @@ def build_elal_booking_deep_link(
     chd_count = sum(1 for p in passengers if p.requires_seat and p.is_under_12)
     inf_count = min(adt_count, sum(1 for p in passengers if not p.requires_seat))
 
-    params: list[tuple[str, str]] = [
-        ("agentPCCode", "GGL"),
-        ("lang", "en" if str(lang).lower().startswith("en") else "he"),
-        ("market", "IL"),
-        ("journeyType", journey_type),
-        ("cabin", cabin_param),
-        ("bonus", "false"),
-        ("origin", orig),
-        ("destination", dest),
-        ("departDay", str(dep_date.day)),
-        ("departMonth", str(dep_date.month - 1)),
-        ("airlineOutSegment1", "LY"),
-        ("flightNumberOutSegment1", out_fn),
-        ("rbdOutSegment1", comm_rbd),
-        ("returnFrom", ret_orig),
-        ("returnTo", orig),
-        ("returnDay", str(ret_date.day)),
-        ("returnMonth", str(ret_date.month - 1)),
-        ("airlineInSegment1", "LY"),
-        ("flightNumberInSegment1", in_fn),
-        ("rbdInSegment1", comm_rbd),
-        ("ADT", str(adt_count)),
-    ]
+    pax_parts: list[str] = [f"{adt_count} adult" if adt_count == 1 else f"{adt_count} adults"]
     if chd_count > 0:
-        params.append(("CHD", str(chd_count)))
+        pax_parts.append("1 child" if chd_count == 1 else f"{chd_count} children")
     if inf_count > 0:
-        params.append(("INF", str(inf_count)))
+        pax_parts.append("1 infant" if inf_count == 1 else f"{inf_count} infants")
 
-    return f"https://booking.elal.com/booking/flights?{urlencode(params)}"
+    if len(pax_parts) == 1:
+        pax_phrase = pax_parts[0]
+    elif len(pax_parts) == 2:
+        pax_phrase = f"{pax_parts[0]} and {pax_parts[1]}"
+    else:
+        pax_phrase = f"{pax_parts[0]}, {pax_parts[1]} and {pax_parts[2]}"
+
+    seated_cabins = [
+        str(a.cabin_class or "ECONOMY").strip().upper()
+        for a in allocations
+        if int(a.points_used or 0) > 0 or float(a.cash_fare_usd or 0.0) > 0 or float(a.taxes_usd or 0.0) > 0
+    ]
+    cabin_phrase = ""
+    if seated_cabins and all(c == "BUSINESS" for c in seated_cabins):
+        cabin_phrase = " business class"
+    elif seated_cabins and all(c == "PREMIUM" for c in seated_cabins):
+        cabin_phrase = " premium economy"
+
+    if ret_orig == dest:
+        query_str = (
+            f"Flights to {dest} from {orig} on {dep_date.isoformat()} "
+            f"through {ret_date.isoformat()} with {pax_phrase}{cabin_phrase} nonstop on EL AL"
+        )
+    else:
+        query_str = (
+            f"Flights from {orig} to {dest} on {dep_date.isoformat()} "
+            f"and from {ret_orig} to {orig} on {ret_date.isoformat()} "
+            f"with {pax_phrase}{cabin_phrase} nonstop on EL AL"
+        )
+
+    params = [
+        ("q", query_str),
+        ("curr", "USD"),
+        ("gl", "IL"),
+        ("hl", "en"),
+    ]
+    return f"https://www.google.com/travel/flights?{urlencode(params)}"
 
 
 def _cabin_award_info(
@@ -943,19 +914,22 @@ class MultiClubWalletAllocationEngine:
                 cents_per_point_value=cpp_val,
                 rbddataclients_verify_url="https://www.elal.com/rbddataclients/" if is_elal else None,
                 booking_deep_link_url=(
-                    build_elal_booking_deep_link(
+                    "https://www.elal.com/heb/israel"
+                    if is_elal
+                    else f"https://www.google.com/travel/flights?q={origin_iata}.{dest_iata}.{dep_date.isoformat()}"
+                ),
+                elal_google_flights_url=(
+                    build_elal_google_flights_url(
                         origin_iata=origin_iata,
                         dest_iata=dest_iata,
                         return_origin_iata=return_origin_iata,
                         dep_date=dep_date,
                         ret_date=ret_date,
-                        outbound_legs=outbound_legs,
-                        inbound_legs=inbound_legs,
                         passengers=passengers,
                         allocations=full_allocs,
                     )
                     if is_elal
-                    else f"https://www.google.com/travel/flights?q={origin_iata}.{dest_iata}.{dep_date.isoformat()}"
+                    else None
                 ),
             )
             return itin.to_dict()
