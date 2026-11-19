@@ -3249,7 +3249,7 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         )
         self.assertEqual(w_resp.status_code, 200)
         w_body = w_resp.json()
-        self.assertEqual(w_body["count"], 25)
+        self.assertEqual(w_body["count"], 45)
         self.assertEqual(len(w_body["vacation_types_catalog"]), 7)
         top_dest = w_body["destinations"][0]
         self.assertGreaterEqual(top_dest["weather_suitability_score"], 85.0)
@@ -3654,7 +3654,16 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
                             "economy_seats": 2,
                             "premium_seats": 0,
                             "business_seats": 0,
-                        }
+                        },
+                        {
+                            "destination_iata": "CDG",
+                            "direction": "INBOUND",
+                            "flight_number": "LY0328",
+                            "flight_date": "2026-12-14",
+                            "economy_seats": 2,
+                            "premium_seats": 0,
+                            "business_seats": 0,
+                        },
                     ],
                 },
             )

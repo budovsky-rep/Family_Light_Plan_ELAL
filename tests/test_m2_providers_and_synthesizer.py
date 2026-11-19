@@ -94,7 +94,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
     def test_anywhere_region_discovery_across_zones_a_to_e_f20(self) -> None:
         """2. Verify `F20` `ANYWHERE` expansion and multi-zone award discovery across Zones A-E."""
         anywhere_iatas = self.elal_adapter.expand_metro_iatas(["ANYWHERE"])
-        self.assertEqual(len(anywhere_iatas), 25)
+        self.assertEqual(len(anywhere_iatas), 45)
         self.assertEqual(set(anywhere_iatas), set(SUPPORTED_ELAL_DESTINATIONS))
 
         rows = self.elal_adapter.get_award_availability(
@@ -730,7 +730,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
 
-        self.assertEqual(len(DESTINATION_CATALOG), 25)
+        self.assertEqual(len(DESTINATION_CATALOG), 45)
         for _iata_key, entry in DESTINATION_CATALOG.items():
             self.assertIn("climate_profile", entry)
             self.assertIn("monthly_weather", entry)
@@ -1307,6 +1307,59 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             profile=prof_4,
         )
         self.assertEqual(len(no_return_props), 0)
+
+        # Verify single-direction live routes (e.g. LTN outbound-only on 2026-12-09 with Saturday 2026-12-12)
+        # NEVER fabricate a non-existent/Shabbat LY312 return leg, while real Open-Jaw (TLV->LTN + LHR->TLV) works
+        live_only_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "LTN",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY311",
+                    "flight_date": "2026-12-09",
+                    "economy_seats": 2,
+                    "dep_time": "05:30",
+                    "arr_time": "09:05",
+                },
+                {
+                    "destination_iata": "LHR",
+                    "direction": "INBOUND",
+                    "flight_number": "LY210",
+                    "flight_date": "2026-12-15",
+                    "premium_seats": 2,
+                    "dep_time": "16:20",
+                    "arr_time": "23:09",
+                },
+            ]
+        )
+        ltn_sat_props = live_only_planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LON"],
+                "specific_departure_date": "2026-12-09",
+                "specific_return_date": "2026-12-12",
+                "flex_days_plus_minus": 0,
+            },
+            profile=prof_4,
+        )
+        self.assertEqual(len(ltn_sat_props), 0)
+
+        lon_hanukkah_props = live_only_planner.search_vacations(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LON"],
+                "direct_holiday_code": "HANUKKAH",
+                "direct_target_year": 2026,
+            },
+            profile=prof_4,
+        )
+        for lp in lon_hanukkah_props:
+            assert lp.itinerary is not None
+            self.assertNotEqual(lp.itinerary.return_date.isoformat(), "2026-12-12")
+            for leg in lp.itinerary.inbound_legs:
+                self.assertNotEqual(leg.flight_number, "LY312")
 
 
 if __name__ == "__main__":

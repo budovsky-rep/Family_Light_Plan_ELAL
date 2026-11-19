@@ -6,7 +6,7 @@ from `https://www.elal.com/rbddataclients/` (`GeneralRestServices-GetRbdAvailabi
 16×14-day Israeli Holiday & Ministry of Education school vacation windows for all 25 supported
 `DESTINATION_CATALOG` destinations (`50` directional segments per request), and syncs them directly
 into both the local SQLite database (`data/vacation_planner.db`) and the GCP Production server
-(`http://34.165.250.15:8080/api/v1/elal-bonus/sync`).
+(`https://family-trip-planner.duckdns.org/api/v1/elal-bonus/sync`).
 
 Supports two modes:
 1. Live Headless Chrome CDP mode (default): Launches system Google Chrome (`--headless=new`)
@@ -40,21 +40,32 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_SERVER_URL = "http://34.165.250.15:8080"
+DEFAULT_SERVER_URL = "https://family-trip-planner.duckdns.org"
 DEFAULT_LOCAL_DB_PATH = str(REPO_ROOT / "data" / "vacation_planner.db")
 ELAL_RBD_PAGE_URL = "https://www.elal.com/rbddataclients/"
 ELAL_RBD_API_URL = (
     "https://www.elal.com/generalproxy/proxy/dpel/449/GeneralRestServices-GetRbdAvailability"
 )
 
-# Exact 25 supported IATA codes in DESTINATION_CATALOG (Zones A-E)
-ALL_ELAL_DESTINATIONS: list[str] = [
-    "ATH", "LCA", "RHO", "PFO", "TBS",
-    "FCO", "MXP", "VIE", "BUD", "PRG", "BER", "MUC",
-    "LHR", "LTN", "CDG", "MAD", "BCN", "AMS",
-    "BKK", "HKT", "NRT",
-    "JFK", "EWR", "MIA", "FLL",
-]
+try:
+    from backend.app.storage_cache.seed_data import DESTINATION_CATALOG as _CATALOG
+    ALL_ELAL_DESTINATIONS: list[str] = list(_CATALOG.keys())
+except Exception:
+    # Standalone fallback when run outside the repo checkout (all 45 supported destinations)
+    ALL_ELAL_DESTINATIONS = [
+        "ATH", "LCA", "RHO", "PFO", "TBS",
+        "FCO", "MXP", "VIE", "BUD", "PRG", "BER", "MUC",
+        "LHR", "LTN", "CDG", "MAD", "BCN", "AMS",
+        "BKK", "HKT", "NRT",
+        "JFK", "EWR", "MIA", "FLL",
+        "HER", "SKG", "CFU", "EFL", "JTR", "BUS", "TIV", "BEG",
+        "OTP", "SOF", "WAW", "KRK",
+        "VCE", "GVA", "FRA", "LIS", "NCE",
+        "DXB", "LAX", "BOS",
+    ]
+
+# El Al GetRbdAvailability supports at most 50 directional segments (25 round-trip destinations) per request
+MAX_DESTINATIONS_PER_AJAX_BATCH = 25
 
 # El Al calculator RBD codes: "E" = Economy, "A" = Premium
 CABIN_RBDS: tuple[str, ...] = ("E", "A")
@@ -533,10 +544,11 @@ def fetch_live_holiday_payloads_via_cdp(
     active_windows = windows or HOLIDAY_14D_WINDOWS
     valid_dests = [d for d in destinations if d in ALL_ELAL_DESTINATIONS] or list(ALL_ELAL_DESTINATIONS)
 
-    segments: list[dict[str, str]] = []
-    for d in valid_dests:
-        segments.append({"org": "TLV", "dest": d})
-        segments.append({"org": d, "dest": "TLV"})
+    dest_batches: list[list[str]] = [
+        valid_dests[i : i + MAX_DESTINATIONS_PER_AJAX_BATCH]
+        for i in range(0, len(valid_dests), MAX_DESTINATIONS_PER_AJAX_BATCH)
+    ]
+    total_segments = len(valid_dests) * 2
 
     cmd = [
         chrome_bin,
@@ -555,7 +567,8 @@ def fetch_live_holiday_payloads_via_cdp(
 
     print(
         f"Launching headless Chrome ({chrome_bin}) on CDP port {port} for "
-        f"{len(valid_dests)} destinations ({len(segments)} directional segments)..."
+        f"{len(valid_dests)} destinations ({total_segments} directional segments across "
+        f"{len(dest_batches)} batch(es) of <={MAX_DESTINATIONS_PER_AJAX_BATCH * 2} segments)..."
     )
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     cdp: Optional[_StdlibCdpWebSocket] = None
@@ -612,72 +625,134 @@ def fetch_live_holiday_payloads_via_cdp(
         if not ready:
             raise RuntimeError("jQuery $.ajax not initialized on https://www.elal.com/rbddataclients/.")
 
-        print("El Al rbddataclients SPA & Reblaze session ready. Executing 50-segment $.ajax batch queries...")
+        print("El Al rbddataclients SPA & Reblaze session ready. Checking active calculator airports & executing <=50-segment $.ajax batch queries...")
 
-        segments_json = json.dumps(segments)
+        # Inspect El Al's live <select> options so any seasonal airport currently inactive in El Al's calculator is filtered cleanly
+        opt_res = cdp.call(
+            "Runtime.evaluate",
+            {
+                "expression": """
+                (() => {
+                    const codes = new Set();
+                    document.querySelectorAll('select option').forEach((opt) => {
+                        const raw = `${opt.value || ''} ${opt.textContent || ''}`.toUpperCase();
+                        const matches = raw.match(/\\b[A-Z]{3}\\b/g) || [];
+                        matches.forEach((m) => codes.add(m));
+                    });
+                    return Array.from(codes);
+                })()
+                """,
+                "returnByValue": True,
+            },
+        )
+        page_codes = set(opt_res.get("result", {}).get("value") or [])
+        active_dests = list(valid_dests)
+        if len(page_codes) >= 15:
+            filtered = [d for d in active_dests if d in page_codes]
+            skipped = [d for d in active_dests if d not in page_codes]
+            if filtered:
+                active_dests = filtered
+                if skipped:
+                    print(
+                        f"  Note: {len(skipped)} seasonal destination(s) not listed in El Al's calculator dropdown today "
+                        f"(skipping {','.join(skipped)}; syncing {len(active_dests)} active destinations)."
+                    )
+
+        unsupported_iatas: set[str] = set()
+
+        def _query_dest_subset(
+            subset_dests: list[str],
+            start_iso: str,
+            end_iso: str,
+            rbd: str,
+        ) -> list[dict[str, Any]]:
+            clean_subset = [d for d in subset_dests if d not in unsupported_iatas]
+            if not clean_subset:
+                return []
+            segs: list[dict[str, str]] = []
+            for d in clean_subset:
+                segs.append({"org": "TLV", "dest": d})
+                segs.append({"org": d, "dest": "TLV"})
+            seg_json = json.dumps(segs)
+            js_expr = f"""
+            new Promise((resolve) => {{
+                window.$.ajax({{
+                    url: {json.dumps(ELAL_RBD_API_URL)},
+                    type: "POST",
+                    contentType: "application/json",
+                    data: JSON.stringify({{
+                        input: {{
+                            startDate: {json.dumps(start_iso)},
+                            endDate: {json.dumps(end_iso)},
+                            rbd: {json.dumps(rbd)},
+                            seg: {seg_json}
+                        }}
+                    }}),
+                    timeout: 25000,
+                    success: function(res) {{
+                        resolve({{ ok: true, data: res }});
+                    }},
+                    error: function(xhr, status, err) {{
+                        resolve({{
+                            ok: false,
+                            status: xhr ? xhr.status : 0,
+                            error: String(err || status || "ajax_error")
+                        }});
+                    }}
+                }});
+            }})
+            """
+            for _attempt in range(2):
+                eval_res = cdp.call(
+                    "Runtime.evaluate",
+                    {
+                        "expression": js_expr,
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                    },
+                )
+                val = eval_res.get("result", {}).get("value") or {}
+                if isinstance(val, dict) and val.get("ok") and isinstance(val.get("data"), dict):
+                    data_obj = val["data"]
+                    if "AccumulatedOutput" in data_obj:
+                        return [data_obj]
+                time.sleep(0.5)
+
+            # Bisect batch if El Al rejected an unsupported seasonal route inside this subset
+            if len(clean_subset) == 1:
+                bad_iata = clean_subset[0]
+                unsupported_iatas.add(bad_iata)
+                print(f"  Note: El Al API rejected route {bad_iata} — skipping {bad_iata} in remaining windows.")
+                return []
+            mid = len(clean_subset) // 2
+            out_payloads = _query_dest_subset(clean_subset[:mid], start_iso, end_iso, rbd)
+            time.sleep(0.25)
+            out_payloads.extend(_query_dest_subset(clean_subset[mid:], start_iso, end_iso, rbd))
+            return out_payloads
+
         for w_idx, win in enumerate(active_windows, start=1):
             label = win["label"]
             start_iso = win["start_iso"]
             end_iso = win["end_iso"]
+            current_dests = [d for d in active_dests if d not in unsupported_iatas]
+            current_batches = [
+                current_dests[i : i + MAX_DESTINATIONS_PER_AJAX_BATCH]
+                for i in range(0, len(current_dests), MAX_DESTINATIONS_PER_AJAX_BATCH)
+            ]
             for rbd in CABIN_RBDS:
                 cabin_label = "Economy" if rbd == "E" else "Premium"
-                js_expr = f"""
-                new Promise((resolve) => {{
-                    window.$.ajax({{
-                        url: {json.dumps(ELAL_RBD_API_URL)},
-                        type: "POST",
-                        contentType: "application/json",
-                        data: JSON.stringify({{
-                            input: {{
-                                startDate: {json.dumps(start_iso)},
-                                endDate: {json.dumps(end_iso)},
-                                rbd: {json.dumps(rbd)},
-                                seg: {segments_json}
-                            }}
-                        }}),
-                        timeout: 25000,
-                        success: function(res) {{
-                            resolve({{ ok: true, data: res }});
-                        }},
-                        error: function(xhr, status, err) {{
-                            resolve({{
-                                ok: false,
-                                status: xhr ? xhr.status : 0,
-                                error: String(err || status || "ajax_error")
-                            }});
-                        }}
-                    }});
-                }})
-                """
-                attempt_ok = False
-                for attempt in range(2):
-                    eval_res = cdp.call(
-                        "Runtime.evaluate",
-                        {
-                            "expression": js_expr,
-                            "awaitPromise": True,
-                            "returnByValue": True,
-                        },
-                    )
-                    val = eval_res.get("result", {}).get("value") or {}
-                    if isinstance(val, dict) and val.get("ok") and isinstance(val.get("data"), dict):
-                        data_obj = val["data"]
-                        if "AccumulatedOutput" in data_obj:
-                            collected_payloads.append(data_obj)
-                            _, _, _, _, rec_cnt = normalize_accumulated_payloads([data_obj])
-                            print(
-                                f"  [{w_idx:02d}/{len(active_windows):02d}] {label} | "
-                                f"{cabin_label} ({rbd}): {rec_cnt} available flight records"
-                            )
-                            attempt_ok = True
-                            break
-                    time.sleep(0.8)
-                if not attempt_ok:
-                    print(
-                        f"  [{w_idx:02d}/{len(active_windows):02d}] {label} | "
-                        f"{cabin_label} ({rbd}): 0 records"
-                    )
-                time.sleep(0.25)
+                window_cabin_cnt = 0
+                for b_dests in current_batches:
+                    batch_objs = _query_dest_subset(b_dests, start_iso, end_iso, rbd)
+                    for data_obj in batch_objs:
+                        collected_payloads.append(data_obj)
+                        _, _, _, _, rec_cnt = normalize_accumulated_payloads([data_obj])
+                        window_cabin_cnt += rec_cnt
+                    time.sleep(0.25)
+                print(
+                    f"  [{w_idx:02d}/{len(active_windows):02d}] {label} | "
+                    f"{cabin_label} ({rbd}): {window_cabin_cnt} available flight records"
+                )
 
         return collected_payloads
     finally:
@@ -691,6 +766,93 @@ def fetch_live_holiday_payloads_via_cdp(
                 proc.kill()
             except Exception:
                 pass
+
+
+def push_existing_local_db_to_server(
+    server_url: str,
+    local_db_path: str = DEFAULT_LOCAL_DB_PATH,
+) -> int:
+    """Push already-synced `#live` rows from `local_db_path` directly to `server_url` without re-scraping El Al."""
+    import sqlite3
+
+    db_file = Path(local_db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise RuntimeError(f"Local SQLite DB not found: {db_file}")
+
+    conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT origin_iata, destination_iata, direction, flight_date, flight_number,
+                   departure_time_local, arrival_time_local,
+                   economy_award_seats, economy_seats_is_two_plus,
+                   premium_award_seats, premium_seats_is_two_plus,
+                   business_award_seats, business_seats_is_two_plus
+            FROM elal_bonus_availability
+            WHERE source_url LIKE '%#live%'
+            ORDER BY flight_date, flight_number
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    records: list[dict[str, Any]] = []
+    dests_seen: set[str] = set()
+    dates_seen: list[str] = []
+
+    for r in rows:
+        orig = str(r["origin_iata"] or "").strip().upper()
+        dest = str(r["destination_iata"] or "").strip().upper()
+        route = f"{orig}{dest}"
+        fdate = str(r["flight_date"] or "").strip()
+        fnum = str(r["flight_number"] or "").strip().upper()
+        carrier = "LY"
+        num_digits = fnum[2:] if fnum.startswith("LY") else fnum
+        dep_t = _normalize_time_field(r["departure_time_local"], fdate) if r["departure_time_local"] else ""
+        arr_t = _normalize_time_field(r["arrival_time_local"], fdate) if r["arrival_time_local"] else ""
+
+        route_dest = orig if dest == "TLV" else dest
+        dests_seen.add(route_dest)
+        dates_seen.append(fdate)
+
+        for rbd_code, seats_col, two_plus_col in (
+            ("E", "economy_award_seats", "economy_seats_is_two_plus"),
+            ("A", "premium_award_seats", "premium_seats_is_two_plus"),
+            ("I", "business_award_seats", "business_seats_is_two_plus"),
+        ):
+            cnt = int(r[seats_col] or 0)
+            if cnt <= 0:
+                continue
+            avail_str = "2+" if (cnt >= 2 and bool(r[two_plus_col])) else str(cnt)
+            rec: dict[str, Any] = {
+                "SegmentRoute": route,
+                "SegmentDepDate": f"{fdate}T00:00:00",
+                "FlightCarrier": carrier,
+                "FlightNumber": num_digits,
+                "RBD": rbd_code,
+                "NewAvailability": avail_str,
+            }
+            if dep_t:
+                rec["SegmentDepTime"] = dep_t
+            if arr_t:
+                rec["SegmentArrTime"] = arr_t
+            records.append(rec)
+
+    if not records:
+        print(f"No #live rows found in {db_file}.")
+        return 0
+
+    consolidated = {"AccumulatedOutput": {"resultSet": [{"Record": records}]}}
+    sorted_dests = sorted(dests_seen)
+    min_d, max_d = min(dates_seen), max(dates_seen)
+    print(
+        f"Loaded {len(rows)} local #live flight rows ({len(records)} cabin records) across "
+        f"{len(sorted_dests)} destinations ({min_d} .. {max_d}) from {db_file}."
+    )
+    remote_cnt = push_records_to_server(server_url, sorted_dests, min_d, max_d, consolidated)
+    print(f"Synced {remote_cnt} merged #live flight rows to remote server ({server_url}).")
+    return remote_cnt
 
 
 def sync_from_exported_file(
@@ -816,6 +978,12 @@ def main() -> None:
         help="Path to exported JSON file (pure Python upload, zero browser binaries)",
     )
     parser.add_argument(
+        "--push-local-db",
+        action="store_true",
+        default=False,
+        help="Upload already-synced #live rows from local SQLite DB to remote server without re-running Chrome",
+    )
+    parser.add_argument(
         "--save-json",
         default="",
         help="Optional path to save the normalized AccumulatedOutput JSON snapshot",
@@ -833,6 +1001,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     also_local = bool(args.also_local and not args.no_local)
+
+    if args.push_local_db:
+        push_existing_local_db_to_server(server_url=args.server, local_db_path=args.local_db)
+        return
 
     if args.from_file:
         sync_from_exported_file(

@@ -82,16 +82,22 @@ if not hasattr(ChildTripImpact, "camp_days_overlapped"):
 
 # Compatible regional Open-Jaw airport clusters (never pair across distant zones like FCO and JFK)
 OPEN_JAW_CLUSTERS: list[set[str]] = [
-    {"FCO", "MXP"},
+    {"FCO", "MXP", "VCE"},
     {"LHR", "LTN"},
-    {"BER", "MUC"},
+    {"BER", "MUC", "FRA"},
     {"VIE", "BUD", "PRG"},
     {"MAD", "BCN"},
     {"CDG", "AMS"},
-    {"ATH", "RHO"},
+    {"GVA", "NCE"},
+    {"ATH", "RHO", "HER", "SKG"},
+    {"CFU", "EFL"},
     {"LCA", "PFO"},
+    {"TBS", "BUS"},
+    {"TIV", "BEG"},
+    {"OTP", "SOF"},
+    {"WAW", "KRK"},
     {"BKK", "HKT"},
-    {"JFK", "EWR"},
+    {"JFK", "EWR", "BOS"},
     {"MIA", "FLL"},
 ]
 
@@ -787,6 +793,28 @@ class MultiClubWalletAllocationEngine:
                 )
 
         meta = DESTINATION_CATALOG.get(dest_iata, {})
+        in_meta_check = DESTINATION_CATALOG.get(return_origin_iata, meta)
+
+        # Never fabricate a synthetic El Al / Sundor fallback leg on Yom Kippur or Shabbat
+        if outbound_award is None and commercial_offer is None:
+            out_carrier = str(meta.get("operating_carrier", "LY"))
+            out_dep_t = str(meta.get("dep_time_out", "07:15"))
+            out_arr_t = str(meta.get("arr_time_out", "10:00"))
+            if dep_date in YOM_KIPPUR_CLOSED_DATES or (
+                out_carrier in ("LY", "2U")
+                and is_shabbat_blocked_for_elal(dep_date, out_dep_t, out_arr_t)
+            ):
+                return None
+        if inbound_award is None and commercial_offer is None:
+            in_carrier = str(in_meta_check.get("operating_carrier", "LY"))
+            in_dep_t = str(in_meta_check.get("dep_time_in", "21:45"))
+            in_arr_t = str(in_meta_check.get("arr_time_in", "02:10"))
+            if ret_date in YOM_KIPPUR_CLOSED_DATES or (
+                in_carrier in ("LY", "2U")
+                and is_shabbat_blocked_for_elal(ret_date, in_dep_t, in_arr_t)
+            ):
+                return None
+
         city_he = str(meta.get("city_he") or (commercial_offer or {}).get("destination_city_he") or dest_iata)
         city_en = str(meta.get("city_en") or (commercial_offer or {}).get("destination_city_en") or dest_iata)
         trip_nights = max(1, (ret_date - dep_date).days)
@@ -2171,6 +2199,25 @@ class BonusVacationPlannerService:
                     seen_pairs.add(pair)
                     selected.append(w)
 
+            # Priority 1b: windows with compatible Open-Jaw round-trip award availability (e.g. TLV->LTN + LHR->TLV)
+            if len(expanded_destinations) >= 2:
+                for w in all_windows:
+                    if len(selected) >= live_cap:
+                        break
+                    pair = (w.start_date, w.end_date)
+                    if pair in seen_pairs:
+                        continue
+                    has_oj_dest = any(
+                        w.start_date in out_by_dest.get(d_out, set())
+                        and w.end_date in in_by_dest.get(d_in, set())
+                        for d_out in expanded_destinations
+                        for d_in in expanded_destinations
+                        if _are_open_jaw_compatible(d_out, d_in)
+                    )
+                    if has_oj_dest:
+                        seen_pairs.add(pair)
+                        selected.append(w)
+
             # Second priority: windows with one-way award availability
             for w in all_windows:
                 if len(selected) >= live_cap:
@@ -2301,37 +2348,6 @@ class BonusVacationPlannerService:
         live_only_inventory = self._has_live_only_inventory()
         n_seated, _ = FamilyBaggageNormalizer.count_seated_and_lap_passengers(active_profile)
 
-        # In live-synced DB mode, check which destinations have both outbound and inbound live inventory
-        # across the candidate search span so we never invent synthetic return dates (e.g. 2027-04-28 LCA)
-        # when real bidirectional flights exist, while still allowing one-way fallback if a route only has 1 direction.
-        dests_with_bidirectional_live: set[str] = set()
-        if live_only_inventory and candidate_windows:
-            min_cand = min(w.start_date for w in candidate_windows)
-            max_cand = max(w.end_date for w in candidate_windows)
-            for d_check in active_destinations:
-                has_out = bool(
-                    self.elal_adapter.get_award_availability(
-                        destinations=[d_check],
-                        start_date=min_cand,
-                        end_date=max_cand,
-                        origin=query.origin_iata,
-                        include_sundor_flights=query.include_sundor_flights,
-                        direction="OUTBOUND",
-                    )
-                )
-                has_in = bool(
-                    self.elal_adapter.get_award_availability(
-                        destinations=[d_check],
-                        start_date=min_cand,
-                        end_date=max_cand,
-                        origin=query.origin_iata,
-                        include_sundor_flights=query.include_sundor_flights,
-                        direction="INBOUND",
-                    )
-                )
-                if has_out and has_in:
-                    dests_with_bidirectional_live.add(d_check)
-
         raw_proposals: list[VacationOptionProposal] = []
 
         for window in candidate_windows:
@@ -2408,12 +2424,13 @@ class BonusVacationPlannerService:
                     in_aw = in_awards[0] if in_awards else None
                     if out_aw is None and in_aw is None:
                         continue
-                    # In live-synced DB mode, when a destination has real bidirectional inventory in the
-                    # search span, never fabricate a missing outbound/inbound leg on dates with no live flight
-                    # (e.g. avoids inventing LY412 on 2027-04-28 when real returns exist on 2027-04-26).
-                    if dest_iata in dests_with_bidirectional_live and (
-                        out_aw is None or in_aw is None
-                    ):
+                    # In live-synced DB mode (`ELAL_LIVE_FETCH_ENABLED=1` or `#live`-only DB), NEVER fabricate
+                    # a missing outbound or inbound El Al flight leg from static catalog templates on dates
+                    # lacking a real `#live` flight row — even when a route only has 1 direction of award seats
+                    # (e.g. avoids inventing LTN LY312 on Saturday 2026-12-12 when LTN only has outbound awards;
+                    # genuine Open-Jaw pairings like TLV->LTN + LHR->TLV still synthesize below via
+                    # `window_outbound_by_dest` / `window_inbound_by_dest`).
+                    if live_only_inventory and (out_aw is None or in_aw is None):
                         continue
 
                     # Evaluate all 6 bonus strategies on (out_aw, in_aw)

@@ -24,13 +24,17 @@
     jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
   };
 
-  // Exact 25 supported destinations in DESTINATION_CATALOG (no ZRH)
+  // All 45 supported destinations in DESTINATION_CATALOG (no ZRH)
   const PRIORITY_IATAS = [
     "ATH", "LCA", "RHO", "PFO", "TBS",
     "FCO", "MXP", "VIE", "BUD", "PRG", "BER", "MUC",
     "LHR", "LTN", "CDG", "MAD", "BCN", "AMS",
     "BKK", "HKT", "NRT",
-    "JFK", "EWR", "MIA", "FLL"
+    "JFK", "EWR", "MIA", "FLL",
+    "HER", "SKG", "CFU", "EFL", "JTR", "BUS", "TIV", "BEG",
+    "OTP", "SOF", "WAW", "KRK",
+    "VCE", "GVA", "FRA", "LIS", "NCE",
+    "DXB", "LAX", "BOS"
   ];
   const ALLOWED_IATA_SET = new Set(PRIORITY_IATAS);
 
@@ -431,7 +435,7 @@
       chrome.runtime.sendMessage(
         {
           action: "SYNC_ELAL_ROWS",
-          serverUrl: "http://34.165.250.15:8080",
+          serverUrl: "https://family-trip-planner.duckdns.org",
           rows: rows
         },
         (resp) => {
@@ -531,7 +535,20 @@
         btnEl.style.background = "#ef4444";
       }
 
-      const segments = buildAllDirectionalSegments(PRIORITY_IATAS);
+      const pageOptionCodes = new Set();
+      document.querySelectorAll("select option").forEach((opt) => {
+        const raw = `${opt.value || ""} ${opt.textContent || ""}`.toUpperCase();
+        (raw.match(/\b[A-Z]{3}\b/g) || []).forEach((c) => pageOptionCodes.add(c));
+      });
+      const activeIatas =
+        pageOptionCodes.size >= 15
+          ? PRIORITY_IATAS.filter((c) => pageOptionCodes.has(c))
+          : PRIORITY_IATAS.slice();
+      const targetIatas = activeIatas.length > 0 ? activeIatas : PRIORITY_IATAS.slice();
+      const destBatches = [];
+      for (let i = 0; i < targetIatas.length; i += 25) {
+        destBatches.push(targetIatas.slice(i, i + 25));
+      }
       const allCollectedRows = [];
 
       for (let wIdx = 0; wIdx < YEARLY_HOLIDAY_WINDOWS.length && autoPilotRunning; wIdx++) {
@@ -543,22 +560,26 @@
 
           if (statusEl) {
             const rangeNote = `${win.startIso.slice(0, 10)}..${win.endIso.slice(0, 10)}`;
-            statusEl.textContent = `⚡ חלון [${wIdx + 1}/${YEARLY_HOLIDAY_WINDOWS.length}] ${win.label} (${rangeNote}) | ${cabinObj.name} (${cabinObj.rbd}) | 25 יעדים במקביל...`;
+            statusEl.textContent = `⚡ חלון [${wIdx + 1}/${YEARLY_HOLIDAY_WINDOWS.length}] ${win.label} (${rangeNote}) | ${cabinObj.name} (${cabinObj.rbd}) | ${targetIatas.length} יעדים...`;
           }
 
-          const batchRes = await triggerMainWorldAjaxBatch(
-            win.startIso,
-            win.endIso,
-            cabinObj.rbd,
-            segments
-          );
+          for (const batchDests of destBatches) {
+            if (!autoPilotRunning) break;
+            const segments = buildAllDirectionalSegments(batchDests);
+            const batchRes = await triggerMainWorldAjaxBatch(
+              win.startIso,
+              win.endIso,
+              cabinObj.rbd,
+              segments
+            );
 
-          if (batchRes && batchRes.okOut && Array.isArray(batchRes.rows) && batchRes.rows.length > 0) {
-            windowRows.push(...batchRes.rows);
-            allCollectedRows.push(...batchRes.rows);
+            if (batchRes && batchRes.okOut && Array.isArray(batchRes.rows) && batchRes.rows.length > 0) {
+              windowRows.push(...batchRes.rows);
+              allCollectedRows.push(...batchRes.rows);
+            }
+
+            await sleep(250);
           }
-
-          await sleep(300);
         }
 
         if (windowRows.length > 0 && autoPilotRunning) {
@@ -575,7 +596,7 @@
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
-        statusEl.textContent = `🎉 סריקת 25 היעדים הושלמה! סה"כ סונכרנו ${totalSyncedCount} רשומות זמינות אמיתיות (${allCollectedRows.length} מופעים) לשרת.`;
+        statusEl.textContent = `🎉 סריקת ${targetIatas.length} היעדים הושלמה! סה"כ סונכרנו ${totalSyncedCount} רשומות זמינות אמיתיות (${allCollectedRows.length} מופעים) לשרת.`;
       }
     } catch (err) {
       autoPilotRunning = false;
