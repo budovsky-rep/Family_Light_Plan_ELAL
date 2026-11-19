@@ -549,12 +549,16 @@ def fetch_live_holiday_payloads_via_cdp(
         for i in range(0, len(valid_dests), MAX_DESTINATIONS_PER_AJAX_BATCH)
     ]
     total_segments = len(valid_dests) * 2
+    temp_profile_dir = tempfile.mkdtemp(prefix="fvp_elal_sync_")
 
     cmd = [
         chrome_bin,
         "--headless=new",
         "--no-sandbox",
         "--disable-gpu",
+        f"--user-data-dir={temp_profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
         "--disable-blink-features=AutomationControlled",
         (
             "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -575,23 +579,27 @@ def fetch_live_holiday_payloads_via_cdp(
     collected_payloads: list[dict[str, Any]] = []
 
     try:
-        # Wait for Reblaze challenge completion ("Search for Classic award - EL AL") BEFORE attaching CDP
+        # Wait for page initialization ("Search for Classic award - EL AL") BEFORE attaching CDP
         ws_url: Optional[str] = None
-        deadline = time.time() + 35.0
+        last_seen_page: str = ""
+        deadline = time.time() + 45.0
         while time.time() < deadline:
             time.sleep(1.0)
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3.0) as r:
                     targets = json.loads(r.read().decode("utf-8"))
                     for t in targets:
-                        if (
-                            t.get("type") == "page"
-                            and "elal.com/rbddataclients" in str(t.get("url") or "")
-                            and "Search for Classic award" in str(t.get("title") or "")
-                            and t.get("webSocketDebuggerUrl")
-                        ):
-                            ws_url = str(t["webSocketDebuggerUrl"])
-                            break
+                        if t.get("type") == "page":
+                            t_url = str(t.get("url") or "")
+                            t_title = str(t.get("title") or "")
+                            last_seen_page = f"title={t_title!r} url={t_url!r}"
+                            if (
+                                "elal.com/rbddataclients" in t_url
+                                and "Search for Classic award" in t_title
+                                and t.get("webSocketDebuggerUrl")
+                            ):
+                                ws_url = str(t["webSocketDebuggerUrl"])
+                                break
                 if ws_url:
                     break
             except Exception:
@@ -599,7 +607,10 @@ def fetch_live_holiday_payloads_via_cdp(
 
         if not ws_url:
             raise RuntimeError(
-                "Timed out waiting for https://www.elal.com/rbddataclients/ SPA & Reblaze initialization."
+                f"Timed out waiting for {ELAL_RBD_PAGE_URL} initialization "
+                f"(last seen page: {last_seen_page or 'CDP not reachable'}). "
+                "If you just ran a large scan, El Al may apply a ~10-15 minute rate-limit cooldown "
+                "before allowing another automated session (or use the Chrome extension in a regular browser)."
             )
 
         cdp = _StdlibCdpWebSocket(ws_url, timeout=40.0)
@@ -778,6 +789,7 @@ def fetch_live_holiday_payloads_via_cdp(
                 proc.kill()
             except Exception:
                 pass
+        shutil.rmtree(temp_profile_dir, ignore_errors=True)
 
 
 def push_existing_local_db_to_server(

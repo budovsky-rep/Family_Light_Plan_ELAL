@@ -113,7 +113,8 @@ h1,
 h2,
 h3,
 .hero-headline,
-.proposal-dest-title {
+.proposal-dest-title,
+.awaiting-flights-headline {
   font-family: var(--font-display);
 }
 
@@ -992,6 +993,98 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   font-size: var(--fs-body);
   color: #7F1D1D;
   overflow-wrap: break-word;
+}
+
+.awaiting-flights-showcase {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  min-height: clamp(360px, 54vh, 480px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background-color: #0B1F3A;
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(7, 21, 41, 0.04) 0%,
+      rgba(7, 21, 41, 0.14) 46%,
+      rgba(7, 21, 41, 0.72) 76%,
+      rgba(7, 21, 41, 0.92) 100%
+    ),
+    url("/vacation-awaiting-flights.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid rgba(20, 82, 166, 0.22);
+  box-shadow: var(--shadow-elevated);
+  color: #FFFFFF;
+}
+
+.awaiting-flights-scrim {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding-block: 24px;
+  padding-inline: 22px;
+  text-align: start;
+}
+
+.awaiting-flights-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.awaiting-flights-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 5px;
+  padding-inline: 13px;
+  border-radius: 999px;
+  background: rgba(11, 31, 58, 0.74);
+  border: 1px solid rgba(250, 204, 21, 0.55);
+  color: #FEF08A;
+  font-size: var(--fs-label);
+  font-weight: 700;
+  backdrop-filter: blur(8px);
+}
+
+.awaiting-flights-dest-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-block: 5px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  color: #F8FAFC;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+}
+
+.awaiting-flights-headline {
+  margin: 0;
+  font-size: clamp(1.55rem, 2.5vw, 2.2rem);
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  color: #FFFFFF;
+  text-shadow: 0 2px 12px rgba(7, 21, 41, 0.55);
+}
+
+.awaiting-flights-sub {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--fs-strong);
+  line-height: 1.55;
+  color: #E5EFFD;
+  text-shadow: 0 1px 6px rgba(7, 21, 41, 0.5);
 }
 
 .weather-fallback-card {
@@ -1962,6 +2055,16 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
 
   .stub-strategy-tag {
     width: auto;
+  }
+
+  .awaiting-flights-showcase {
+    min-height: clamp(560px, calc(100vh - 230px), 860px);
+  }
+
+  .awaiting-flights-scrim {
+    padding-block: 34px;
+    padding-inline: 34px;
+    gap: 12px;
   }
 }
 

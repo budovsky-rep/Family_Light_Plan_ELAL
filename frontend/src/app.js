@@ -802,21 +802,37 @@
     }
 
     if (!state.proposals || state.proposals.length === 0) {
-      const emptyMsg = state.statusMessageHe && isHe
-        ? state.statusMessageHe
-        : state.statusMessageEn && !isHe
-          ? state.statusMessageEn
-          : isHe
-            ? 'אין משיכה של טיסות מהשרת (לא נמצאו טיסות מסונכרנות במסד הנתונים עבור יעד ומועד זה).'
-            : 'No flights fetched from the server for this route and date window.';
+      const NO_SYNCED_FLIGHTS_TOKEN_HE = 'אין משיכה של טיסות מהשרת';
+      const rawHe = String(state.statusMessageHe || '');
+      const isStandardUnsynced = !rawHe || rawHe.includes(NO_SYNCED_FLIGHTS_TOKEN_HE);
+      const selectDestEl = document.getElementById('select-destination');
+      const selectedDestOpt = selectDestEl && selectDestEl.selectedOptions && selectDestEl.selectedOptions[0];
+      const destCode = selectDestEl ? String(selectDestEl.value || '').trim() : '';
+      const destLabel =
+        selectedDestOpt && destCode && destCode !== 'ANYWHERE'
+          ? String(selectedDestOpt.textContent || '').trim()
+          : '';
+
+      const badgeText = isHe ? '✈️ מחכה למשיכת טיסות' : '✈️ Awaiting Flight Sync';
+      const headlineText = isHe ? 'מחכה למשיכת טיסות' : 'Awaiting Flight Sync';
+      const subText = isStandardUnsynced
+        ? isHe
+          ? 'טרם נמשכו טיסות בונוס זמינות עבור היעד והחופשה שנבחרו. אפשר לבחור יעד או מועד אחר בטופס, או להריץ סנכרון טיסות מול אל על.'
+          : 'No synced award flights are currently loaded for the selected destination and holiday window. Pick another destination or holiday, or sync El Al availability.'
+        : isHe
+          ? rawHe
+          : String(state.statusMessageEn || 'No matching flights found for the current search filters.');
+
       container.innerHTML = `
-        <div class="status-banner-card">
-          <strong class="status-banner-title">
-            ⚠️ ${isHe ? 'אין משיכה של טיסות מהשרת' : 'No Flights Fetched From Server'}
-          </strong>
-          <p class="status-banner-body">
-            ${escapeHtml(emptyMsg)}
-          </p>
+        <div class="awaiting-flights-showcase" role="status" aria-live="polite">
+          <div class="awaiting-flights-scrim">
+            <div class="awaiting-flights-badges">
+              <span class="awaiting-flights-pill">${escapeHtml(badgeText)}</span>
+              ${destLabel ? `<span class="awaiting-flights-dest-pill">📍 ${escapeHtml(destLabel)}</span>` : ''}
+            </div>
+            <h3 class="awaiting-flights-headline">${escapeHtml(headlineText)}</h3>
+            <p class="awaiting-flights-sub">${escapeHtml(subText)}</p>
+          </div>
         </div>
       `;
       return;
