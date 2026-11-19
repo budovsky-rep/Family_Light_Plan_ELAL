@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import date
+from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
@@ -153,6 +153,35 @@ HOLIDAY_14D_WINDOWS: list[dict[str, str]] = [
         "end_iso": "2027-10-29T21:00:00.000Z",
     },
 ]
+
+
+def build_rolling_14d_windows(
+    days_ahead: int = 350,
+    ref_date: Optional[date] = None,
+) -> list[dict[str, str]]:
+    """Build contiguous 14-day windows covering the entire rolling year ahead (`[today .. today + days_ahead]`),
+    including both holidays and regular non-holiday weeks.
+
+    El Al's `GetRbdAvailability` endpoint requires `endDate - startDate == 14 days` formatted as
+    `YYYY-MM-DDT21:00:00.000Z` (midnight local Israel time for the next calendar date).
+    """
+    anchor = ref_date or date.today()
+    horizon = max(14, min(364, int(days_ahead or 350)))
+    num_windows = (horizon + 13) // 14
+    windows: list[dict[str, str]] = []
+    for idx in range(num_windows):
+        start_utc_day = anchor - timedelta(days=1) + timedelta(days=14 * idx)
+        end_utc_day = start_utc_day + timedelta(days=14)
+        local_start = start_utc_day + timedelta(days=1)
+        local_end = end_utc_day
+        windows.append(
+            {
+                "label": f"Full-Year Window {idx + 1:02d}/{num_windows:02d} ({local_start.isoformat()} .. {local_end.isoformat()})",
+                "start_iso": f"{start_utc_day.isoformat()}T21:00:00.000Z",
+                "end_iso": f"{end_utc_day.isoformat()}T21:00:00.000Z",
+            }
+        )
+    return windows
 
 
 class _StdlibCdpWebSocket:
@@ -541,7 +570,7 @@ def fetch_live_holiday_payloads_via_cdp(
     """
     chrome_bin = _find_chrome_binary()
     port = _find_free_port()
-    active_windows = windows or HOLIDAY_14D_WINDOWS
+    active_windows = windows or build_rolling_14d_windows(days_ahead=350)
     valid_dests = [d for d in destinations if d in ALL_ELAL_DESTINATIONS] or list(ALL_ELAL_DESTINATIONS)
 
     dest_batches: list[list[str]] = [
@@ -771,11 +800,13 @@ def fetch_live_holiday_payloads_via_cdp(
                         collected_payloads.append(data_obj)
                         _, _, _, _, rec_cnt = normalize_accumulated_payloads([data_obj])
                         window_cabin_cnt += rec_cnt
-                    time.sleep(0.55)
+                    time.sleep(0.6)
                 print(
                     f"  [{w_idx:02d}/{len(active_windows):02d}] {label} | "
                     f"{cabin_label} ({rbd}): {window_cabin_cnt} available flight records"
                 )
+            if w_idx % 8 == 0 and w_idx < len(active_windows):
+                time.sleep(2.5)
 
         return collected_payloads
     finally:
@@ -927,15 +958,23 @@ def sync_from_exported_file(
 def run_sync_with_system_chrome(
     server_url: str,
     destinations: list[str],
-    days_ahead: int = 345,
+    days_ahead: int = 350,
     local_db_path: str = DEFAULT_LOCAL_DB_PATH,
     also_local: bool = True,
     skip_remote: bool = False,
     save_json_path: str = "",
+    holidays_only: bool = False,
 ) -> dict[str, int]:
     """Fetch live El Al Economy (`E`) & Premium (`A`) availability via headless Chrome CDP and sync."""
-    _ = days_ahead
-    raw_payloads = fetch_live_holiday_payloads_via_cdp(destinations=destinations)
+    target_windows = (
+        HOLIDAY_14D_WINDOWS
+        if holidays_only
+        else build_rolling_14d_windows(days_ahead=days_ahead)
+    )
+    raw_payloads = fetch_live_holiday_payloads_via_cdp(
+        destinations=destinations,
+        windows=target_windows,
+    )
     consolidated, dests, min_d, max_d, raw_rec_cnt = normalize_accumulated_payloads(raw_payloads)
 
     print(
@@ -1015,13 +1054,19 @@ def main() -> None:
     parser.add_argument(
         "--destinations",
         default=",".join(ALL_ELAL_DESTINATIONS),
-        help="Comma-separated destination IATA codes (default: all 25 catalog destinations)",
+        help="Comma-separated destination IATA codes (default: all 45 catalog destinations)",
     )
     parser.add_argument(
         "--days",
         type=int,
-        default=345,
-        help="Horizon in days ahead (default: 345)",
+        default=350,
+        help="Continuous rolling full-year horizon in days ahead, including non-holiday weeks (default: 350)",
+    )
+    parser.add_argument(
+        "--holidays-only",
+        action="store_true",
+        default=False,
+        help="Scan only the 16 holiday windows instead of the full rolling year",
     )
     args = parser.parse_args()
     also_local = bool(args.also_local and not args.no_local)
@@ -1049,6 +1094,7 @@ def main() -> None:
         also_local=also_local,
         skip_remote=args.skip_remote,
         save_json_path=args.save_json,
+        holidays_only=args.holidays_only,
     )
 
 

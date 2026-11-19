@@ -39,6 +39,7 @@ AUTUMN_WINTER_HOLIDAY_CODES: set[str] = {
     "ROSH_HASHANAH",
     "SUKKOT",
     "YOM_KIPPUR_SUKKOT",
+    "YOM_KIPPUR_SUKKOT_BRIDGE",
     "HANUKKAH",
 }
 
@@ -330,11 +331,27 @@ class VacationMaximizerEngine:
         self, query: FlightSearchQuery | dict[str, Any], profile: FamilyProfile
     ) -> list[CandidateVacationWindow]:
         """Generate and rank candidate vacation windows for Mode 1, Mode 2, or Mode 3."""
-        q = (
-            query
-            if isinstance(query, FlightSearchQuery)
-            else FlightSearchQuery.from_dict(query)
-        )
+        resolved_ty: Optional[int] = None
+        if isinstance(query, FlightSearchQuery):
+            q = query
+        else:
+            q_dict = dict(query)
+            raw_ty = q_dict.get("direct_target_year")
+            if raw_ty is not None and raw_ty != "" and not isinstance(raw_ty, bool):
+                try:
+                    ty_int = int(raw_ty)
+                except (ValueError, TypeError, OverflowError):
+                    ty_int = None
+                if ty_int is not None and 2036 <= ty_int <= 2099:
+                    resolved_ty = ty_int
+                    q_dict["direct_target_year"] = None
+                    if str(q_dict.get("date_selection_mode") or "") == "HOLIDAY_DIRECT_INTENT":
+                        q_dict["school_year"] = resolve_holiday_direct_intent_school_year(
+                            str(q_dict.get("direct_holiday_code") or "PESACH"), ty_int
+                        )
+            q = FlightSearchQuery.from_dict(q_dict)
+            if resolved_ty is not None:
+                setattr(q, "_resolved_target_year", resolved_ty)
         mode = (
             q.date_selection_mode
             if isinstance(q.date_selection_mode, DateSelectionMode)
@@ -398,7 +415,17 @@ class VacationMaximizerEngine:
         self, query: FlightSearchQuery, profile: FamilyProfile
     ) -> list[CandidateVacationWindow]:
         holiday_code = str(query.direct_holiday_code or "PESACH").strip().upper()
-        target_year = int(query.direct_target_year or 2027)
+        resolved_ty = getattr(query, "_resolved_target_year", None)
+        if query.direct_target_year is not None:
+            target_year = int(query.direct_target_year)
+        elif resolved_ty is not None:
+            target_year = int(resolved_ty)
+        else:
+            upcoming_occ = self.calendar_service.resolve_upcoming_holiday_occurrence(
+                holiday_code=holiday_code,
+                profile=profile,
+            )
+            target_year = int(upcoming_occ["target_year"])
         school_year = resolve_holiday_direct_intent_school_year(
             holiday_code, target_year
         )
@@ -407,9 +434,7 @@ class VacationMaximizerEngine:
         self.calendar_service.get_calendar_windows(school_year)
 
         target_codes = [holiday_code]
-        if holiday_code == "SUKKOT":
-            target_codes = ["YOM_KIPPUR_SUKKOT", "SUKKOT"]
-        elif holiday_code == "YOM_KIPPUR_SUKKOT":
+        if holiday_code in ("SUKKOT", "YOM_KIPPUR_SUKKOT", "YOM_KIPPUR_SUKKOT_BRIDGE"):
             target_codes = ["YOM_KIPPUR_SUKKOT", "SUKKOT"]
 
         sub_query = FlightSearchQuery(
@@ -424,7 +449,7 @@ class VacationMaximizerEngine:
             school_year=school_year,
             target_holiday_codes=target_codes,
             direct_holiday_code=holiday_code,
-            direct_target_year=target_year,
+            direct_target_year=target_year if 2025 <= target_year <= 2035 else None,
             min_trip_nights=query.min_trip_nights,
             max_trip_nights=query.max_trip_nights,
             max_bridge_days_shift=query.max_bridge_days_shift,
@@ -443,9 +468,9 @@ class VacationMaximizerEngine:
         all_windows = self.calendar_service.get_calendar_windows(school_year)
 
         requested_codes = {c.upper() for c in (query.target_holiday_codes or []) if c}
-        if "SUKKOT" in requested_codes:
+        if "SUKKOT" in requested_codes or "YOM_KIPPUR_SUKKOT_BRIDGE" in requested_codes:
             requested_codes.add("YOM_KIPPUR_SUKKOT")
-        if "YOM_KIPPUR_SUKKOT" in requested_codes:
+        if "YOM_KIPPUR_SUKKOT" in requested_codes or "YOM_KIPPUR_SUKKOT_BRIDGE" in requested_codes:
             requested_codes.add("SUKKOT")
 
         if requested_codes:
@@ -499,6 +524,11 @@ class VacationMaximizerEngine:
                 relevant_wins = h_wins
             if h_code == "SUMMER_AUGUST" and child_fws:
                 macro_start = max(w.start_date for w in relevant_wins)
+            elif query.direct_holiday_code == "SUKKOT" and h_code == "YOM_KIPPUR_SUKKOT":
+                macro_start = min(
+                    max(w.end_date for w in relevant_wins),
+                    min(w.start_date for w in relevant_wins) + timedelta(days=5),
+                )
             else:
                 macro_start = min(w.start_date for w in relevant_wins)
             macro_end = max(w.end_date for w in relevant_wins)

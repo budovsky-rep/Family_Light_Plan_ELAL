@@ -3434,6 +3434,9 @@ class TestTier1F30CliCompanion(Tier1BaseTestCase):
 # ============================================================================
 class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
     def test_f31_1_root_index_html_served_with_rtl_hebrew_and_4_zones(self) -> None:
+        from bs4 import BeautifulSoup
+        import re
+
         client = self.get_client()
         resp = client.get("/")
         self.assertEqual(resp.status_code, 200)
@@ -3451,6 +3454,42 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         # Mobile bottom nav must be hidden on desktop
         self.assertRegex(html, r'<nav[^>]*class="mobile-bottom-nav"[^>]*hidden')
 
+        # Run 3 UI invariants on GET /
+        for removed_token in (
+            'id="select-direct-year"',
+            'id="tab-mode-moe"',
+            "מקסום שנתי",
+            'id="controls-moe-maximize"',
+            'id="select-airline-mode"',
+            "חברות תעופה ומועדון",
+            'id="wallets-list-container"',
+            'id="btn-add-wallet"',
+            'id="family-clubs-totals-strip"',
+            "EL AL rbddataclients + MoE",
+            "brand-badge",
+        ):
+            self.assertNotIn(removed_token, html)
+
+        soup = BeautifulSoup(html, "html.parser")
+        dest_sel = soup.find("select", id="select-destination")
+        self.assertIsNotNone(dest_sel)
+        selected_dest_opts = [o for o in dest_sel.find_all("option") if o.has_attr("selected")]
+        self.assertEqual(len(selected_dest_opts), 1)
+        self.assertEqual(selected_dest_opts[0].get("value"), "ANYWHERE")
+
+        tab_specific = soup.find("button", id="tab-mode-specific")
+        self.assertIsNotNone(tab_specific)
+        self.assertFalse(tab_specific.has_attr("hidden"))
+        for manual_id in ("input-dep-date", "input-ret-date", "input-flex-days", "prof-matmid-points"):
+            self.assertIsNotNone(soup.find(id=manual_id), f"Missing #{manual_id}")
+
+        holiday_sel = soup.find("select", id="select-direct-holiday")
+        self.assertIsNotNone(holiday_sel)
+        h_opts = holiday_sel.find_all("option")
+        self.assertEqual(len(h_opts), 11)
+        for opt in h_opts:
+            self.assertRegex(opt.text.strip(), r"\b20\d{2}\s*\(\d+\s*(?:ימים|יום)\)$")
+
     def test_f31_2_responsive_css_mobile_360_430_and_desktop_1280_breakpoints_and_logical_rtl(
         self,
     ) -> None:
@@ -3463,7 +3502,9 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertNotIn("padding-block: 18px 88px", css)
         self.assertNotIn("scroll-snap-type: x mandatory", css)
         self.assertRegex(css, r"\.mobile-bottom-nav\s*\{[^}]*display:\s*none\s*!important")
-        self.assertRegex(css, r"\.mode-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)")
+        self.assertRegex(css, r"\.mode-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)")
+        self.assertNotIn("#tab-mode-specific[hidden]", css)
+        self.assertNotIn(".brand-badge", css)
         self.assertRegex(css, r"\.form-grid-2\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)")
         self.assertRegex(css, r"\.form-grid-3\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)")
 
@@ -3527,13 +3568,30 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertIn(fw.value, combined)
         for club in LoyaltyProgramCode:
             self.assertIn(club.value, combined)
-        # Verify dynamic child & wallet cards in app.js use desktop multi-column form classes
+        # Verify dynamic child cards & Run 3 single household Matmid balance / rolling holiday contracts in app.js
         self.assertIn("form-grid form-grid-2", app_js)
-        self.assertIn("form-grid form-grid-3", app_js)
         self.assertIn("desktop-nav-btn", app_js)
-        # Verify wallet removal button (`data-remove-wallet`) and automatic family points calculation
-        self.assertIn("data-remove-wallet", app_js)
-        self.assertIn("recalculateHouseholdPointsFromWallets", app_js)
+        for required_js_token in (
+            "prof-matmid-points",
+            "syncHouseholdMatmidBalance",
+            "/api/v1/moe-calendar/upcoming",
+            "applyHolidayDurationDefault",
+            "HOLIDAY_DIRECT_INTENT",
+            "SPECIFIC_DATES",
+            "EL_AL_ONLY",
+            "ELAL_MATMID",
+            "ANYWHERE",
+        ):
+            self.assertIn(required_js_token, app_js)
+        for removed_js_token in (
+            "data-remove-wallet",
+            "wallets-list-container",
+            "recalculateHouseholdPointsFromWallets",
+            "select-airline-mode",
+            "select-direct-year",
+            "מקסום שנתי",
+        ):
+            self.assertNotIn(removed_js_token, app_js)
         self.assertIn("אין משיכה של טיסות מהשרת", app_js)
         # Verify vacation style & weather suitability controls in UI
         for vtype_token in (
@@ -3723,6 +3781,75 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertIn(logical_prop, css)
         for forbidden_physical in ("margin-left:", "margin-right:", "padding-left:", "padding-right:", "border-left:", "border-right:", "text-align: left", "text-align: right"):
             self.assertNotIn(forbidden_physical, css)
+
+    def test_f31_6_run3_rolling_holidays_manual_flex_dates_and_household_matmid_pool(
+        self,
+    ) -> None:
+        live_db, _ = self.make_isolated_env(auto_seed=True)
+        client = self.get_client(live_db)
+
+        # 1. Rolling 1-year holidays endpoint advances years automatically across reference dates
+        up_26 = client.get("/api/v1/moe-calendar/upcoming?as_of=2026-11-19").json()
+        up_27 = client.get("/api/v1/moe-calendar/upcoming?as_of=2027-05-15").json()
+        self.assertEqual(up_26["count"], 11)
+        self.assertEqual(up_27["count"], 11)
+        map_26 = {h["holiday_code"]: h for h in up_26["holidays"]}
+        map_27 = {h["holiday_code"]: h for h in up_27["holidays"]}
+        self.assertEqual(map_26["HANUKKAH"]["target_year"], 2026)
+        self.assertEqual(map_27["HANUKKAH"]["target_year"], 2027)
+        self.assertEqual(map_26["PESACH"]["target_year"], 2027)
+        self.assertEqual(map_27["PESACH"]["target_year"], 2028)
+        self.assertEqual(map_26["YOM_HAATZMAUT"]["target_year"], 2027)
+        self.assertEqual(map_27["YOM_HAATZMAUT"]["target_year"], 2028)
+
+        # 2. YOM_KIPPUR_SUKKOT_BRIDGE (14d) vs SUKKOT (9d) & ANYWHERE default discovery
+        bridge_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "YOM_KIPPUR_SUKKOT_BRIDGE",
+                "direct_target_year": map_26["YOM_KIPPUR_SUKKOT_BRIDGE"]["target_year"],
+                "max_trip_nights": map_26["YOM_KIPPUR_SUKKOT_BRIDGE"]["holiday_days"],
+                "airline_selection_mode": "EL_AL_ONLY",
+                "enabled_loyalty_programs": ["ELAL_MATMID"],
+                "destination_iatas": ["ANYWHERE"],
+                "matmid_points_balance": 185000,
+            },
+        )
+        self.assertEqual(bridge_resp.status_code, 200)
+        bridge_body = bridge_resp.json()
+        self.assertGreater(bridge_body["count"], 0)
+        self.assertGreaterEqual(len(bridge_body["expanded_destinations"]), 40)
+        for p in bridge_body["proposals"]:
+            self.assertTrue(p["itinerary"]["departure_date"].startswith("2027-10"))
+            self.assertTrue(p["itinerary"]["is_elal_flight"])
+
+        # 3. Manual Date Entry (`SPECIFIC_DATES`) + `±` flexibility + household Matmid balance pool
+        for matmid_bal in (30000, 300000, 0):
+            man_resp = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-04-12",
+                    "specific_return_date": "2027-04-19",
+                    "flex_days_plus_minus": 2,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "enabled_loyalty_programs": ["ELAL_MATMID"],
+                    "destination_iatas": ["ANYWHERE"],
+                    "matmid_points_balance": matmid_bal,
+                },
+            )
+            self.assertEqual(man_resp.status_code, 200)
+            man_body = man_resp.json()
+            self.assertGreater(man_body["count"], 0)
+            for prop in man_body["proposals"]:
+                itin = prop["itinerary"]
+                self.assertLessEqual(itin["total_matmid_points"], matmid_bal)
+                self.assertIn(itin["primary_carrier_iata"], ("LY", "2U"))
+                self.assertGreaterEqual(itin["departure_date"], "2027-04-10")
+                self.assertLessEqual(itin["departure_date"], "2027-04-14")
+                self.assertGreaterEqual(itin["return_date"], "2027-04-17")
+                self.assertLessEqual(itin["return_date"], "2027-04-21")
 
 
 # ============================================================================

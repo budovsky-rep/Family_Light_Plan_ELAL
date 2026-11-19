@@ -72,7 +72,10 @@ from backend.app.storage_cache.seed_data import (
     build_default_family_profile,
     is_shabbat_blocked_for_elal,
 )
-from backend.app.vacation_optimizer.maximizer_engine import VacationMaximizerEngine
+from backend.app.vacation_optimizer.maximizer_engine import (
+    VacationMaximizerEngine,
+    resolve_holiday_direct_intent_school_year,
+)
 
 # Ensure ChildTripImpact exposes `.camp_days_overlapped` as a property alias for `.nitzanim_days_overlapped`
 if not hasattr(ChildTripImpact, "camp_days_overlapped"):
@@ -867,7 +870,6 @@ class MultiClubWalletAllocationEngine:
             ref_mode = allocs[0].ticket_mode if allocs else "ELAL_MATMID_BONUS"
             ref_dir = allocs[0].direction if allocs else "ROUND_TRIP"
             ref_cabin = allocs[0].cabin_class if allocs else "ECONOMY"
-            ref_rbd = allocs[0].rbd_code if allocs else "E"
             ref_prog = allocs[0].program_code if allocs else "ELAL_MATMID"
             for inf in lap_infants:
                 allocs.append(
@@ -876,7 +878,7 @@ class MultiClubWalletAllocationEngine:
                         ticket_mode=ref_mode,
                         direction=ref_dir,
                         cabin_class=ref_cabin,
-                        rbd_code=ref_rbd,
+                        rbd_code="INF",
                         points_used=0,
                         cash_fare_usd=0.0,
                         taxes_usd=0.0,
@@ -1599,7 +1601,7 @@ class MultiClubWalletAllocationEngine:
         # =====================================================================
         if strat_str == "MULTI_CLUB_PER_PASSENGER_SPLIT":
             wallets = self._prepare_working_wallets(profile, prog_list)
-            if not wallets:
+            if len(wallets) < 2:
                 return None
 
             if outbound_award is not None and inbound_award is not None:
@@ -2137,9 +2139,115 @@ class BonusVacationPlannerService:
             if isinstance(query.date_selection_mode, DateSelectionMode)
             else DateSelectionMode(str(query.date_selection_mode))
         )
+        live_only = self._has_live_only_inventory()
+
         if mode == DateSelectionMode.SPECIFIC_DATES:
-            cap = 5 if len(expanded_destinations) <= 4 else 2
-            return all_windows[:cap]
+            min_d = min(w.start_date for w in all_windows)
+            max_d = max(w.end_date for w in all_windows)
+            cached_awards = self.repository.get_cached_elal_bonus(
+                destinations=expanded_destinations,
+                start_date=min_d,
+                end_date=max_d,
+                include_expired=False,
+            )
+            out_by_dest: dict[str, set[date]] = {}
+            in_by_dest: dict[str, set[date]] = {}
+            out_dates: set[date] = set()
+            in_dates: set[date] = set()
+            for a in cached_awards:
+                if (
+                    a.economy_award_seats <= 0
+                    and a.premium_award_seats <= 0
+                    and a.business_award_seats <= 0
+                ):
+                    continue
+                if a.direction == "OUTBOUND":
+                    out_dates.add(a.flight_date)
+                    out_by_dest.setdefault(a.destination_iata, set()).add(a.flight_date)
+                elif a.direction == "INBOUND":
+                    in_dates.add(a.flight_date)
+                    in_by_dest.setdefault(a.origin_iata, set()).add(a.flight_date)
+
+            spec_cap = min(len(all_windows), 25)
+            spec_selected: list[CandidateVacationWindow] = []
+            spec_seen: set[tuple[date, date]] = set()
+
+            # In offline/seeded mode, keep the base/top window first so exact dates stay represented
+            if not live_only and all_windows:
+                base_pair = (all_windows[0].start_date, all_windows[0].end_date)
+                spec_seen.add(base_pair)
+                spec_selected.append(all_windows[0])
+
+            # Priority 1: windows with round-trip award availability on the same destination
+            for w in all_windows:
+                if len(spec_selected) >= spec_cap:
+                    break
+                pair = (w.start_date, w.end_date)
+                if pair in spec_seen:
+                    continue
+                has_rt_dest = any(
+                    w.start_date in out_by_dest.get(d, set())
+                    and w.end_date in in_by_dest.get(d, set())
+                    for d in expanded_destinations
+                )
+                if has_rt_dest:
+                    spec_seen.add(pair)
+                    spec_selected.append(w)
+
+            # Priority 1b: windows with compatible Open-Jaw round-trip award availability
+            if len(expanded_destinations) >= 2 and len(spec_selected) < spec_cap:
+                oj_pairs = [
+                    (d_out, d_in)
+                    for d_out in expanded_destinations
+                    for d_in in expanded_destinations
+                    if d_out in out_by_dest
+                    and d_in in in_by_dest
+                    and _are_open_jaw_compatible(d_out, d_in)
+                ]
+                if oj_pairs:
+                    for w in all_windows:
+                        if len(spec_selected) >= spec_cap:
+                            break
+                        pair = (w.start_date, w.end_date)
+                        if pair in spec_seen:
+                            continue
+                        has_oj_dest = any(
+                            w.start_date in out_by_dest[d_out]
+                            and w.end_date in in_by_dest[d_in]
+                            for d_out, d_in in oj_pairs
+                        )
+                        if has_oj_dest:
+                            spec_seen.add(pair)
+                            spec_selected.append(w)
+
+            # Priority 2: windows with one-way award availability
+            for w in all_windows:
+                if len(spec_selected) >= spec_cap:
+                    break
+                pair = (w.start_date, w.end_date)
+                if (w.start_date in out_dates or w.end_date in in_dates) and pair not in spec_seen:
+                    spec_seen.add(pair)
+                    spec_selected.append(w)
+
+            if live_only:
+                if not spec_selected:
+                    return all_windows[:2]
+                if all_windows and len(spec_selected) < spec_cap:
+                    base_pair = (all_windows[0].start_date, all_windows[0].end_date)
+                    if base_pair not in spec_seen:
+                        spec_seen.add(base_pair)
+                        spec_selected.append(all_windows[0])
+                return spec_selected
+
+            fallback_cap = max(len(spec_selected), 5 if len(expanded_destinations) <= 4 else 2)
+            for w in all_windows:
+                if len(spec_selected) >= min(fallback_cap, spec_cap):
+                    break
+                pair = (w.start_date, w.end_date)
+                if pair not in spec_seen:
+                    spec_seen.add(pair)
+                    spec_selected.append(w)
+            return spec_selected
 
         # Canonical benchmark date pairs from APPLICATION_PLAN.md §3.6 & §5.2
         canonical_pairs: set[tuple[date, date]] = {
@@ -2200,23 +2308,30 @@ class BonusVacationPlannerService:
                     selected.append(w)
 
             # Priority 1b: windows with compatible Open-Jaw round-trip award availability (e.g. TLV->LTN + LHR->TLV)
-            if len(expanded_destinations) >= 2:
-                for w in all_windows:
-                    if len(selected) >= live_cap:
-                        break
-                    pair = (w.start_date, w.end_date)
-                    if pair in seen_pairs:
-                        continue
-                    has_oj_dest = any(
-                        w.start_date in out_by_dest.get(d_out, set())
-                        and w.end_date in in_by_dest.get(d_in, set())
-                        for d_out in expanded_destinations
-                        for d_in in expanded_destinations
-                        if _are_open_jaw_compatible(d_out, d_in)
-                    )
-                    if has_oj_dest:
-                        seen_pairs.add(pair)
-                        selected.append(w)
+            if len(expanded_destinations) >= 2 and len(selected) < live_cap:
+                oj_pairs = [
+                    (d_out, d_in)
+                    for d_out in expanded_destinations
+                    for d_in in expanded_destinations
+                    if d_out in out_by_dest
+                    and d_in in in_by_dest
+                    and _are_open_jaw_compatible(d_out, d_in)
+                ]
+                if oj_pairs:
+                    for w in all_windows:
+                        if len(selected) >= live_cap:
+                            break
+                        pair = (w.start_date, w.end_date)
+                        if pair in seen_pairs:
+                            continue
+                        has_oj_dest = any(
+                            w.start_date in out_by_dest[d_out]
+                            and w.end_date in in_by_dest[d_in]
+                            for d_out, d_in in oj_pairs
+                        )
+                        if has_oj_dest:
+                            seen_pairs.add(pair)
+                            selected.append(w)
 
             # Second priority: windows with one-way award availability
             for w in all_windows:
@@ -2252,11 +2367,75 @@ class BonusVacationPlannerService:
         profile: Optional[FamilyProfile | dict[str, Any]] = None,
     ) -> list[VacationOptionProposal]:
         """Execute end-to-end vacation search across Date Modes 1/2/3 and Airline Modes 1/2."""
-        query = (
-            query_data
-            if isinstance(query_data, FlightSearchQuery)
-            else FlightSearchQuery.from_dict(query_data)
-        )
+        matmid_override: Optional[int] = None
+        if isinstance(query_data, dict):
+            q_dict = dict(query_data)
+            if (
+                "matmid_points_balance" in q_dict
+                and q_dict["matmid_points_balance"] is not None
+                and q_dict["matmid_points_balance"] != ""
+            ):
+                matmid_override = max(0, int(q_dict["matmid_points_balance"]))
+
+            raw_dmode = str(q_dict.get("date_selection_mode") or "")
+            if (
+                raw_dmode == "SPECIFIC_DATES"
+                and "min_trip_nights" not in q_dict
+                and "max_trip_nights" not in q_dict
+                and q_dict.get("specific_departure_date")
+                and q_dict.get("specific_return_date")
+            ):
+                try:
+                    dep_raw = q_dict["specific_departure_date"]
+                    ret_raw = q_dict["specific_return_date"]
+                    dep_dt = (
+                        dep_raw
+                        if isinstance(dep_raw, date)
+                        else date.fromisoformat(str(dep_raw).strip()[:10])
+                    )
+                    ret_dt = (
+                        ret_raw
+                        if isinstance(ret_raw, date)
+                        else date.fromisoformat(str(ret_raw).strip()[:10])
+                    )
+                    if ret_dt > dep_dt:
+                        base_n = (ret_dt - dep_dt).days
+                        flex_n = max(0, min(7, int(q_dict.get("flex_days_plus_minus", 0))))
+                        q_dict["min_trip_nights"] = max(1, base_n - 2 * flex_n)
+                        q_dict["max_trip_nights"] = min(45, max(1, base_n + 2 * flex_n))
+                except Exception:
+                    pass
+            elif (
+                raw_dmode == "HOLIDAY_DIRECT_INTENT"
+                and "max_trip_nights" in q_dict
+                and "min_trip_nights" not in q_dict
+            ):
+                try:
+                    max_req = int(q_dict["max_trip_nights"])
+                    if max_req >= 1:
+                        q_dict["min_trip_nights"] = min(4, max_req)
+                except Exception:
+                    pass
+
+            resolved_ty: Optional[int] = None
+            raw_ty = q_dict.get("direct_target_year")
+            if raw_ty is not None and raw_ty != "" and not isinstance(raw_ty, bool):
+                try:
+                    ty_int = int(raw_ty)
+                except (ValueError, TypeError, OverflowError):
+                    ty_int = None
+                if ty_int is not None and 2036 <= ty_int <= 2099:
+                    resolved_ty = ty_int
+                    q_dict["direct_target_year"] = None
+                    if raw_dmode == "HOLIDAY_DIRECT_INTENT":
+                        q_dict["school_year"] = resolve_holiday_direct_intent_school_year(
+                            str(q_dict.get("direct_holiday_code") or "PESACH"), ty_int
+                        )
+            query = FlightSearchQuery.from_dict(q_dict)
+            if resolved_ty is not None:
+                setattr(query, "_resolved_target_year", resolved_ty)
+        else:
+            query = query_data
 
         if profile is not None:
             active_profile = (
@@ -2269,6 +2448,15 @@ class BonusVacationPlannerService:
                 self.repository.get_profile(query.family_profile_id)
                 or self.repository.get_profile()
                 or build_default_family_profile()
+            )
+
+        if matmid_override is not None:
+            active_profile = FamilyProfile.from_dict(
+                {
+                    **active_profile.to_dict(),
+                    "matmid_points_balance": matmid_override,
+                    "passenger_loyalty_wallets": [],
+                }
             )
 
         query.family_profile_id = active_profile.id
@@ -2295,12 +2483,14 @@ class BonusVacationPlannerService:
             self.repository.save_search_query(query)
             return []
 
-        # When ANYWHERE (25 destinations) is requested:
-        # - In live mode: check all destinations.
-        # - In offline mode with an active vacation-type filter: rank all 25 destinations by average
+        # When ANYWHERE (45 destinations) is requested:
+        # - In live mode or when DB holds live-only inventory: check all 45 destinations.
+        # - In offline mode with an active vacation-type filter: rank all destinations by average
         #   weather suitability (`WSS`) across candidate windows and keep top 14 + all passing `effective_tau`.
-        # - In offline mode without a vacation-type filter: keep the 14 canonical destinations.
-        if len(expanded_destinations) > 10 and not self.repository.is_live_fetch_mode():
+        # - In offline mode without a vacation-type filter: keep the 14 canonical destinations (+ any `#live` routes).
+        if len(expanded_destinations) > 10 and not (
+            self.repository.is_live_fetch_mode() or self._has_live_only_inventory()
+        ):
             if has_weather_filter:
                 dest_scores: list[tuple[float, str]] = []
                 for d_code in expanded_destinations:
@@ -2328,6 +2518,22 @@ class BonusVacationPlannerService:
                     "LHR", "LTN", "CDG", "MAD", "BKK", "JFK",
                 ]
                 active_destinations = [d for d in active_destinations if d in expanded_destinations]
+                min_pw = min(w.start_date for w in prelim_windows)
+                max_pw = max(w.end_date for w in prelim_windows)
+                for row_c in self.repository.get_cached_elal_bonus(
+                    destinations=expanded_destinations,
+                    start_date=min_pw,
+                    end_date=max_pw,
+                    include_expired=False,
+                ):
+                    if "#live" in str(row_c.source_url or ""):
+                        r_dest = (
+                            row_c.destination_iata
+                            if row_c.direction == "OUTBOUND"
+                            else row_c.origin_iata
+                        )
+                        if r_dest in expanded_destinations and r_dest not in active_destinations:
+                            active_destinations.append(r_dest)
         else:
             active_destinations = list(expanded_destinations)
 
@@ -2347,8 +2553,70 @@ class BonusVacationPlannerService:
         )
         live_only_inventory = self._has_live_only_inventory()
         n_seated, _ = FamilyBaggageNormalizer.count_seated_and_lap_passengers(active_profile)
+        has_household_points = bool(
+            self.wallet_engine._prepare_working_wallets(
+                active_profile, query.enabled_loyalty_programs
+            )
+        )
+
+        # Batch pre-fetch normalized live award rows once across `[min_w_start, max_w_end]`
+        # to eliminate 500+ repetitive SQLite SELECT queries on `ANYWHERE` searches.
+        prefetched_live_awards: Optional[
+            dict[tuple[str, date, str], list[ElAlBonusAvailability]]
+        ] = None
+        if (
+            live_only_inventory
+            and airline_mode == "EL_AL_ONLY"
+            and query.search_elal_bonus_tickets
+            and active_destinations
+        ):
+            min_w_start = min(w.start_date for w in candidate_windows)
+            max_w_end = max(w.end_date for w in candidate_windows)
+            batch_rows = self.elal_adapter.get_award_availability(
+                destinations=active_destinations,
+                start_date=min_w_start,
+                end_date=max_w_end,
+                origin=query.origin_iata,
+                include_sundor_flights=query.include_sundor_flights,
+            )
+            prefetched_live_awards = {}
+            for r in batch_rows:
+                r_dest = (
+                    r.destination_iata if r.direction == "OUTBOUND" else r.origin_iata
+                )
+                prefetched_live_awards.setdefault(
+                    (r_dest, r.flight_date, r.direction), []
+                ).append(r)
+            for bucket in prefetched_live_awards.values():
+                bucket.sort(
+                    key=lambda r: (
+                        0 if "#live" in str(r.source_url or "") else 1,
+                        -(
+                            r.economy_award_seats
+                            + r.premium_award_seats
+                            + r.business_award_seats
+                        ),
+                        -r.premium_award_seats,
+                        -r.economy_award_seats,
+                        r.flight_number,
+                    )
+                )
 
         raw_proposals: list[VacationOptionProposal] = []
+        active_oj_pairs: list[tuple[str, str]] = (
+            [
+                (d_out, d_in)
+                for d_out in active_destinations
+                for d_in in active_destinations
+                if _are_open_jaw_compatible(d_out, d_in)
+            ]
+            if (
+                airline_mode == "EL_AL_ONLY"
+                and query.search_elal_bonus_tickets
+                and len(active_destinations) >= 2
+            )
+            else []
+        )
 
         for window in candidate_windows:
             if (
@@ -2408,13 +2676,21 @@ class BonusVacationPlannerService:
                                 )
                         continue
 
-                    out_awards, in_awards = self._ensure_award_rows_for_window(
-                        dest_iata=dest_iata,
-                        start_date=window.start_date,
-                        end_date=window.end_date,
-                        origin_iata=query.origin_iata,
-                        include_sundor=query.include_sundor_flights,
-                    )
+                    if prefetched_live_awards is not None:
+                        out_awards = prefetched_live_awards.get(
+                            (dest_iata, window.start_date, "OUTBOUND"), []
+                        )
+                        in_awards = prefetched_live_awards.get(
+                            (dest_iata, window.end_date, "INBOUND"), []
+                        )
+                    else:
+                        out_awards, in_awards = self._ensure_award_rows_for_window(
+                            dest_iata=dest_iata,
+                            start_date=window.start_date,
+                            end_date=window.end_date,
+                            origin_iata=query.origin_iata,
+                            include_sundor=query.include_sundor_flights,
+                        )
                     if out_awards:
                         window_outbound_by_dest[dest_iata] = out_awards[0]
                     if in_awards:
@@ -2434,14 +2710,18 @@ class BonusVacationPlannerService:
                         continue
 
                     # Evaluate all 6 bonus strategies on (out_aw, in_aw)
-                    strategies_to_try = [
-                        "HYBRID_BONUS_PLUS_CASH",
-                        "SPLIT_CABIN_BONUS",
-                        "FULL_BONUS_SAME_CABIN",
-                        "MULTI_CLUB_PER_PASSENGER_SPLIT",
-                        "ONE_WAY_BONUS_ONE_WAY_CASH",
-                        "CASH_AND_POINTS",
-                    ]
+                    strategies_to_try = (
+                        [
+                            "HYBRID_BONUS_PLUS_CASH",
+                            "SPLIT_CABIN_BONUS",
+                            "FULL_BONUS_SAME_CABIN",
+                            "MULTI_CLUB_PER_PASSENGER_SPLIT",
+                            "ONE_WAY_BONUS_ONE_WAY_CASH",
+                            "CASH_AND_POINTS",
+                        ]
+                        if has_household_points
+                        else ["COMMERCIAL_CASH_ONLY"]
+                    )
                     for strat_name in strategies_to_try:
                         if strat_name == "HYBRID_BONUS_PLUS_CASH" and not query.allow_hybrid_bonus_cash:
                             continue
@@ -2503,41 +2783,34 @@ class BonusVacationPlannerService:
                             )
 
             # Synthesize Open-Jaw Bonus pairings across compatible regional clusters (e.g. MXP <-> FCO)
-            if (
-                airline_mode == "EL_AL_ONLY"
-                and query.search_elal_bonus_tickets
-                and len(active_destinations) >= 2
-            ):
-                for d_out in active_destinations:
-                    for d_in in active_destinations:
-                        if not _are_open_jaw_compatible(d_out, d_in):
-                            continue
-                        out_aw = window_outbound_by_dest.get(d_out)
-                        in_aw = window_inbound_by_dest.get(d_in)
-                        if out_aw is None or in_aw is None:
-                            continue
-                        bench_oj = float(
-                            DESTINATION_CATALOG.get(d_out, {}).get("rt_cash_per_pax_usd", 590.0)
-                        )
-                        oj_dict = self.wallet_engine.allocate_family_tickets(
-                            profile=active_profile,
-                            outbound_award=out_aw,
-                            inbound_award=in_aw,
-                            cash_benchmark_per_pax=bench_oj,
-                            strategy="ONE_WAY_BONUS_ONE_WAY_CASH",
-                            preferred_cabins=query.preferred_cabins,
-                            enabled_programs=query.enabled_loyalty_programs,
-                        )
-                        if oj_dict is not None:
-                            itin_oj = FlightItinerary.from_dict(oj_dict)
-                            raw_proposals.append(
-                                self._make_proposal_from_itinerary(
-                                    query=query,
-                                    window=window,
-                                    itinerary=itin_oj,
-                                    n_seated=n_seated,
-                                )
+            if active_oj_pairs:
+                for d_out, d_in in active_oj_pairs:
+                    out_aw = window_outbound_by_dest.get(d_out)
+                    in_aw = window_inbound_by_dest.get(d_in)
+                    if out_aw is None or in_aw is None:
+                        continue
+                    bench_oj = float(
+                        DESTINATION_CATALOG.get(d_out, {}).get("rt_cash_per_pax_usd", 590.0)
+                    )
+                    oj_dict = self.wallet_engine.allocate_family_tickets(
+                        profile=active_profile,
+                        outbound_award=out_aw,
+                        inbound_award=in_aw,
+                        cash_benchmark_per_pax=bench_oj,
+                        strategy="ONE_WAY_BONUS_ONE_WAY_CASH",
+                        preferred_cabins=query.preferred_cabins,
+                        enabled_programs=query.enabled_loyalty_programs,
+                    )
+                    if oj_dict is not None:
+                        itin_oj = FlightItinerary.from_dict(oj_dict)
+                        raw_proposals.append(
+                            self._make_proposal_from_itinerary(
+                                query=query,
+                                window=window,
+                                itinerary=itin_oj,
+                                n_seated=n_seated,
                             )
+                        )
 
         if not raw_proposals:
             self.repository.save_search_query(query)
@@ -2696,6 +2969,7 @@ class BonusVacationPlannerService:
                 selected_ids.add(p.id)
 
         selected_proposals.sort(key=_proposal_sort_key, reverse=True)
+        selected_proposals = selected_proposals[:36]
 
         saved_proposals = self.repository.save_search_results(query, selected_proposals)
         return saved_proposals

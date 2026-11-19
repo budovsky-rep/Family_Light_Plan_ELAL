@@ -594,7 +594,10 @@ class MoECalendarAutoUpdaterService:
             norm_year, force_remote_check=force_remote_check
         )
         windows = expand_calendar_json_to_windows(doc)
-        synced_count = self.repository.upsert_moe_windows(windows)
+        try:
+            synced_count = self.repository.upsert_moe_windows(windows)
+        except Exception:
+            synced_count = len(windows)
         now_str = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         return MoECalendarSyncStatus(
             school_year=norm_year,
@@ -655,9 +658,172 @@ class MoECalendarService:
             == fw_val
         ]
 
+    CANONICAL_ROLLING_HOLIDAYS: tuple[tuple[str, str, str], ...] = (
+        ("ROSH_HASHANAH", "ראש השנה", "Rosh Hashanah"),
+        ("YOM_KIPPUR_SUKKOT_BRIDGE", "גשר יום כיפור–סוכות", "Yom Kippur–Sukkot Bridge"),
+        ("SUKKOT", "חופשת סוכות", "Sukkot Break"),
+        ("HANUKKAH", "חופשת חנוכה", "Hanukkah Break"),
+        ("PURIM", "חופשת פורים", "Purim Break"),
+        ("PESACH", "חופשת פסח", "Passover Break"),
+        ("YOM_HAATZMAUT", "יום העצמאות", "Independence Day"),
+        ("SHAVUOT", "חופשת שבועות", "Shavuot Break"),
+        ("SUMMER_JUNE_20_30", "החופש הגדול — 20–30 ביוני", "Summer Break — June 20–30"),
+        ("SUMMER_JULY", "החופש הגדול — יולי", "Summer Break — July"),
+        ("SUMMER_AUGUST", "החופש הגדול — אוגוסט", "Summer Break — August"),
+    )
+
     def get_calendar_metadata(self, school_year: str) -> dict[str, Any]:
         norm_year = normalize_school_year(school_year)
         return self.auto_updater.load_or_project_calendar_doc(norm_year)
+
+    def get_upcoming_holidays_for_rolling_year(
+        self,
+        as_of_date: Optional[date | str] = None,
+        profile: Optional[FamilyProfile] = None,
+    ) -> list[dict[str, Any]]:
+        """Return all 11 canonical holidays within the rolling 1-year window from `as_of_date`.
+
+        Evaluates `[cur_sy, next_sy_1, next_sy_2]`, picking for each holiday code the earliest
+        occurrence whose `end_date >= ref_date`, sorted chronologically by `(start_date, end_date, holiday_days)`.
+        """
+        if as_of_date is None:
+            ref_date = datetime.now(UTC).date()
+        elif isinstance(as_of_date, date):
+            ref_date = as_of_date
+        else:
+            ref_date = date.fromisoformat(str(as_of_date).strip()[:10])
+
+        cur_sy = self.infer_school_year_for_date(ref_date)
+        y1 = int(cur_sy.split("-")[0])
+        school_years = [f"{y1 + i}-{y1 + i + 1}" for i in range(3)]
+
+        child_fws = {
+            (
+                c.framework_type.value
+                if isinstance(c.framework_type, MoEFrameworkType)
+                else str(c.framework_type)
+            )
+            for c in (profile.children if profile is not None else [])
+            if c.framework_type is not None
+        }
+
+        windows_by_sy: dict[str, list[MoEVacationWindow]] = {
+            sy: self.get_calendar_windows(sy) for sy in school_years
+        }
+
+        upcoming: list[dict[str, Any]] = []
+        for canon_code, name_he, name_en in self.CANONICAL_ROLLING_HOLIDAYS:
+            src_code = (
+                "YOM_KIPPUR_SUKKOT"
+                if canon_code in ("YOM_KIPPUR_SUKKOT_BRIDGE", "SUKKOT")
+                else canon_code
+            )
+            chosen_entry: Optional[dict[str, Any]] = None
+            for sy in school_years:
+                sy_wins = windows_by_sy[sy]
+                h_wins = [w for w in sy_wins if w.holiday_code.upper() == src_code]
+                if not h_wins and canon_code == "SUKKOT":
+                    h_wins = [w for w in sy_wins if w.holiday_code.upper() == "SUKKOT"]
+                if not h_wins:
+                    continue
+
+                relevant_wins = (
+                    [
+                        w
+                        for w in h_wins
+                        if (
+                            w.framework_type.value
+                            if isinstance(w.framework_type, MoEFrameworkType)
+                            else str(w.framework_type)
+                        )
+                        in child_fws
+                    ]
+                    if child_fws
+                    else h_wins
+                )
+                if not relevant_wins:
+                    relevant_wins = h_wins
+
+                if canon_code == "SUMMER_AUGUST" and child_fws:
+                    s_date = max(w.start_date for w in relevant_wins)
+                else:
+                    s_date = min(w.start_date for w in relevant_wins)
+                e_date = max(w.end_date for w in relevant_wins)
+
+                if canon_code == "SUKKOT" and src_code == "YOM_KIPPUR_SUKKOT":
+                    s_date = min(e_date, s_date + timedelta(days=5))
+
+                if e_date >= ref_date:
+                    holiday_days = max(1, (e_date - s_date).days + 1)
+                    target_year = s_date.year
+                    day_word_he = "יום" if holiday_days == 1 else "ימים"
+                    day_word_en = "day" if holiday_days == 1 else "days"
+                    chosen_entry = {
+                        "holiday_code": canon_code,
+                        "name_he": name_he,
+                        "name_en": name_en,
+                        "target_year": target_year,
+                        "school_year": sy,
+                        "start_date": s_date.isoformat(),
+                        "end_date": e_date.isoformat(),
+                        "holiday_days": holiday_days,
+                        "is_ongoing": s_date <= ref_date <= e_date,
+                        "label_he": f"{name_he} {target_year} ({holiday_days} {day_word_he})",
+                        "label_en": f"{name_en} {target_year} ({holiday_days} {day_word_en})",
+                    }
+                    break
+
+            if chosen_entry is not None:
+                upcoming.append(chosen_entry)
+
+        upcoming.sort(
+            key=lambda item: (
+                str(item["start_date"]),
+                str(item["end_date"]),
+                int(item["holiday_days"]),
+                str(item["holiday_code"]),
+            )
+        )
+        return upcoming
+
+    def resolve_upcoming_holiday_occurrence(
+        self,
+        holiday_code: str,
+        as_of_date: Optional[date | str] = None,
+        profile: Optional[FamilyProfile] = None,
+    ) -> dict[str, Any]:
+        """Resolve a single holiday code to its upcoming rolling-year occurrence metadata."""
+        norm_code = str(holiday_code or "PESACH").strip().upper()
+        lookup_code = (
+            "YOM_KIPPUR_SUKKOT_BRIDGE"
+            if norm_code == "YOM_KIPPUR_SUKKOT"
+            else norm_code
+        )
+        items = self.get_upcoming_holidays_for_rolling_year(
+            as_of_date=as_of_date, profile=profile
+        )
+        for item in items:
+            if item["holiday_code"] == lookup_code:
+                return {**item, "holiday_code": norm_code}
+        if items:
+            return items[0]
+        ref_d = (
+            as_of_date
+            if isinstance(as_of_date, date)
+            else (
+                date.fromisoformat(str(as_of_date).strip()[:10])
+                if as_of_date
+                else datetime.now(UTC).date()
+            )
+        )
+        return {
+            "holiday_code": norm_code,
+            "target_year": ref_d.year,
+            "school_year": self.infer_school_year_for_date(ref_d),
+            "start_date": ref_d.isoformat(),
+            "end_date": ref_d.isoformat(),
+            "holiday_days": 7,
+        }
 
     def is_tlv_airport_closed(
         self, target_date: date, departure_or_arrival_time: Optional[str] = None

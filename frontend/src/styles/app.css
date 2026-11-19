@@ -195,21 +195,6 @@ h3,
   line-height: 1.25;
 }
 
-.brand-badge {
-  display: none;
-  font-family: var(--font-mono);
-  background: rgba(198, 122, 18, 0.24);
-  border: 1px solid rgba(243, 206, 142, 0.55);
-  color: #FDE68A;
-  padding-block: 2px;
-  padding-inline: 8px;
-  border-radius: 999px;
-  font-size: var(--fs-tag);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-}
-
 .desktop-zone-nav {
   display: none;
   align-items: center;
@@ -655,12 +640,6 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   gap: 6px;
 }
 
-.compact-wallets-scroll {
-  max-height: 400px;
-  overflow-y: auto;
-  padding-inline-end: 2px;
-}
-
 .compact-profile-item {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -673,10 +652,6 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   display: flex;
   flex-direction: column;
   gap: 5px;
-}
-
-.compact-profile-item.wallet-item {
-  border-inline-start-color: var(--brass-matmid);
 }
 
 .compact-item-top {
@@ -714,15 +689,6 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   margin-block-end: 0;
 }
 
-/* Wallet row: passenger + points share the first line; the club selector gets a full line so every club name fits */
-.compact-profile-item .wallet-fields {
-  grid-template-columns: minmax(0, 1fr) 116px;
-}
-
-.compact-profile-item .wallet-club-field {
-  grid-column: 1 / -1;
-}
-
 .btn-remove-inline {
   min-height: var(--control-h);
   padding-block: 4px;
@@ -741,25 +707,16 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   color: #7F1D1D;
 }
 
-.clubs-totals-strip {
-  margin-block-end: 8px;
-}
-
-/* Segmented 3-Mode Tabs */
+/* Segmented 2-Mode Tabs */
 .mode-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
   margin-block-end: 8px;
   background: var(--surface-recessed);
   padding: 3px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-}
-
-/* Specific-dates tab stays hidden (bonus sync targets holidays only): the two visible tabs share the row */
-.mode-tabs:has(#tab-mode-specific[hidden]) {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .mode-tab-btn {
@@ -817,6 +774,10 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   flex-direction: column;
   gap: 3px;
   justify-content: flex-end;
+}
+
+.form-field-full {
+  grid-column: 1 / -1;
 }
 
 .form-field label {
@@ -2140,12 +2101,6 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   .calendar-heatmap-table th,
   .calendar-heatmap-table td {
     padding-inline: 10px;
-  }
-}
-
-@media (min-width: 1560px) {
-  .brand-badge {
-    display: inline-block;
   }
 }
 

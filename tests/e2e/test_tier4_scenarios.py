@@ -595,6 +595,22 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertTrue(mobile_nav.has_attr("hidden"))
         self.assertRegex(css_text, r"\.mobile-bottom-nav\s*\{[^}]*display:\s*none\s*!important")
 
+        # Verify Run 3 UX & search-flow DOM contracts on GET /
+        self.assertIsNone(soup.find(id="select-direct-year"))
+        self.assertIsNone(soup.find(id="tab-mode-moe"))
+        self.assertIsNone(soup.find(id="select-airline-mode"))
+        self.assertIsNone(soup.find(id="wallets-list-container"))
+        self.assertIsNone(soup.find(class_="brand-badge"))
+        self.assertNotIn("EL AL rbddataclients + MoE", html_text)
+        dest_select = soup.find("select", id="select-destination")
+        self.assertIsNotNone(dest_select)
+        sel_opts = [o for o in dest_select.find_all("option") if o.has_attr("selected")]
+        self.assertEqual([o.get("value") for o in sel_opts], ["ANYWHERE"])
+        tab_spec = soup.find("button", id="tab-mode-specific")
+        self.assertIsNotNone(tab_spec)
+        self.assertFalse(tab_spec.has_attr("hidden"))
+        self.assertIsNotNone(soup.find("input", id="prof-matmid-points"))
+
         # Parse base and @media (min-width: ...) CSS rules
         clean_css = re.sub(r"/\*.*?\*/", "", css_text, flags=re.S)
 
@@ -723,11 +739,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     self.assertLessEqual(col_box[1], vp_w)
                 self.assertTrue(sidebar_box[1] <= content_box[0] or content_box[1] <= sidebar_box[0])
 
-                # Verify 3 mode tabs and form grids inside the control-rail card render side-by-side without overlapping
+                # Verify 2 mode tabs and form grids inside the control-rail card render side-by-side without overlapping
                 card_inner_w = expected_sidebar_px - (2 * px(computed.get(".zone-card", {}).get("padding-inline"))) - 2
                 tab_gap = px(computed.get(".mode-tabs", {}).get("gap"))
-                tab_w = (card_inner_w - 2 * tab_gap) / 3.0
-                self.assertGreater(tab_w, 115.0)
+                tab_w = (card_inner_w - tab_gap) / 2.0
+                self.assertGreater(tab_w, 180.0)
                 form_gap = px(computed.get(".form-grid", {}).get("gap"))
                 form3_w = (card_inner_w - 2 * form_gap) / 3.0
                 self.assertGreater(form3_w, 115.0)

@@ -43,89 +43,30 @@
     { name: "Premium", rbd: "A" }
   ];
 
-  // 16×14-day Israeli Holiday & MoE School Vacation windows (endDate - startDate == 14 days)
-  const YEARLY_HOLIDAY_WINDOWS = [
-    {
-      label: "חנוכה 2026 (א')",
-      startIso: "2026-12-01T21:00:00.000Z",
-      endIso: "2026-12-15T21:00:00.000Z"
-    },
-    {
-      label: "חנוכה 2026 (ב')",
-      startIso: "2026-12-06T21:00:00.000Z",
-      endIso: "2026-12-20T21:00:00.000Z"
-    },
-    {
-      label: "פורים 2027",
-      startIso: "2027-03-16T21:00:00.000Z",
-      endIso: "2027-03-30T21:00:00.000Z"
-    },
-    {
-      label: "פסח 2027 (לפני ליל הסדר וניצנים)",
-      startIso: "2027-04-07T21:00:00.000Z",
-      endIso: "2027-04-21T21:00:00.000Z"
-    },
-    {
-      label: "פסח 2027 (חול המועד וחג שני)",
-      startIso: "2027-04-19T21:00:00.000Z",
-      endIso: "2027-05-03T21:00:00.000Z"
-    },
-    {
-      label: "יום העצמאות 2027",
-      startIso: "2027-05-05T21:00:00.000Z",
-      endIso: "2027-05-19T21:00:00.000Z"
-    },
-    {
-      label: "שבועות 2027",
-      startIso: "2027-06-04T21:00:00.000Z",
-      endIso: "2027-06-18T21:00:00.000Z"
-    },
-    {
-      label: "סוף יוני 2027 (חטיבות ותיכונים)",
-      startIso: "2027-06-18T21:00:00.000Z",
-      endIso: "2027-07-02T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — יולי 2027 (א')",
-      startIso: "2027-07-02T21:00:00.000Z",
-      endIso: "2027-07-16T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — יולי 2027 (ב')",
-      startIso: "2027-07-16T21:00:00.000Z",
-      endIso: "2027-07-30T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — אוגוסט 2027 (א')",
-      startIso: "2027-07-30T21:00:00.000Z",
-      endIso: "2027-08-13T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — אוגוסט 2027 (ב')",
-      startIso: "2027-08-13T21:00:00.000Z",
-      endIso: "2027-08-27T21:00:00.000Z"
-    },
-    {
-      label: "סוף אוגוסט 2027",
-      startIso: "2027-08-20T21:00:00.000Z",
-      endIso: "2027-09-03T21:00:00.000Z"
-    },
-    {
-      label: "ראש השנה ויום כיפור 2027",
-      startIso: "2027-09-26T21:00:00.000Z",
-      endIso: "2027-10-10T21:00:00.000Z"
-    },
-    {
-      label: "סוכות 2027 (א')",
-      startIso: "2027-10-08T21:00:00.000Z",
-      endIso: "2027-10-22T21:00:00.000Z"
-    },
-    {
-      label: "סוכות 2027 (ב')",
-      startIso: "2027-10-15T21:00:00.000Z",
-      endIso: "2027-10-29T21:00:00.000Z"
+  // Contiguous 14-day rolling full-year windows (350 days ahead, covering all holiday & non-holiday dates)
+  function buildRolling14dWindows(daysAhead) {
+    const horizon = Math.max(14, Math.min(364, Number(daysAhead) || 350));
+    const numWindows = Math.floor((horizon + 13) / 14);
+    const now = new Date();
+    const anchorUtcMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    const dayMs = 86400000;
+    const fmtDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const out = [];
+    for (let idx = 0; idx < numWindows; idx++) {
+      const startUtcMs = anchorUtcMs - dayMs + 14 * idx * dayMs;
+      const endUtcMs = startUtcMs + 14 * dayMs;
+      const localStart = fmtDay(startUtcMs + dayMs);
+      const localEnd = fmtDay(endUtcMs);
+      out.push({
+        label: `שבועיים ${idx + 1}/${numWindows} (${localStart}..${localEnd})`,
+        startIso: `${fmtDay(startUtcMs)}T21:00:00.000Z`,
+        endIso: `${fmtDay(endUtcMs)}T21:00:00.000Z`
+      });
     }
-  ];
+    return out;
+  }
+
+  const YEARLY_HOLIDAY_WINDOWS = buildRolling14dWindows(350);
 
   const isIsolatedExtensionWorld =
     typeof chrome !== "undefined" &&
@@ -519,7 +460,7 @@
     if (autoPilotRunning) {
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
+        btnEl.textContent = "🤖 הפעל סריקת שנה מלאה (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -592,7 +533,7 @@
 
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
+        btnEl.textContent = "🤖 הפעל סריקת שנה מלאה (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -601,7 +542,7 @@
     } catch (err) {
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
+        btnEl.textContent = "🤖 הפעל סריקת שנה מלאה (Economy + Premium)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -637,14 +578,14 @@
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>✈️ סנכרון חגים מהיר (Economy + Premium) v2.0</strong>
+        <strong>✈️ סנכרון שנה מלאה באל על (Economy + Premium)</strong>
         <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">50 מקטעים במקביל</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
-        מוכן לסריקה מהירה (~20 שניות) של חגי ישראל (Economy ו-Premium) ב-25 יעדי אל על אל השרת.
+        מוכן לסריקה מלאה של השנה הקרובה (כולל ימים רגילים וחגים) בכל 45 יעדי אל על אל השרת.
       </div>
       <button id="fvp-sync-btn" type="button" style="background:#10b981;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:12.5px;">
-        🤖 הפעל סריקת חגים מהירה (Economy + Premium)
+        🤖 הפעל סריקת שנה מלאה (Economy + Premium)
       </button>
     `;
     document.body.appendChild(box);

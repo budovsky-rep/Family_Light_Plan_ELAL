@@ -2,17 +2,13 @@
  * Family Vacation Planner — Interactive Frontend Application (`frontend/src/app.js`)
  *
  * Implements:
- * - All 3 Flight Date Selection Modes:
- *   1. `SPECIFIC_DATES` (תאריכים ספציפיים — בחירת מסגרת לימודים לילד היא אופציונלי / optional / null)
- *   2. `MOE_VACATION_MAXIMIZATION` (מקסום חופשות שנתי לפי משרד החינוך)
- *   3. `HOLIDAY_DIRECT_INTENT` (חיפוש ממוקד לפי חג/חופשה ושנה — כגון פסח 2027)
- * - Both Airline Modes: `EL_AL_ONLY` (כולל חיפוש כרטיסי בונוס באתר https://www.elal.com/rbddataclients/) & `ALL_AIRLINES`
- * - Destination discovery (`ANYWHERE` + 25 destinations & metro codes `ROM`, `NYC`, `LON`, `PAR`, `TYO`)
- * - Interactive Destination Postcard Strip synced with destination selector & live search
+ * - Rolling 1-Year Holiday Selection (`HOLIDAY_DIRECT_INTENT`) with upcoming year & holiday length `(N days)`
+ *   initializing editable `#input-max-nights`
+ * - Manual Date Entry + `±` Day Flexibility (`SPECIFIC_DATES`, optional `child.framework_type`)
+ * - Exclusive El Al (`EL_AL_ONLY`) & single household Matmid balance (`#prof-matmid-points`)
+ * - Default `ANYWHERE` destination discovery across all open El Al routes
  * - Boarding-Pass styled vacation proposal cards with visual flight route telemetry
  * - All 8 Israeli Ministry of Education (`MoEFrameworkType`) frameworks + age-based auto-suggestion
- * - Per-passenger multi-club loyalty wallets across all 10 `LoyaltyProgramCode` programs
- * - All 6 Family Bonus Fulfillment Strategies & side-by-side comparison modal + `.ics` export
  * - BiDi Hebrew (`rtl` / `he`) & English (`ltr` / `en`) live layout switcher
  */
 
@@ -20,7 +16,7 @@
   'use strict';
 
   const MOE_FRAMEWORKS = [
-    { value: '', labelHe: 'ללא מסגרת / אופציונלי (Optional / null)', labelEn: 'Optional / None (Specific Dates)' },
+    { value: '', labelHe: 'ללא מסגרת / אופציונלי (Optional / null)', labelEn: 'Optional / None (Manual Dates)' },
     { value: 'DAYCARE_SUPERVISED', labelHe: 'מעונות יום בפיקוח (גילאי 0–3 — עד 8 באוגוסט)', labelEn: 'Supervised Daycare (Ages 0–3)' },
     { value: 'MUNICIPAL_GAN', labelHe: 'גני ילדים עירוניים (גילאי 3–6 — עד 30 ביוני + ניצנים)', labelEn: 'Municipal Kindergarten (Ages 3–6 + Nitzanim)' },
     { value: 'ELEMENTARY_1_3', labelHe: 'יסודי כיתות א׳–ג׳ (גילאי 6–9 — עד 30 ביוני + ניצנים)', labelEn: 'Elementary Grades 1–3 (+ Nitzanim)' },
@@ -31,18 +27,70 @@
     { value: 'RELIGIOUS_HAREDI', labelHe: 'חינוך ממלכתי-דתי / חרדי', labelEn: 'Religious / Haredi Framework' }
   ];
 
-  const LOYALTY_PROGRAMS = [
-    { value: 'ELAL_MATMID', labelHe: 'אל על הנוסע המתמיד (El Al Matmid)', labelEn: 'El Al Matmid Frequent Flyer' },
-    { value: 'BRITISH_AVIOS', label: 'British Airways Avios (Oneworld)' },
-    { value: 'FLYING_BLUE', label: 'Air France / KLM Flying Blue (SkyTeam)' },
-    { value: 'UNITED_MILEAGEPLUS', label: 'United MileagePlus (Star Alliance)' },
-    { value: 'MILES_AND_MORE', label: 'Lufthansa Group Miles & More' },
-    { value: 'DELTA_SKYMILES', label: 'Delta SkyMiles' },
-    { value: 'QANTAS_FREQUENT_FLYER', label: 'Qantas Frequent Flyer' },
-    { value: 'AEGEAN_MILES_BONUS', label: 'Aegean Miles+Bonus' },
-    { value: 'AMEX_MR_ISRAEL', label: 'Amex Membership Rewards Israel' },
-    { value: 'ISRAELI_CC_TRAVEL_POINTS', label: 'Israeli Credit Card Travel Points' }
+  const CANONICAL_ROLLING_HOLIDAYS = [
+    { code: 'ROSH_HASHANAH', nameHe: 'ראש השנה', nameEn: 'Rosh Hashanah' },
+    { code: 'YOM_KIPPUR_SUKKOT_BRIDGE', nameHe: 'גשר יום כיפור–סוכות', nameEn: 'Yom Kippur–Sukkot Bridge' },
+    { code: 'SUKKOT', nameHe: 'חופשת סוכות', nameEn: 'Sukkot Break' },
+    { code: 'HANUKKAH', nameHe: 'חופשת חנוכה', nameEn: 'Hanukkah Break' },
+    { code: 'PURIM', nameHe: 'חופשת פורים', nameEn: 'Purim Break' },
+    { code: 'PESACH', nameHe: 'חופשת פסח', nameEn: 'Passover Break' },
+    { code: 'YOM_HAATZMAUT', nameHe: 'יום העצמאות', nameEn: 'Independence Day' },
+    { code: 'SHAVUOT', nameHe: 'חופשת שבועות', nameEn: 'Shavuot Break' },
+    { code: 'SUMMER_JUNE_20_30', nameHe: 'החופש הגדול — 20–30 ביוני', nameEn: 'Summer Break — June 20–30' },
+    { code: 'SUMMER_JULY', nameHe: 'החופש הגדול — יולי', nameEn: 'Summer Break — July' },
+    { code: 'SUMMER_AUGUST', nameHe: 'החופש הגדול — אוגוסט', nameEn: 'Summer Break — August' }
   ];
+
+  const ALL_8_FRAMEWORKS = [
+    'DAYCARE_SUPERVISED',
+    'MUNICIPAL_GAN',
+    'ELEMENTARY_1_3',
+    'ELEMENTARY_4_6',
+    'MIDDLE_SCHOOL_7_9',
+    'HIGH_SCHOOL_10_12',
+    'SPECIAL_ED',
+    'RELIGIOUS_HAREDI'
+  ];
+  const K12_NO_DAYCARE = ALL_8_FRAMEWORKS.filter((fw) => fw !== 'DAYCARE_SUPERVISED');
+
+  const BUNDLED_SCHOOL_YEAR_PERIODS = {
+    '2025-2026': [
+      { code: 'ROSH_HASHANAH', start: '2025-09-22', end: '2025-09-24', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'YOM_KIPPUR_SUKKOT', start: '2025-10-01', end: '2025-10-14', fws: ALL_8_FRAMEWORKS, overrides: { HIGH_SCHOOL_10_12: ['2025-10-01', '2025-10-15'] } },
+      { code: 'HANUKKAH', start: '2025-12-16', end: '2025-12-22', fws: K12_NO_DAYCARE, overrides: {} },
+      { code: 'PURIM', start: '2026-03-03', end: '2026-03-04', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'PESACH', start: '2026-03-24', end: '2026-04-08', fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: ['2026-04-01', '2026-04-08'] } },
+      { code: 'YOM_HAATZMAUT', start: '2026-04-22', end: '2026-04-22', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SHAVUOT', start: '2026-05-21', end: '2026-05-22', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SUMMER_JUNE_20_30', start: '2026-06-19', end: '2026-06-30', fws: ['MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12'], overrides: {} },
+      { code: 'SUMMER_JULY', start: '2026-07-01', end: '2026-07-31', fws: ['MUNICIPAL_GAN', 'ELEMENTARY_1_3', 'ELEMENTARY_4_6', 'MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12', 'RELIGIOUS_HAREDI'], overrides: {} },
+      { code: 'SUMMER_AUGUST', start: '2026-08-01', end: '2026-08-31', fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: ['2026-08-09', '2026-08-31'], SPECIAL_ED: ['2026-08-16', '2026-08-31'] } }
+    ],
+    '2026-2027': [
+      { code: 'ROSH_HASHANAH', start: '2026-09-11', end: '2026-09-13', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'YOM_KIPPUR_SUKKOT', start: '2026-09-20', end: '2026-10-03', fws: ALL_8_FRAMEWORKS, overrides: { HIGH_SCHOOL_10_12: ['2026-09-20', '2026-10-04'] } },
+      { code: 'HANUKKAH', start: '2026-12-06', end: '2026-12-12', fws: K12_NO_DAYCARE, overrides: {} },
+      { code: 'PURIM', start: '2027-03-23', end: '2027-03-24', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'PESACH', start: '2027-04-13', end: '2027-04-28', fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: ['2027-04-21', '2027-04-28'] } },
+      { code: 'YOM_HAATZMAUT', start: '2027-05-12', end: '2027-05-12', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SHAVUOT', start: '2027-06-10', end: '2027-06-11', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SUMMER_JUNE_20_30', start: '2027-06-21', end: '2027-06-30', fws: ['MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12'], overrides: {} },
+      { code: 'SUMMER_JULY', start: '2027-07-01', end: '2027-07-31', fws: ['MUNICIPAL_GAN', 'ELEMENTARY_1_3', 'ELEMENTARY_4_6', 'MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12', 'RELIGIOUS_HAREDI'], overrides: {} },
+      { code: 'SUMMER_AUGUST', start: '2027-08-01', end: '2027-08-31', fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: ['2027-08-09', '2027-08-31'], SPECIAL_ED: ['2027-08-16', '2027-08-31'] } }
+    ],
+    '2027-2028': [
+      { code: 'ROSH_HASHANAH', start: '2027-10-01', end: '2027-10-03', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'YOM_KIPPUR_SUKKOT', start: '2027-10-10', end: '2027-10-23', fws: ALL_8_FRAMEWORKS, overrides: { HIGH_SCHOOL_10_12: ['2027-10-10', '2027-10-24'] } },
+      { code: 'HANUKKAH', start: '2027-12-26', end: '2028-01-01', fws: K12_NO_DAYCARE, overrides: {} },
+      { code: 'PURIM', start: '2028-03-12', end: '2028-03-13', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'PESACH', start: '2028-04-02', end: '2028-04-17', fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: ['2028-04-10', '2028-04-17'] } },
+      { code: 'YOM_HAATZMAUT', start: '2028-05-02', end: '2028-05-02', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SHAVUOT', start: '2028-05-31', end: '2028-06-01', fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SUMMER_JUNE_20_30', start: '2028-06-21', end: '2028-06-30', fws: ['MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12'], overrides: {} },
+      { code: 'SUMMER_JULY', start: '2028-07-01', end: '2028-07-31', fws: ['MUNICIPAL_GAN', 'ELEMENTARY_1_3', 'ELEMENTARY_4_6', 'MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12', 'RELIGIOUS_HAREDI'], overrides: {} },
+      { code: 'SUMMER_AUGUST', start: '2028-08-01', end: '2028-08-31', fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: ['2028-08-09', '2028-08-31'], SPECIAL_ED: ['2028-08-16', '2028-08-31'] } }
+    ]
+  };
 
   const DESTINATION_ICONS = {
     ROM: '🏛️',
@@ -119,7 +167,6 @@
   };
 
   const INITIAL_PROPOSALS_LIMIT = 6;
-  const userEditedWalletKeys = new Set();
 
   function escapeHtml(str) {
     return String(str ?? '')
@@ -128,6 +175,251 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function parseIsoParts(isoStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoStr || '').trim());
+    if (!m) return null;
+    return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+  }
+
+  function formatUtcDateIso(utcMs) {
+    const dt = new Date(utcMs);
+    const y = dt.getUTCFullYear();
+    const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(dt.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function isoToUtcMs(isoStr) {
+    const p = parseIsoParts(isoStr);
+    if (!p) return NaN;
+    return Date.UTC(p.y, p.m - 1, p.d);
+  }
+
+  function addDaysIso(isoStr, deltaDays) {
+    const ms = isoToUtcMs(isoStr);
+    if (!Number.isFinite(ms)) return isoStr;
+    return formatUtcDateIso(ms + Number(deltaDays) * 86400000);
+  }
+
+  function diffDaysIso(startIso, endIso) {
+    const s = isoToUtcMs(startIso);
+    const e = isoToUtcMs(endIso);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return 0;
+    return Math.round((e - s) / 86400000);
+  }
+
+  function utcWeekdayMon0(isoStr) {
+    // Convert JS UTC day (Sun=0..Sat=6) to Python weekday (Mon=0..Fri=4, Sat=5, Sun=6)
+    const jsDay = new Date(isoToUtcMs(isoStr)).getUTCDay();
+    return (jsDay + 6) % 7;
+  }
+
+  function getAsOfOverrideIso() {
+    if (typeof window !== 'undefined' && window.__FVP_REFERENCE_DATE__) {
+      const cand = String(window.__FVP_REFERENCE_DATE__).trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(cand)) return cand;
+    }
+    try {
+      const params = new URLSearchParams((typeof window !== 'undefined' && window.location && window.location.search) || '');
+      const qAsOf = (params.get('as_of') || '').trim().slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(qAsOf)) return qAsOf;
+    } catch (_ignore) {
+      // Ignore malformed query string
+    }
+    return null;
+  }
+
+  function getReferenceToday() {
+    const overrideIso = getAsOfOverrideIso();
+    if (overrideIso) return overrideIso;
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function inferSchoolYearForIso(isoStr) {
+    const p = parseIsoParts(isoStr) || { y: 2026, m: 11, d: 19 };
+    return p.m >= 9 ? `${p.y}-${p.y + 1}` : `${p.y - 1}-${p.y}`;
+  }
+
+  function isHebrewLeapYear(hebYear) {
+    return (((7 * hebYear + 1) % 19) + 19) % 19 < 7;
+  }
+
+  function hebrewCalendarElapsedDays(hebYear) {
+    const yPrev = hebYear - 1;
+    const monthsElapsed =
+      235 * Math.floor(yPrev / 19) +
+      12 * (yPrev % 19) +
+      Math.floor((7 * (yPrev % 19) + 1) / 19);
+    const partsElapsed = 204 + 793 * (monthsElapsed % 1080);
+    const hoursElapsed =
+      5 +
+      12 * monthsElapsed +
+      793 * Math.floor(monthsElapsed / 1080) +
+      Math.floor(partsElapsed / 1080);
+    const conjunctionDay = 1 + 29 * monthsElapsed + Math.floor(hoursElapsed / 24);
+    const conjunctionParts = 1080 * (hoursElapsed % 24) + (partsElapsed % 1080);
+
+    let altDay = conjunctionDay;
+    if (
+      conjunctionParts >= 19440 ||
+      (conjunctionDay % 7 === 2 && conjunctionParts >= 9924 && !isHebrewLeapYear(hebYear)) ||
+      (conjunctionDay % 7 === 1 && conjunctionParts >= 16789 && isHebrewLeapYear(hebYear - 1))
+    ) {
+      altDay = conjunctionDay + 1;
+    }
+    const rem = altDay % 7;
+    if (rem === 0 || rem === 3 || rem === 5) {
+      return altDay + 1;
+    }
+    return altDay;
+  }
+
+  function roshHashanahIso(hebYear) {
+    const anchorElapsed = hebrewCalendarElapsedDays(5786);
+    const targetElapsed = hebrewCalendarElapsedDays(hebYear);
+    return addDaysIso('2025-09-23', targetElapsed - anchorElapsed);
+  }
+
+  function projectSchoolYearPeriods(schoolYearStr) {
+    if (BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr]) {
+      return BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr];
+    }
+    const parts = schoolYearStr.split('-');
+    const y2 = Number(parts[1]);
+    const hebYear = y2 + 3760;
+
+    const rh1 = roshHashanahIso(hebYear);
+    const rhStart = addDaysIso(rh1, -1);
+    const rhEnd = addDaysIso(rh1, 1);
+    const ykEve = addDaysIso(rh1, 8);
+    const sukkotK9End = addDaysIso(rh1, 21);
+    const sukkot1012End = addDaysIso(rh1, 22);
+
+    const rhNext = roshHashanahIso(hebYear + 1);
+    const yearLen = diffDaysIso(rh1, rhNext);
+    const hanOffset = yearLen % 10 === 5 ? 85 : 84;
+    const hanStart = addDaysIso(rh1, hanOffset);
+    const hanEnd = addDaysIso(hanStart, 6);
+
+    const pesach1 = addDaysIso(rhNext, -163);
+    const purimStart = addDaysIso(pesach1, -30);
+    const purimEnd = addDaysIso(pesach1, -29);
+    const pesachStart = addDaysIso(pesach1, -9);
+    const pesachEnd = addDaysIso(pesach1, 6);
+    const pesachDaycareStart = addDaysIso(pesach1, -1);
+
+    const fifthIyar = addDaysIso(pesach1, 20);
+    const wdIyar = utcWeekdayMon0(fifthIyar);
+    let atzmautIso = fifthIyar;
+    if (wdIyar === 4) atzmautIso = addDaysIso(fifthIyar, -1);
+    else if (wdIyar === 5) atzmautIso = addDaysIso(fifthIyar, -2);
+    else if (wdIyar === 0) atzmautIso = addDaysIso(fifthIyar, 1);
+
+    const shavuotStart = addDaysIso(pesach1, 49);
+    const shavuotEnd = addDaysIso(pesach1, 50);
+
+    const june20Iso = `${y2}-06-20`;
+    const wdJun20 = utcWeekdayMon0(june20Iso);
+    let summer712Start = `${y2}-06-21`;
+    if (wdJun20 === 5) summer712Start = `${y2}-06-19`;
+    else if (wdJun20 === 4) summer712Start = `${y2}-06-20`;
+
+    return [
+      { code: 'ROSH_HASHANAH', start: rhStart, end: rhEnd, fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'YOM_KIPPUR_SUKKOT', start: ykEve, end: sukkotK9End, fws: ALL_8_FRAMEWORKS, overrides: { HIGH_SCHOOL_10_12: [ykEve, sukkot1012End] } },
+      { code: 'HANUKKAH', start: hanStart, end: hanEnd, fws: K12_NO_DAYCARE, overrides: {} },
+      { code: 'PURIM', start: purimStart, end: purimEnd, fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'PESACH', start: pesachStart, end: pesachEnd, fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: [pesachDaycareStart, pesachEnd] } },
+      { code: 'YOM_HAATZMAUT', start: atzmautIso, end: atzmautIso, fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SHAVUOT', start: shavuotStart, end: shavuotEnd, fws: ALL_8_FRAMEWORKS, overrides: {} },
+      { code: 'SUMMER_JUNE_20_30', start: summer712Start, end: `${y2}-06-30`, fws: ['MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12'], overrides: {} },
+      { code: 'SUMMER_JULY', start: `${y2}-07-01`, end: `${y2}-07-31`, fws: ['MUNICIPAL_GAN', 'ELEMENTARY_1_3', 'ELEMENTARY_4_6', 'MIDDLE_SCHOOL_7_9', 'HIGH_SCHOOL_10_12', 'RELIGIOUS_HAREDI'], overrides: {} },
+      { code: 'SUMMER_AUGUST', start: `${y2}-08-01`, end: `${y2}-08-31`, fws: ALL_8_FRAMEWORKS, overrides: { DAYCARE_SUPERVISED: [`${y2}-08-09`, `${y2}-08-31`], SPECIAL_ED: [`${y2}-08-16`, `${y2}-08-31`] } }
+    ];
+  }
+
+  function buildUpcomingHolidaysClient(refIso, profileObj) {
+    const curSy = inferSchoolYearForIso(refIso);
+    const y1 = Number(curSy.split('-')[0]);
+    const schoolYears = [`${y1}-${y1 + 1}`, `${y1 + 1}-${y1 + 2}`, `${y1 + 2}-${y1 + 3}`];
+    const childFws = new Set(
+      ((profileObj && profileObj.children) || [])
+        .map((c) => c && c.framework_type)
+        .filter(Boolean)
+    );
+
+    const upcoming = [];
+    CANONICAL_ROLLING_HOLIDAYS.forEach((meta) => {
+      const srcCode =
+        meta.code === 'YOM_KIPPUR_SUKKOT_BRIDGE' || meta.code === 'SUKKOT'
+          ? 'YOM_KIPPUR_SUKKOT'
+          : meta.code;
+
+      for (let i = 0; i < schoolYears.length; i += 1) {
+        const sy = schoolYears[i];
+        const periods = projectSchoolYearPeriods(sy);
+        const period = periods.find((p) => p.code === srcCode);
+        if (!period) continue;
+
+        const fwWindows = period.fws.map((fw) => {
+          const ov = period.overrides && period.overrides[fw];
+          return {
+            fw,
+            start: ov ? ov[0] : period.start,
+            end: ov ? ov[1] : period.end
+          };
+        });
+        let relevant =
+          childFws.size > 0 ? fwWindows.filter((w) => childFws.has(w.fw)) : fwWindows;
+        if (relevant.length === 0) relevant = fwWindows;
+
+        const starts = relevant.map((w) => w.start).sort();
+        const ends = relevant.map((w) => w.end).sort();
+        let sIso =
+          meta.code === 'SUMMER_AUGUST' && childFws.size > 0
+            ? starts[starts.length - 1]
+            : starts[0];
+        const eIso = ends[ends.length - 1];
+        if (meta.code === 'SUKKOT') {
+          const shifted = addDaysIso(sIso, 5);
+          sIso = shifted <= eIso ? shifted : eIso;
+        }
+
+        if (eIso >= refIso) {
+          const holidayDays = Math.max(1, diffDaysIso(sIso, eIso) + 1);
+          const targetYear = Number(sIso.slice(0, 4));
+          const dayWordHe = holidayDays === 1 ? 'יום' : 'ימים';
+          const dayWordEn = holidayDays === 1 ? 'day' : 'days';
+          upcoming.push({
+            holiday_code: meta.code,
+            name_he: meta.nameHe,
+            name_en: meta.nameEn,
+            target_year: targetYear,
+            school_year: sy,
+            start_date: sIso,
+            end_date: eIso,
+            holiday_days: holidayDays,
+            label_he: `${meta.nameHe} ${targetYear} (${holidayDays} ${dayWordHe})`,
+            label_en: `${meta.nameEn} ${targetYear} (${holidayDays} ${dayWordEn})`
+          });
+          break;
+        }
+      }
+    });
+
+    upcoming.sort((a, b) => {
+      if (a.start_date !== b.start_date) return a.start_date < b.start_date ? -1 : 1;
+      if (a.end_date !== b.end_date) return a.end_date < b.end_date ? -1 : 1;
+      if (a.holiday_days !== b.holiday_days) return a.holiday_days - b.holiday_days;
+      return a.holiday_code < b.holiday_code ? -1 : 1;
+    });
+    return upcoming;
   }
 
   const state = {
@@ -144,6 +436,12 @@
     showAllProposals: false,
     lastComparison: null,
     profile: null,
+    profileDirty: false,
+    upcomingHolidays: [],
+    userSelectedHoliday: false,
+    userEditedMaxNights: false,
+    userEditedMinNights: false,
+    userEditedManualDates: false,
     calendarData: null,
     proposals: [],
     selectedProposalIds: new Set()
@@ -345,121 +643,92 @@
     return '';
   }
 
-  function recalculateHouseholdPointsFromWallets() {
-    if (!state.profile) return { matmidTotal: 0, allClubsTotal: 0, byProgram: {} };
-    const wallets = state.profile.passenger_loyalty_wallets || [];
-    let matmidTotal = 0;
-    let allClubsTotal = 0;
-    const byProgram = {};
-
-    wallets.forEach((w) => {
-      const pts = Math.max(0, Number(w.available_points) || 0);
-      const prog = String(w.program_code || 'ELAL_MATMID');
-      allClubsTotal += pts;
-      byProgram[prog] = (byProgram[prog] || 0) + pts;
-      if (prog === 'ELAL_MATMID') {
-        matmidTotal += pts;
+  function applyHolidayDurationDefault(holidayDays) {
+    const daysNum = Math.min(45, Math.max(1, Math.round(Number(holidayDays) || 7)));
+    const maxInput = document.getElementById('input-max-nights');
+    const minInput = document.getElementById('input-min-nights');
+    if (maxInput) {
+      maxInput.value = String(daysNum);
+    }
+    if (minInput) {
+      if (!state.userEditedMinNights) {
+        minInput.value = String(Math.min(4, daysNum));
+      } else if (Number(minInput.value || 1) > daysNum) {
+        minInput.value = String(daysNum);
       }
-    });
+    }
+  }
 
-    state.profile.matmid_points_balance = matmidTotal;
+  function populateHolidaySelector(holidaysList, opts) {
+    const options = opts || {};
+    const selectEl = document.getElementById('select-direct-holiday');
+    if (!selectEl || !Array.isArray(holidaysList) || holidaysList.length === 0) return;
+
+    const prevVal = selectEl.value;
+    const isHe = state.locale === 'he';
+    const hasPrev =
+      Boolean(options.preserveSelection) &&
+      holidaysList.some((h) => h.holiday_code === prevVal);
+    const activeCode = hasPrev ? prevVal : holidaysList[0].holiday_code;
+
+    selectEl.innerHTML = holidaysList
+      .map((h) => {
+        const selAttr = h.holiday_code === activeCode ? ' selected' : '';
+        const text = isHe ? h.label_he : h.label_en;
+        return `<option value="${escapeHtml(h.holiday_code)}"${selAttr} data-year="${escapeHtml(h.target_year)}" data-days="${escapeHtml(h.holiday_days)}" data-start="${escapeHtml(h.start_date)}" data-end="${escapeHtml(h.end_date)}" data-he="${escapeHtml(h.label_he)}" data-en="${escapeHtml(h.label_en)}">${escapeHtml(text)}</option>`;
+      })
+      .join('');
+
+    selectEl.value = activeCode;
+    if (options.applyDurationDefault) {
+      const chosen = holidaysList.find((h) => h.holiday_code === activeCode) || holidaysList[0];
+      applyHolidayDurationDefault(chosen.holiday_days);
+    }
+  }
+
+  function initDefaultManualDates() {
+    if (state.userEditedManualDates) return;
+    const refIso = getReferenceToday();
+    const depInput = document.getElementById('input-dep-date');
+    const retInput = document.getElementById('input-ret-date');
+    if (depInput) depInput.value = addDaysIso(refIso, 21);
+    if (retInput) retInput.value = addDaysIso(refIso, 28);
+  }
+
+  function syncHouseholdMatmidBalance(readFromDomInput) {
     const matmidInput = document.getElementById('prof-matmid-points');
-    if (matmidInput) {
-      matmidInput.value = matmidTotal;
+    let matmidTotal = 0;
+    if (readFromDomInput && matmidInput) {
+      matmidTotal = Math.max(0, Math.round(Number(matmidInput.value || 0)));
+      if (state.profile) {
+        state.profile.matmid_points_balance = matmidTotal;
+        state.profile.passenger_loyalty_wallets = [];
+      }
+    } else if (state.profile) {
+      matmidTotal = Math.max(0, Math.round(Number(state.profile.matmid_points_balance || 0)));
+      state.profile.matmid_points_balance = matmidTotal;
+      state.profile.passenger_loyalty_wallets = [];
+      if (matmidInput) {
+        matmidInput.value = String(matmidTotal);
+      }
+    } else if (matmidInput) {
+      matmidTotal = Math.max(0, Math.round(Number(matmidInput.value || 0)));
     }
 
     const ptsPill = document.getElementById('header-points-pill');
     if (ptsPill) {
       const fmtCompact = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
       ptsPill.setAttribute('dir', 'ltr');
-      ptsPill.setAttribute(
-        'title',
-        `${matmidTotal.toLocaleString()} El Al Matmid / ${allClubsTotal.toLocaleString()} Total Points`
-      );
-      if (allClubsTotal > matmidTotal) {
-        ptsPill.textContent = `${fmtCompact(matmidTotal)} LY · ${fmtCompact(allClubsTotal)} pts`;
-      } else {
-        ptsPill.textContent = `${fmtCompact(matmidTotal)} Matmid`;
-      }
+      ptsPill.setAttribute('title', `${matmidTotal.toLocaleString()} El Al Matmid Points`);
+      ptsPill.textContent = `${fmtCompact(matmidTotal)} Matmid`;
     }
-
-    const stripEl = document.getElementById('family-clubs-totals-strip');
-    if (stripEl) {
-      const isHe = state.locale === 'he';
-      const progShortLabels = {
-        ELAL_MATMID: isHe ? 'אל על מתמיד' : 'El Al Matmid',
-        BRITISH_AVIOS: 'Avios',
-        FLYING_BLUE: 'Flying Blue',
-        UNITED_MILEAGEPLUS: 'United MP',
-        MILES_AND_MORE: 'Miles & More',
-        DELTA_SKYMILES: 'Delta SkyMiles',
-        QANTAS_FREQUENT_FLYER: 'Qantas FF',
-        AEGEAN_MILES_BONUS: 'Aegean',
-        AMEX_MR_ISRAEL: 'Amex MR IL',
-        ISRAELI_CC_TRAVEL_POINTS: isHe ? 'נקודות אשראי' : 'CC Travel Pts'
-      };
-      const breakdownPills = Object.entries(byProgram)
-        .filter(([, total]) => total > 0)
-        .map(
-          ([prog, total]) =>
-            `<span class="score-pill" dir="ltr">${escapeHtml(progShortLabels[prog] || prog)}: <strong>${Number(total).toLocaleString()}</strong></span>`
-        )
-        .join('');
-      const totalTitle = isHe ? 'סה״כ נקודות:' : 'Total Points:';
-      stripEl.innerHTML = `
-        <span class="score-pill" style="background: var(--azure-tint); border-color: var(--azure-border); color: var(--azure-elal);">
-          ${totalTitle} <strong dir="ltr">${allClubsTotal.toLocaleString()}</strong>
-        </span>
-        ${breakdownPills}
-      `;
-    }
-
-    return { matmidTotal, allClubsTotal, byProgram };
-  }
-
-  function getWalletKey(w, idx) {
-    return (w && w.id) ? String(w.id) : `idx-${idx}`;
-  }
-
-  const DEFAULT_HE_WALLET_NAMES = new Set([
-    'יוני (הורה 1)',
-    'בת זוג (הורה 2)',
-    'נוסע'
-  ]);
-
-  function isDefaultHebrewWalletPlaceholder(raw) {
-    if (!raw) return false;
-    if (DEFAULT_HE_WALLET_NAMES.has(raw)) return true;
-    return /^(הורה|נוסע|ילד\/ה)\s*#?\d+$/.test(raw);
-  }
-
-  function formatWalletDisplayName(rawName, passengerId, idx, walletKey) {
-    const isHe = state.locale === 'he';
-    const raw = String(rawName || '').trim();
-    const pid = String(passengerId || '').toUpperCase();
-    const wasEditedByUser = walletKey && userEditedWalletKeys.has(walletKey);
-    if (!wasEditedByUser && !isHe && isDefaultHebrewWalletPlaceholder(raw)) {
-      if (pid.startsWith('ADULT_')) {
-        return `Parent ${pid.split('_')[1] || (idx + 1)}`;
-      }
-      if (pid.startsWith('CHILD_')) {
-        return `Child ${pid.split('_')[1] || (idx + 1)}`;
-      }
-      const numMatch = raw.match(/(\d+)/);
-      return numMatch ? `Parent ${numMatch[1]}` : `Passenger #${idx + 1}`;
-    }
-    if (raw) return raw;
-    if (pid.startsWith('ADULT_')) {
-      const n = pid.split('_')[1] || (idx + 1);
-      return isHe ? `הורה ${n}` : `Parent ${n}`;
-    }
-    return isHe ? `נוסע #${idx + 1}` : `Passenger #${idx + 1}`;
+    return matmidTotal;
   }
 
   function renderProfileControls() {
     if (!state.profile) return;
     const isHe = state.locale === 'he';
-    recalculateHouseholdPointsFromWallets();
+    syncHouseholdMatmidBalance(false);
     const adultsInput = document.getElementById('prof-adults-count');
     const ptoInput = document.getElementById('prof-pto-budget');
     const matmidInput = document.getElementById('prof-matmid-points');
@@ -505,47 +774,6 @@
                   <select data-child-fw="${idx}">
                     ${fwOptions}
                   </select>
-                </div>
-              </div>
-            </div>
-          `;
-        })
-        .join('');
-    }
-
-    const walletsContainer = document.getElementById('wallets-list-container');
-    if (walletsContainer) {
-      walletsContainer.innerHTML = (state.profile.passenger_loyalty_wallets || [])
-        .map((w, idx) => {
-          const progOptions = LOYALTY_PROGRAMS.map((p) => {
-            const sel = w.program_code === p.value ? 'selected' : '';
-            const progLabel = isHe ? (p.labelHe || p.label) : (p.labelEn || p.label);
-            return `<option value="${escapeHtml(p.value)}" ${sel}>${escapeHtml(progLabel)}</option>`;
-          }).join('');
-          const wKey = getWalletKey(w, idx);
-          const dispName = formatWalletDisplayName(w.passenger_name, w.passenger_id, idx, wKey);
-          const safeDispName = escapeHtml(dispName);
-          const safePassengerId = escapeHtml(w.passenger_id);
-          return `
-            <div class="compact-profile-item wallet-item">
-              <div class="compact-item-top">
-                <span class="compact-item-title">💳 ${safeDispName} <span class="compact-item-sub" dir="ltr">(${safePassengerId})</span></span>
-                <button type="button" class="btn-secondary btn-remove-inline" data-remove-wallet="${idx}">
-                  ${isHe ? 'הסר מועדון' : 'Remove'}
-                </button>
-              </div>
-              <div class="form-grid form-grid-3 wallet-fields">
-                <div class="form-field">
-                  <label>${isHe ? 'נוסע:' : 'Passenger:'}</label>
-                  <input type="text" value="${safeDispName}" data-wallet-name="${idx}" />
-                </div>
-                <div class="form-field">
-                  <label>${isHe ? 'נקודות:' : 'Points:'}</label>
-                  <input type="number" min="0" step="1000" value="${escapeHtml(w.available_points)}" data-wallet-pts="${idx}" dir="ltr" />
-                </div>
-                <div class="form-field wallet-club-field">
-                  <label>${isHe ? 'מועדון תעופה:' : 'Loyalty Club:'}</label>
-                  <select data-wallet-prog="${idx}">${progOptions}</select>
                 </div>
               </div>
             </div>
@@ -937,7 +1165,10 @@
             const ptsVal = Number(a.points_used ?? a.points_charged ?? 0);
             const taxVal = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
             const cashVal = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
-            const isLapInfant = ptsVal === 0 && taxVal === 0 && cashVal === 0 && String(a.rbd_code || '') !== 'Y';
+            const isLapInfant =
+              String(a.rbd_code || '') === 'INF' ||
+              String(a.ticket_mode || '') === 'INFANT_LAP' ||
+              (ptsVal === 0 && taxVal === 0 && cashVal === 0);
             const modeLabel = isLapInfant
               ? (isHe ? 'תינוק ללא מושב — על הברכיים (INFANT_LAP)' : 'Lap Infant — No Separate Seat (INFANT_LAP)')
               : `${a.ticket_mode || a.outbound_ticket_kind || ''} (${a.cabin_class || a.outbound_cabin || 'ECONOMY'})`;
@@ -1084,7 +1315,7 @@
 
                 <div class="stub-fare-ledger">
                   <div class="stub-fare-row">
-                    <span class="stub-fare-label">💳 ${isHe ? 'נקודות מועדון' : 'Points Used'}</span>
+                    <span class="stub-fare-label">💳 ${isHe ? 'נקודות מתמיד' : 'Matmid Points'}</span>
                     <span class="stub-fare-val stub-fare-points" dir="ltr">${ptsTotal}</span>
                   </div>
                   <div class="stub-fare-row">
@@ -1116,7 +1347,7 @@
               ${twoPlusVerifyBannerHtml}
               <details class="allocations-details">
                 <summary class="allocations-summary">
-                  🎫 ${isHe ? `פירוט הקצאת כרטיסי בונוס ומועדונים לכל נוסע (${allocList.length} נוסעים)` : `Per-Passenger Ticket & Club Allocation (${allocList.length} passengers)`}
+                  🎫 ${isHe ? `פירוט הקצאת כרטיסי בונוס ומתמיד לכל נוסע (${allocList.length} נוסעים)` : `Per-Passenger Ticket & Matmid Allocation (${allocList.length} passengers)`}
                 </summary>
                 <div class="allocations-table-wrap">
                   <table class="allocations-table">
@@ -1163,25 +1394,24 @@
     const isHe = state.locale === 'he';
     const mode = state.dateSelectionMode;
     if (mode === 'SPECIFIC_DATES') {
-      badge.textContent = isHe ? 'תאריכים ספציפיים (±גמישות)' : 'Exact Dates (±Flex)';
-    } else if (mode === 'MOE_VACATION_MAXIMIZATION') {
-      badge.textContent = isHe ? 'מקסום שנתי (משרד החינוך)' : 'Annual MoE Maximization';
+      badge.textContent = isHe ? 'תאריכים ידניים (±גמישות)' : 'Manual Dates (±Flex)';
     } else {
-      badge.textContent = isHe ? 'תכנון לפי חג ושנה' : 'Holiday & Year Intent';
+      badge.textContent = isHe ? 'תכנון לפי חג (שנה קדימה)' : 'Rolling 1-Year Holiday';
     }
   }
 
   function setDateMode(mode) {
-    state.dateSelectionMode = mode;
+    const normMode = mode === 'SPECIFIC_DATES' ? 'SPECIFIC_DATES' : 'HOLIDAY_DIRECT_INTENT';
+    state.dateSelectionMode = normMode;
     document.querySelectorAll('.mode-tab-btn').forEach((btn) => {
-      btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
+      btn.classList.toggle('active', btn.getAttribute('data-mode') === normMode);
     });
     const cHoliday = document.getElementById('controls-holiday-direct');
-    const cMoe = document.getElementById('controls-moe-maximize');
+    const cHolidayDur = document.getElementById('controls-holiday-duration');
     const cSpec = document.getElementById('controls-specific-dates');
-    if (cHoliday) cHoliday.style.display = mode === 'HOLIDAY_DIRECT_INTENT' ? 'grid' : 'none';
-    if (cMoe) cMoe.style.display = mode === 'MOE_VACATION_MAXIMIZATION' ? 'grid' : 'none';
-    if (cSpec) cSpec.style.display = mode === 'SPECIFIC_DATES' ? 'grid' : 'none';
+    if (cHoliday) cHoliday.style.display = normMode === 'HOLIDAY_DIRECT_INTENT' ? 'grid' : 'none';
+    if (cHolidayDur) cHolidayDur.style.display = normMode === 'HOLIDAY_DIRECT_INTENT' ? 'grid' : 'none';
+    if (cSpec) cSpec.style.display = normMode === 'SPECIFIC_DATES' ? 'grid' : 'none';
 
     updateActiveModeBadge();
     renderProfileControls();
@@ -1218,13 +1448,13 @@
     if (headerSubtitle) {
       headerSubtitle.textContent = isHe
         ? 'מקסום ימי חופשה של משרד החינוך, קייטנות ניצנים וכרטיסי בונוס בנקודות'
-        : 'Maximize MoE school holidays, Nitzanim camps & airline award flights';
+        : 'Maximize MoE school holidays, Nitzanim camps & EL AL Matmid award flights';
     }
     const heroEyebrow = document.getElementById('hero-eyebrow');
     if (heroEyebrow) {
       heroEyebrow.textContent = isHe
-        ? '✈️ המראות מנתב״ג (TLV) · חופשות 2026–2029'
-        : '✈️ Departing TLV · Family Vacation Seasons 2026–2029';
+        ? '✈️ המראות מנתב״ג (TLV) · תכנון חופשות שנה קדימה'
+        : '✈️ Departing TLV · Rolling 1-Year Vacation Planner';
     }
     const heroHeadline = document.getElementById('hero-headline');
     if (heroHeadline) {
@@ -1235,8 +1465,8 @@
     const heroLead = document.getElementById('hero-lead');
     if (heroLead) {
       heroLead.textContent = isHe
-        ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס באל על ומועדוני תעופה — מקסימום חופשה במינימום ימי חופש מההורים.'
-        : 'Cross-references official MoE school breaks & Nitzanim camps with EL AL Matmid and partner loyalty seats — more vacation days for every parent PTO day.';
+        ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס באל על ובמועדון הנוסע המתמיד — מקסימום חופשה במינימום ימי חופש מההורים.'
+        : 'Cross-references official MoE school breaks & Nitzanim camps with EL AL Matmid award seats — more vacation days for every parent PTO day.';
     }
     const vtTitle = document.getElementById('vacation-type-title');
     if (vtTitle) {
@@ -1253,14 +1483,14 @@
     const zSearch = document.getElementById('zone-search-title');
     if (zSearch) {
       zSearch.textContent = isHe
-        ? '1. תכנון חופשה סביב חגים וחופשות משרד החינוך'
-        : '1. Holiday, Dates & Airline Search Controls';
+        ? '1. תכנון חופשה: לפי חג או תאריכים ידניים'
+        : '1. Vacation Search: By Holiday or Manual Dates';
     }
     const zProfile = document.getElementById('zone-profile-title');
     if (zProfile) {
       zProfile.textContent = isHe
-        ? '2. פרופיל משפחה, גילאי ילדים וארנקי מועדונים'
-        : '2. Family Profile, Children & Loyalty Wallets';
+        ? '2. פרופיל משפחה, גילאי ילדים ויתרת מתמיד'
+        : '2. Family Profile, Children & Matmid Balance';
     }
     const zCalendar = document.getElementById('zone-calendar-title');
     if (zCalendar) {
@@ -1277,11 +1507,49 @@
     renderProposals();
   }
 
-  async function loadInitialData() {
+  async function refreshUpcomingHolidaysFromServer(applyDefaultNights) {
+    const refIso = getReferenceToday();
+    const asOfOverride = getAsOfOverrideIso();
+    const qs = asOfOverride
+      ? `?profile_id=default-family-profile&as_of=${encodeURIComponent(asOfOverride)}`
+      : `?profile_id=default-family-profile&as_of=${encodeURIComponent(refIso)}`;
     try {
-      state.profile = await apiGet('/api/v1/profile');
+      const upcomingRes = await apiGet(`/api/v1/moe-calendar/upcoming${qs}`);
+      if (upcomingRes && Array.isArray(upcomingRes.holidays) && upcomingRes.holidays.length > 0) {
+        state.upcomingHolidays = upcomingRes.holidays;
+      }
+    } catch (_err) {
+      state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    }
+    if (!state.upcomingHolidays || state.upcomingHolidays.length === 0) {
+      state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    }
+    populateHolidaySelector(state.upcomingHolidays, {
+      preserveSelection: state.userSelectedHoliday,
+      applyDurationDefault: Boolean(applyDefaultNights) && !state.userEditedMaxNights
+    });
+  }
+
+  async function loadInitialData() {
+    const refIso = getReferenceToday();
+    initDefaultManualDates();
+    state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    populateHolidaySelector(state.upcomingHolidays, {
+      preserveSelection: state.userSelectedHoliday,
+      applyDurationDefault: !state.userEditedMaxNights
+    });
+
+    try {
+      const loadedProfile = await apiGet('/api/v1/profile');
+      loadedProfile.passenger_loyalty_wallets = [];
+      state.profile = loadedProfile;
+      state.profileDirty = false;
       renderProfileControls();
-      state.calendarData = await apiGet('/api/v1/moe-calendar/2026-2027');
+
+      await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
+
+      const currentSy = inferSchoolYearForIso(refIso);
+      state.calendarData = await apiGet(`/api/v1/moe-calendar/${currentSy}`);
       renderCalendarTable();
       await runVacationSearch();
     } catch (err) {
@@ -1290,41 +1558,93 @@
   }
 
   async function runVacationSearch() {
-    const destVal = (document.getElementById('select-destination') || {}).value || 'ROM';
-    const airlineVal = (document.getElementById('select-airline-mode') || {}).value || 'EL_AL_ONLY';
-    const holidayVal = (document.getElementById('select-direct-holiday') || {}).value || 'PESACH';
-    const yearVal = Number((document.getElementById('select-direct-year') || {}).value || 2027);
-    const schoolYearVal = (document.getElementById('select-school-year') || {}).value || '2026-2027';
-    const overlapVal = (document.getElementById('select-overlap-policy') || {}).value || 'MAXIMIZE_EFFICIENCY_SCORE';
-    const depVal = (document.getElementById('input-dep-date') || {}).value || '2027-04-11';
-    const retVal = (document.getElementById('input-ret-date') || {}).value || '2027-04-18';
-    const flexVal = Number((document.getElementById('input-flex-days') || {}).value || 2);
-    const minNights = Number((document.getElementById('input-min-nights') || {}).value || 4);
-    const maxNights = Number((document.getElementById('input-max-nights') || {}).value || 10);
+    const destVal = (document.getElementById('select-destination') || {}).value || 'ANYWHERE';
+    const selectHolidayEl = document.getElementById('select-direct-holiday');
+    const holidayVal = (selectHolidayEl && selectHolidayEl.value) || 'HANUKKAH';
+    const selectedHolidayOpt =
+      selectHolidayEl && selectHolidayEl.selectedOptions && selectHolidayEl.selectedOptions[0];
+    const yearVal =
+      selectedHolidayOpt && selectedHolidayOpt.dataset && selectedHolidayOpt.dataset.year
+        ? Number(selectedHolidayOpt.dataset.year)
+        : undefined;
+
+    const refIso = getReferenceToday();
+    const depVal = (document.getElementById('input-dep-date') || {}).value || addDaysIso(refIso, 21);
+    const retVal = (document.getElementById('input-ret-date') || {}).value || addDaysIso(refIso, 28);
+    const flexRaw = (document.getElementById('input-flex-days') || {}).value;
+    const flexVal = flexRaw === '' || flexRaw === undefined ? 2 : Number(flexRaw);
+    const minNightsInputVal = Number((document.getElementById('input-min-nights') || {}).value || 4);
+    const maxNightsInputVal = Number((document.getElementById('input-max-nights') || {}).value || 7);
     const bridgeDays = Number((document.getElementById('input-bridge-days') || {}).value || 3);
+    const matmidBalanceVal = syncHouseholdMatmidBalance(true);
+
     const weatherModeVal =
       (document.getElementById('select-weather-filter-mode') || {}).value ||
       state.weatherFilterMode ||
       'SOFT_PRIORITIZE';
     state.weatherFilterMode = weatherModeVal;
 
+    let effectiveMinNights = minNightsInputVal;
+    let effectiveMaxNights = maxNightsInputVal;
+    if (state.dateSelectionMode === 'SPECIFIC_DATES') {
+      const baseNights = diffDaysIso(depVal, retVal);
+      const clampedFlex = Math.max(0, Math.min(7, Number.isFinite(flexVal) ? flexVal : 0));
+      if (baseNights >= 1) {
+        effectiveMinNights = Math.max(1, baseNights - 2 * clampedFlex);
+        effectiveMaxNights = Math.min(45, Math.max(effectiveMinNights, baseNights + 2 * clampedFlex));
+      } else {
+        effectiveMinNights = 1;
+        effectiveMaxNights = 7;
+      }
+    }
+
+    if (state.profile && state.profileDirty) {
+      const adultsEl = document.getElementById('prof-adults-count');
+      const ptoEl = document.getElementById('prof-pto-budget');
+      if (adultsEl) state.profile.adults_count = Number(adultsEl.value || 2);
+      if (ptoEl) state.profile.annual_pto_budget = Number(ptoEl.value || 18);
+      state.profile.matmid_points_balance = matmidBalanceVal;
+      state.profile.passenger_loyalty_wallets = [];
+      (state.profile.children || []).forEach((ch) => {
+        const ageNum = Number(ch.child_age_years ?? 6);
+        if (ageNum < 2) {
+          if (ch.passenger_Current_type !== 'INFANT_SEAT') ch.passenger_Current_type = 'INFANT_LAP';
+        } else if (ageNum <= 11) {
+          ch.passenger_Current_type = 'CHILD';
+        } else {
+          ch.passenger_Current_type = 'YOUTH';
+        }
+      });
+      try {
+        const savedProf = await apiSend('PUT', '/api/v1/profile', state.profile);
+        savedProf.passenger_loyalty_wallets = [];
+        state.profile = savedProf;
+        state.profileDirty = false;
+        renderProfileControls();
+      } catch (_saveErr) {
+        // Search still proceeds with in-request matmid_points_balance override
+      }
+    }
+
     const payload = {
       date_selection_mode: state.dateSelectionMode,
-      airline_selection_mode: airlineVal,
+      airline_selection_mode: 'EL_AL_ONLY',
+      enabled_loyalty_programs: ['ELAL_MATMID'],
+      matmid_points_balance: matmidBalanceVal,
       destination_iatas: [destVal],
       direct_holiday_code: holidayVal,
-      direct_target_year: yearVal,
-      school_year: schoolYearVal,
-      overlap_policy: overlapVal,
       specific_departure_date: depVal,
       specific_return_date: retVal,
       flex_days_plus_minus: flexVal,
-      min_trip_nights: minNights,
-      max_trip_nights: maxNights,
+      min_trip_nights: effectiveMinNights,
+      max_trip_nights: effectiveMaxNights,
       max_bridge_days_shift: bridgeDays,
       preferred_vacation_types: state.selectedVacationTypes || [],
       weather_filter_mode: weatherModeVal
     };
+    if (yearVal !== undefined && Number.isFinite(yearVal)) {
+      payload.direct_target_year = yearVal;
+    }
 
     state.validationErrorHe = null;
     state.validationErrorEn = null;
@@ -1359,6 +1679,58 @@
         setDateMode(btn.getAttribute('data-mode'));
       });
     });
+
+    const selectHolidayEl = document.getElementById('select-direct-holiday');
+    if (selectHolidayEl) {
+      selectHolidayEl.addEventListener('change', () => {
+        state.userSelectedHoliday = true;
+        state.userEditedMaxNights = false;
+        const opt = selectHolidayEl.selectedOptions && selectHolidayEl.selectedOptions[0];
+        const days = opt && opt.dataset ? Number(opt.dataset.days || 7) : 7;
+        applyHolidayDurationDefault(days);
+      });
+    }
+
+    const inputMaxNightsEl = document.getElementById('input-max-nights');
+    if (inputMaxNightsEl) {
+      const markMaxEdited = () => {
+        state.userEditedMaxNights = true;
+      };
+      inputMaxNightsEl.addEventListener('input', markMaxEdited);
+      inputMaxNightsEl.addEventListener('change', markMaxEdited);
+    }
+
+    const inputMinNightsEl = document.getElementById('input-min-nights');
+    if (inputMinNightsEl) {
+      const markMinEdited = () => {
+        state.userEditedMinNights = true;
+      };
+      inputMinNightsEl.addEventListener('input', markMinEdited);
+      inputMinNightsEl.addEventListener('change', markMinEdited);
+    }
+
+    const inputDepDateEl = document.getElementById('input-dep-date');
+    const inputRetDateEl = document.getElementById('input-ret-date');
+    if (inputDepDateEl) {
+      inputDepDateEl.addEventListener('change', () => {
+        state.userEditedManualDates = true;
+        if (inputRetDateEl && inputDepDateEl.value) {
+          if (!inputRetDateEl.value || inputRetDateEl.value <= inputDepDateEl.value) {
+            inputRetDateEl.value = addDaysIso(inputDepDateEl.value, 7);
+          }
+        }
+      });
+      inputDepDateEl.addEventListener('input', () => {
+        state.userEditedManualDates = true;
+      });
+    }
+    if (inputRetDateEl) {
+      const markRetEdited = () => {
+        state.userEditedManualDates = true;
+      };
+      inputRetDateEl.addEventListener('change', markRetEdited);
+      inputRetDateEl.addEventListener('input', markRetEdited);
+    }
 
     document.querySelectorAll('[data-vacation-type]').forEach((pillBtn) => {
       pillBtn.addEventListener('click', () => {
@@ -1415,12 +1787,48 @@
       });
     }
 
+    const profMatmidInput = document.getElementById('prof-matmid-points');
+    if (profMatmidInput) {
+      const onMatmidChange = () => {
+        syncHouseholdMatmidBalance(true);
+        state.profileDirty = true;
+      };
+      profMatmidInput.addEventListener('input', onMatmidChange);
+      profMatmidInput.addEventListener('change', onMatmidChange);
+    }
+
+    const profAdultsInput = document.getElementById('prof-adults-count');
+    if (profAdultsInput) {
+      const onAdultsChange = () => {
+        if (state.profile) {
+          state.profile.adults_count = Number(profAdultsInput.value || 2);
+          state.profileDirty = true;
+        }
+      };
+      profAdultsInput.addEventListener('input', onAdultsChange);
+      profAdultsInput.addEventListener('change', onAdultsChange);
+    }
+
+    const profPtoInput = document.getElementById('prof-pto-budget');
+    if (profPtoInput) {
+      const onPtoChange = () => {
+        if (state.profile) {
+          state.profile.annual_pto_budget = Number(profPtoInput.value || 18);
+          state.profileDirty = true;
+        }
+      };
+      profPtoInput.addEventListener('input', onPtoChange);
+      profPtoInput.addEventListener('change', onPtoChange);
+    }
+
     const btnSaveProfile = document.getElementById('btn-save-profile');
     if (btnSaveProfile) {
       btnSaveProfile.addEventListener('click', async () => {
         if (!state.profile) return;
         state.profile.adults_count = Number(document.getElementById('prof-adults-count').value || 2);
         state.profile.annual_pto_budget = Number(document.getElementById('prof-pto-budget').value || 18);
+        syncHouseholdMatmidBalance(true);
+        state.profile.passenger_loyalty_wallets = [];
         (state.profile.children || []).forEach((ch) => {
           const ageNum = Number(ch.child_age_years ?? 6);
           if (ageNum < 2) {
@@ -1431,12 +1839,15 @@
             ch.passenger_Current_type = 'YOUTH';
           }
         });
-        recalculateHouseholdPointsFromWallets();
         state.validationErrorHe = null;
         state.validationErrorEn = null;
         try {
-          state.profile = await apiSend('PUT', '/api/v1/profile', state.profile);
+          const saved = await apiSend('PUT', '/api/v1/profile', state.profile);
+          saved.passenger_loyalty_wallets = [];
+          state.profile = saved;
+          state.profileDirty = false;
           renderProfileControls();
+          await refreshUpcomingHolidaysFromServer(false);
           await runVacationSearch();
         } catch (err) {
           const detail = extractApiErrorDetail(err);
@@ -1445,8 +1856,8 @@
           state.proposals = [];
           state.lastComparison = null;
           state.selectedProposalIds = new Set();
-          state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18) ומספר המבוגרים (1–6) תקינים.${detailSuffixHe}`;
-          state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative points.${detailSuffixEn}`;
+          state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
+          state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
           renderComparisonBanner();
           renderProposals();
         }
@@ -1474,57 +1885,10 @@
           treat_camp_as_vacation: true,
           bagrut_blackout_dates: []
         });
+        state.profileDirty = true;
         renderProfileControls();
       });
     }
-
-    const btnAddWallet = document.getElementById('btn-add-wallet');
-    if (btnAddWallet) {
-      btnAddWallet.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (!state.profile) return;
-        const detailsEl = btnAddWallet.closest('details');
-        if (detailsEl) detailsEl.open = true;
-        const nextIdx = (state.profile.passenger_loyalty_wallets || []).length + 1;
-        const adultNum = Math.max(1, ((nextIdx - 1) % Math.max(1, state.profile.adults_count || 2)) + 1);
-        state.profile.passenger_loyalty_wallets.push({
-          id: `wallet-custom-${Date.now()}`,
-          passenger_id: `ADULT_${adultNum}`,
-          passenger_name: state.locale === 'he' ? `הורה ${adultNum}` : `Parent ${adultNum}`,
-          program_code: 'ELAL_MATMID',
-          available_points: 45000,
-          can_pool_with_family: true,
-          pool_group_id: 'FAMILY_POOL',
-          transfer_ratio_to_airline: 1.0,
-          has_club_credit_card: true,
-          companion_vouchers_count: 0,
-          allow_household_pooling: true,
-          point_valuation_cents: 1.6
-        });
-        recalculateHouseholdPointsFromWallets();
-        renderProfileControls();
-      });
-    }
-
-    document.body.addEventListener('input', (ev) => {
-      const target = ev.target;
-      if (!target || !state.profile) return;
-      if (target.hasAttribute('data-wallet-pts')) {
-        const idx = Number(target.getAttribute('data-wallet-pts'));
-        if (state.profile.passenger_loyalty_wallets[idx]) {
-          state.profile.passenger_loyalty_wallets[idx].available_points = Math.max(0, Number(target.value || 0));
-          recalculateHouseholdPointsFromWallets();
-        }
-      } else if (target.hasAttribute('data-wallet-name')) {
-        const idx = Number(target.getAttribute('data-wallet-name'));
-        const w = state.profile.passenger_loyalty_wallets[idx];
-        if (w) {
-          userEditedWalletKeys.add(getWalletKey(w, idx));
-          w.passenger_name = target.value;
-        }
-      }
-    });
 
     document.body.addEventListener('change', (ev) => {
       const target = ev.target;
@@ -1538,27 +1902,13 @@
         if (state.dateSelectionMode !== 'SPECIFIC_DATES') {
           state.profile.children[idx].framework_type = suggestFrameworkByAge(newAge);
         }
+        state.profileDirty = true;
         renderProfileControls();
       } else if (target.hasAttribute('data-child-fw')) {
         const idx = Number(target.getAttribute('data-child-fw'));
         const val = target.value;
         state.profile.children[idx].framework_type = val === '' ? null : val;
-      } else if (target.hasAttribute('data-wallet-name')) {
-        const idx = Number(target.getAttribute('data-wallet-name'));
-        const w = state.profile.passenger_loyalty_wallets[idx];
-        if (w) {
-          userEditedWalletKeys.add(getWalletKey(w, idx));
-          w.passenger_name = target.value;
-          renderProfileControls();
-        }
-      } else if (target.hasAttribute('data-wallet-prog')) {
-        const idx = Number(target.getAttribute('data-wallet-prog'));
-        state.profile.passenger_loyalty_wallets[idx].program_code = target.value;
-        recalculateHouseholdPointsFromWallets();
-      } else if (target.hasAttribute('data-wallet-pts')) {
-        const idx = Number(target.getAttribute('data-wallet-pts'));
-        state.profile.passenger_loyalty_wallets[idx].available_points = Math.max(0, Number(target.value || 0));
-        recalculateHouseholdPointsFromWallets();
+        state.profileDirty = true;
       } else if (target.hasAttribute('data-compare-id')) {
         const pid = target.getAttribute('data-compare-id');
         if (target.checked) state.selectedProposalIds.add(pid);
@@ -1580,14 +1930,7 @@
       if (removeChildBtn) {
         const idx = Number(removeChildBtn.getAttribute('data-remove-child'));
         state.profile.children.splice(idx, 1);
-        renderProfileControls();
-        return;
-      }
-      const removeWalletBtn = target.closest('[data-remove-wallet]');
-      if (removeWalletBtn) {
-        const idx = Number(removeWalletBtn.getAttribute('data-remove-wallet'));
-        state.profile.passenger_loyalty_wallets.splice(idx, 1);
-        recalculateHouseholdPointsFromWallets();
+        state.profileDirty = true;
         renderProfileControls();
       }
     });
@@ -1596,7 +1939,7 @@
     if (btnSyncMoe) {
       btnSyncMoe.addEventListener('click', async () => {
         try {
-          const sy = (document.getElementById('select-school-year') || {}).value || '2027-2028';
+          const sy = inferSchoolYearForIso(getReferenceToday());
           await apiSend('POST', `/api/v1/moe-calendar/sync/${sy}`, { force_remote_check: false });
           state.calendarData = await apiGet(`/api/v1/moe-calendar/${sy}`);
           renderCalendarTable();
@@ -1610,11 +1953,12 @@
     if (btnSyncElal) {
       btnSyncElal.addEventListener('click', async () => {
         try {
-          const destVal = (document.getElementById('select-destination') || {}).value || 'ROM';
+          const destVal = (document.getElementById('select-destination') || {}).value || 'ANYWHERE';
+          const refIso = getReferenceToday();
           await apiSend('POST', '/api/v1/elal-bonus/sync', {
             destinations: [destVal],
-            start_date: '2027-04-10',
-            end_date: '2027-04-28',
+            start_date: refIso,
+            end_date: addDaysIso(refIso, 30),
             origin: 'TLV',
             force_refresh: true
           });
@@ -1681,6 +2025,17 @@
         if (el) el.scrollIntoView({ behavior: 'smooth' });
       });
     });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.__fvpSetReferenceDate = async function (isoDate) {
+      window.__FVP_REFERENCE_DATE__ = isoDate;
+      state.userSelectedHoliday = false;
+      state.userEditedMaxNights = false;
+      state.userEditedMinNights = false;
+      state.userEditedManualDates = false;
+      await loadInitialData();
+    };
   }
 
   document.addEventListener('DOMContentLoaded', () => {

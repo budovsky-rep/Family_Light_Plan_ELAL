@@ -363,6 +363,12 @@ class ElAlRbdDataClientAdapter:
         (`ELAL_LIVE_FETCH_ENABLED=1`). Returns an empty list on network/sandbox
         restrictions so caller seamlessly falls back to the seeded catalog.
         """
+        if os.environ.get("ELAL_ALLOW_DIRECT_HTTP_EGRESS", "0") not in (
+            "1",
+            "true",
+            "TRUE",
+        ):
+            return []
         if os.environ.get("ELAL_LIVE_FETCH_ENABLED", "0") not in ("1", "true", "TRUE"):
             return []
 

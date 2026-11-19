@@ -20,8 +20,9 @@ Endpoints:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -39,26 +40,35 @@ from backend.app.planner_synthesizer.bonus_planner_service import (
 from backend.app.providers.commercial_flights import AllAirlinesSearchAdapter
 from backend.app.providers.elal_rbd_client import (
     ElAlRbdDataClientAdapter,
+    METRO_IATA_EXPANSION,
 )
 from backend.app.schemas.domain import (
     AirlineSelectionMode,
+    CURRENCIES,
     DIRECT_HOLIDAY_CODES,
     DateSelectionMode,
+    EDUCATION_STREAMS,
+    FLYCARD_TIERS,
     FamilyProfile,
     FlightSearchQuery,
     HolidayExtensionMode,
     LoyaltyProgramCode,
     MoEFrameworkType,
     OVERLAP_POLICIES,
+    PASSENGER_FARE_TYPES,
     VACATION_TYPES,
     VACATION_TYPE_ICONS,
     VACATION_TYPE_LABELS_EN,
     VACATION_TYPE_LABELS_HE,
     WEATHER_FILTER_MODES,
+    WORKWEEK_TYPES,
 )
 from backend.app.storage_cache.repository import SQLiteRepository
 from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
-from backend.app.vacation_optimizer.maximizer_engine import VacationMaximizerEngine
+from backend.app.vacation_optimizer.maximizer_engine import (
+    VacationMaximizerEngine,
+    resolve_holiday_direct_intent_school_year,
+)
 
 
 _SCHOOL_YEAR_RE = re.compile(r"^(\d{4})-(\d{4})$")
@@ -74,216 +84,924 @@ _VALID_OVERLAP_POLICIES = set(OVERLAP_POLICIES) | {
 _VALID_EXTENSION_MODES = {e.value for e in HolidayExtensionMode}
 _VALID_VACATION_TYPES = set(VACATION_TYPES)
 _VALID_WEATHER_FILTER_MODES = set(WEATHER_FILTER_MODES)
+_VALID_CABINS = {"ECONOMY", "PREMIUM", "BUSINESS"}
+_VALID_DEST_SPECIAL_TOKENS = set(METRO_IATA_EXPANSION.keys()) | {"ANYWHERE", "ALL"}
+_SQLITE_INT64_MAX = (1 << 63) - 1
+_MAX_POINTS_BALANCE = 10**9
+_MAX_VOUCHERS_COUNT = 10**6
+_MAX_FLOAT_MAGNITUDE = 1e12
+
+
+def _validate_optional_str(
+    val: Any,
+    field_name: str,
+    max_len: int = 512,
+    non_empty: bool = False,
+) -> Optional[str]:
+    if val is None:
+        if non_empty:
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return None
+    if not isinstance(val, str):
+        raise ValueError(
+            f"{field_name} must be a string, got {type(val).__name__}"
+        )
+    if "\x00" in val:
+        raise ValueError(f"{field_name} cannot contain null bytes")
+    if len(val) > max_len:
+        raise ValueError(f"{field_name} exceeds maximum length {max_len}")
+    if non_empty and not val.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return val
+
+
+def _validate_airport_iata_strict(val: Any, field_name: str) -> str:
+    if not isinstance(val, str):
+        raise ValueError(
+            f"{field_name} must be a 3-letter ASCII IATA string, got {val!r}"
+        )
+    norm = val.strip().upper()
+    if len(norm) != 3 or not norm.isalpha() or not norm.isascii():
+        raise ValueError(
+            f"{field_name} must be a 3-letter ASCII alphabetic IATA code, got {val!r}"
+        )
+    return norm
+
+
+def _validate_destination_codes_strict(
+    val: Any, field_name: str, allow_csv_str: bool = False
+) -> list[str]:
+    tokens: list[str] = []
+    if allow_csv_str and isinstance(val, str):
+        if "\x00" in val or len(val) > 1024:
+            raise ValueError(f"Invalid {field_name}")
+        tokens = [tok.strip().upper() for tok in val.split(",") if tok.strip()]
+    elif isinstance(val, list):
+        if len(val) > 200:
+            raise ValueError(f"{field_name} exceeds maximum list length")
+        for idx, item in enumerate(val):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"{field_name}[{idx}] must be an IATA string, got {item!r}"
+                )
+            if "\x00" in item or len(item) > 64:
+                raise ValueError(f"Invalid {field_name}[{idx}]")
+            parts = (
+                [sub.strip().upper() for sub in item.split(",") if sub.strip()]
+                if allow_csv_str
+                else ([item.strip().upper()] if item.strip() else [])
+            )
+            if not parts:
+                raise ValueError(f"{field_name}[{idx}] cannot be empty")
+            tokens.extend(parts)
+    else:
+        raise ValueError(f"{field_name} must be a non-empty list of IATA codes")
+
+    if not tokens:
+        raise ValueError(f"{field_name} must be a non-empty list of IATA codes")
+
+    for tok in tokens:
+        if tok in _VALID_DEST_SPECIAL_TOKENS:
+            continue
+        if len(tok) == 3 and tok.isalpha() and tok.isascii():
+            continue
+        raise ValueError(
+            f"Invalid IATA or metropolitan code in {field_name}: {tok!r}"
+        )
+    return tokens
+
+
+def _validate_rbd_payload_strict(raw_payload: Any) -> None:
+    if isinstance(raw_payload, bool) or not isinstance(
+        raw_payload, (dict, list, str)
+    ):
+        raise ValueError(
+            "rbd_payload must be a JSON object, non-empty list of flight objects, or table string"
+        )
+    if isinstance(raw_payload, str):
+        s = raw_payload.strip()
+        if not s or "\x00" in raw_payload:
+            raise ValueError("rbd_payload string must be non-empty")
+        if s.startswith(("{", "[")):
+            try:
+                parsed = json.loads(s)
+            except Exception as exc:
+                raise ValueError(f"Invalid JSON in rbd_payload: {exc}") from exc
+            _validate_rbd_payload_strict(parsed)
+        return
+    if isinstance(raw_payload, dict):
+        if "AccumulatedOutput" not in raw_payload or not isinstance(
+            raw_payload.get("AccumulatedOutput"), dict
+        ):
+            raise ValueError(
+                "rbd_payload object must contain an 'AccumulatedOutput' object"
+            )
+        return
+    if not raw_payload:
+        raise ValueError("rbd_payload list must not be empty")
+    for idx, item in enumerate(raw_payload):
+        if not isinstance(item, dict) or not item:
+            raise ValueError(f"rbd_payload[{idx}] must be a non-empty object")
+        if "AccumulatedOutput" in item:
+            if not isinstance(item.get("AccumulatedOutput"), dict):
+                raise ValueError(
+                    f"rbd_payload[{idx}].AccumulatedOutput must be an object"
+                )
+        elif not any(
+            k in item for k in ("flight_date", "date", "SegmentDepDate")
+        ):
+            raise ValueError(
+                f"rbd_payload[{idx}] must contain 'AccumulatedOutput' or flight date fields"
+            )
+
+
+def _parse_strict_float(
+    val: Any,
+    field_name: str,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> float:
+    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str)):
+        raise ValueError(f"{field_name} must be a finite number, got {val!r}")
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or len(s) > 64:
+            raise ValueError(f"{field_name} must be a finite number, got {val!r}")
+        raw_num: int | float | str = s
+    else:
+        raw_num = val
+    try:
+        num = float(raw_num)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError(f"{field_name} must be a finite number, got {val!r}") from exc
+    if not math.isfinite(num) or abs(num) > _MAX_FLOAT_MAGNITUDE:
+        raise ValueError(f"{field_name} must be a finite number, got {val!r}")
+    if min_val is not None and num < min_val:
+        raise ValueError(f"{field_name} must be >= {min_val}, got {num!r}")
+    if max_val is not None and num > max_val:
+        raise ValueError(f"{field_name} must be <= {max_val}, got {num!r}")
+    return num
+
+
+def _parse_strict_int(
+    val: Any,
+    field_name: str,
+    allow_integral_float: bool = False,
+    min_val: Optional[int] = None,
+    max_val: Optional[int] = None,
+) -> int:
+    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str)):
+        raise ValueError(f"{field_name} must be an integer, got {val!r}")
+    if isinstance(val, int):
+        res = val
+    elif isinstance(val, float):
+        if (
+            not math.isfinite(val)
+            or not val.is_integer()
+            or abs(val) > _SQLITE_INT64_MAX
+        ):
+            raise ValueError(f"{field_name} must be a 64-bit integer, got {val!r}")
+        res = int(val)
+    else:
+        s = val.strip()
+        if not s or len(s) > 64:
+            raise ValueError(f"{field_name} must be an integer, got {val!r}")
+        try:
+            res = int(s)
+        except ValueError as exc:
+            if allow_integral_float:
+                f_val = _parse_strict_float(s, field_name)
+                if f_val.is_integer() and abs(f_val) <= _SQLITE_INT64_MAX:
+                    res = int(f_val)
+                else:
+                    raise ValueError(
+                        f"{field_name} must be an integer, got {val!r}"
+                    ) from exc
+            else:
+                raise ValueError(
+                    f"{field_name} must be an integer, got {val!r}"
+                ) from exc
+    if abs(res) > _SQLITE_INT64_MAX:
+        raise ValueError(f"{field_name} exceeds signed 64-bit integer bounds")
+    if min_val is not None and res < min_val:
+        raise ValueError(f"{field_name} must be >= {min_val}, got {res!r}")
+    if max_val is not None and res > max_val:
+        raise ValueError(f"{field_name} must be <= {max_val}, got {res!r}")
+    return res
 
 
 def _parse_iso_date_strict(val: Any, field_name: str) -> date:
-    if isinstance(val, date):
-        return val
-    if not isinstance(val, str) or not val.strip():
-        raise ValueError(f"{field_name} must be a non-empty ISO date string YYYY-MM-DD")
-    try:
-        return date.fromisoformat(val.strip()[:10])
-    except Exception as exc:
-        raise ValueError(f"Invalid ISO date for {field_name}: {val!r}") from exc
+    if isinstance(val, date) and not isinstance(val, datetime):
+        d = val
+    else:
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(
+                f"{field_name} must be a non-empty ISO date string YYYY-MM-DD"
+            )
+        s = val.strip()
+        if len(s) != 10 or not s.isascii():
+            raise ValueError(f"Invalid ISO date for {field_name}: {val!r}")
+        try:
+            d = date.fromisoformat(s)
+        except Exception as exc:
+            raise ValueError(f"Invalid ISO date for {field_name}: {val!r}") from exc
+    if d.year < 1900 or d.year > 2100:
+        raise ValueError(
+            f"{field_name} year must be between 1900 and 2100, got {d.year}"
+        )
+    return d
 
 
-def _validate_school_year_strict(school_year: str) -> str:
-    if not isinstance(school_year, str) or not school_year.strip():
-        raise ValueError("school_year must be a string in 'YYYY-YYYY' or 'YYYY' format")
-    return normalize_school_year(school_year.strip())
+def _validate_school_year_strict(school_year: Any) -> str:
+    if (
+        not isinstance(school_year, str)
+        or not school_year.strip()
+        or not school_year.isascii()
+    ):
+        raise ValueError(
+            "school_year must be an ASCII string in 'YYYY-YYYY' or 'YYYY' format"
+        )
+    norm = normalize_school_year(school_year.strip())
+    y1 = int(norm.split("-")[0])
+    if y1 < 2020 or y1 > 2100:
+        raise ValueError(
+            f"school_year out of supported bounds (2020..2100): {norm!r}"
+        )
+    return norm
 
 
 def _validate_profile_payload_strict(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Profile payload must be a JSON object")
 
-    adults = payload.get("adults_count", 2)
-    if not isinstance(adults, int) or isinstance(adults, bool) or not (1 <= adults <= 6):
-        raise ValueError(f"adults_count must be an integer in 1..6, got {adults!r}")
+    for str_key, max_l in (
+        ("id", 128),
+        ("profile_name", 256),
+        ("created_at", 128),
+        ("updated_at", 128),
+    ):
+        if str_key in payload:
+            _validate_optional_str(payload[str_key], str_key, max_len=max_l)
 
-    workweek = payload.get("workweek_type", "SUN_THU")
-    if workweek not in ("SUN_THU", "SUN_FRI"):
-        raise ValueError(f"Invalid workweek_type: {workweek!r}")
+    if "has_flycard" in payload:
+        if not isinstance(payload["has_flycard"], bool):
+            raise ValueError("has_flycard must be a boolean")
+
+    if "adults_count" in payload:
+        adults = _parse_strict_int(
+            payload["adults_count"], "adults_count", min_val=1, max_val=6
+        )
+        payload["adults_count"] = adults
+
+    if "workweek_type" in payload:
+        workweek = payload["workweek_type"]
+        if not isinstance(workweek, str) or workweek not in WORKWEEK_TYPES:
+            raise ValueError(f"Invalid workweek_type: {workweek!r}")
+
+    if "flycard_tier" in payload:
+        fc_tier = payload["flycard_tier"]
+        if not isinstance(fc_tier, str) or fc_tier not in FLYCARD_TIERS:
+            raise ValueError(f"Invalid flycard_tier: {fc_tier!r}")
+
+    if "preferred_currency" in payload:
+        curr = payload["preferred_currency"]
+        if not isinstance(curr, str) or curr not in CURRENCIES:
+            raise ValueError(f"Invalid preferred_currency: {curr!r}")
 
     for weight_key in ("erev_chag_pto_weight", "chol_hamoed_pto_weight"):
-        if weight_key in payload and payload[weight_key] is not None:
-            w = float(payload[weight_key])
+        if weight_key in payload:
+            w = _parse_strict_float(payload[weight_key], weight_key)
             if w not in (0.0, 0.5, 1.0):
                 raise ValueError(f"{weight_key} must be one of (0.0, 0.5, 1.0)")
+            payload[weight_key] = w
 
-    for non_neg_key in (
+    for non_neg_float_key in (
         "annual_pto_budget",
+        "annual_pto_days_budget",
         "max_pto_per_trip",
-        "matmid_points_balance",
-        "flycard_companion_vouchers",
     ):
-        if non_neg_key in payload and payload[non_neg_key] is not None:
-            if float(payload[non_neg_key]) < 0:
-                raise ValueError(f"{non_neg_key} must be >= 0")
+        if non_neg_float_key in payload:
+            f_val = _parse_strict_float(
+                payload[non_neg_float_key],
+                non_neg_float_key,
+                min_val=0.0,
+                max_val=1e6,
+            )
+            payload[non_neg_float_key] = f_val
+            if (
+                non_neg_float_key == "annual_pto_days_budget"
+                and "annual_pto_budget" not in payload
+            ):
+                payload["annual_pto_budget"] = f_val
 
-    if "point_valuation_usd" in payload and payload["point_valuation_usd"] is not None:
-        if float(payload["point_valuation_usd"]) <= 0:
+    if "matmid_points_balance" in payload:
+        payload["matmid_points_balance"] = _parse_strict_int(
+            payload["matmid_points_balance"],
+            "matmid_points_balance",
+            allow_integral_float=True,
+            min_val=0,
+            max_val=_MAX_POINTS_BALANCE,
+        )
+
+    if "flycard_companion_vouchers" in payload:
+        payload["flycard_companion_vouchers"] = _parse_strict_int(
+            payload["flycard_companion_vouchers"],
+            "flycard_companion_vouchers",
+            allow_integral_float=True,
+            min_val=0,
+            max_val=_MAX_VOUCHERS_COUNT,
+        )
+
+    if "point_valuation_usd" in payload:
+        pv_val = _parse_strict_float(
+            payload["point_valuation_usd"],
+            "point_valuation_usd",
+            max_val=1e6,
+        )
+        if pv_val <= 0.0:
             raise ValueError("point_valuation_usd must be > 0")
+        payload["point_valuation_usd"] = pv_val
 
     children = payload.get("children", [])
-    if not isinstance(children, list):
-        raise ValueError("children must be a list")
-    for idx, child in enumerate(children):
-        if not isinstance(child, dict):
+    if not isinstance(children, list) or len(children) > 25:
+        raise ValueError("children must be a list of at most 25 items")
+    norm_children: list[dict[str, Any]] = []
+    for idx, raw_child in enumerate(children):
+        if not isinstance(raw_child, dict):
             raise ValueError(f"children[{idx}] must be an object")
-        age = child.get("child_age_years")
-        if age is None or isinstance(age, bool) or not isinstance(age, (int, float)):
-            raise ValueError(f"children[{idx}].child_age_years is required")
-        age_int = int(age)
-        if age_int < 0 or age_int > 18:
-            raise ValueError(
-                f"children[{idx}].child_age_years must be between 0 and 18, got {age!r}"
+        child = dict(raw_child)
+        for c_str_key in (
+            "id",
+            "family_profile_id",
+            "child_name",
+            "child_name_he",
+            "name",
+            "created_at",
+            "updated_at",
+        ):
+            if c_str_key in child:
+                _validate_optional_str(
+                    child[c_str_key], f"children[{idx}].{c_str_key}", max_len=256
+                )
+        if (
+            "name" in child
+            and "child_name" not in child
+            and isinstance(child["name"], str)
+        ):
+            child["child_name"] = child["name"]
+
+        if "age" in child:
+            age_alias = _parse_strict_int(
+                child["age"],
+                f"children[{idx}].age",
+                allow_integral_float=True,
+                min_val=0,
+                max_val=18,
             )
-        fw = child.get("framework_type")
-        if fw is not None and fw != "":
-            if str(fw) not in _VALID_FRAMEWORKS:
+            child["age"] = age_alias
+            if "child_age_years" not in child:
+                child["child_age_years"] = age_alias
+
+        age_int = _parse_strict_int(
+            child.get("child_age_years"),
+            f"children[{idx}].child_age_years",
+            allow_integral_float=True,
+            min_val=0,
+            max_val=18,
+        )
+        child["child_age_years"] = age_int
+
+        if "birth_date" in child:
+            _validate_optional_str(
+                child["birth_date"], f"children[{idx}].birth_date", max_len=32
+            )
+            if child["birth_date"]:
+                _parse_iso_date_strict(
+                    child["birth_date"], f"children[{idx}].birth_date"
+                )
+
+        for pax_key in ("passenger_Current_type", "passenger_current_type"):
+            if pax_key in child:
+                _validate_optional_str(
+                    child[pax_key], f"children[{idx}].{pax_key}", max_len=32
+                )
+                if child[pax_key] and child[pax_key] not in PASSENGER_FARE_TYPES:
+                    raise ValueError(
+                        f"children[{idx}].{pax_key} {child[pax_key]!r} is invalid"
+                    )
+
+        if "framework_type" in child:
+            _validate_optional_str(
+                child["framework_type"],
+                f"children[{idx}].framework_type",
+                max_len=64,
+            )
+            fw = child["framework_type"]
+            if fw is not None and fw != "" and fw not in _VALID_FRAMEWORKS:
                 raise ValueError(
                     f"children[{idx}].framework_type {fw!r} is not a valid MoEFrameworkType"
                 )
-        sw = child.get("school_week_days", 5)
-        if sw is not None and int(sw) not in (5, 6):
-            raise ValueError(f"children[{idx}].school_week_days must be 5 or 6")
-        ext = child.get("holiday_extension_mode", "NITZANIM_FULL_WITH_JULY")
-        if ext is not None and str(ext) not in _VALID_EXTENSION_MODES:
-            raise ValueError(
-                f"children[{idx}].holiday_extension_mode {ext!r} is invalid"
+
+        if "education_stream" in child:
+            _validate_optional_str(
+                child["education_stream"],
+                f"children[{idx}].education_stream",
+                max_len=64,
+            )
+            ed_s = child["education_stream"]
+            if ed_s is not None and ed_s != "" and ed_s not in EDUCATION_STREAMS:
+                raise ValueError(
+                    f"children[{idx}].education_stream {ed_s!r} is invalid"
+                )
+
+        if "school_week_days" in child:
+            sw_int = _parse_strict_int(
+                child["school_week_days"], f"children[{idx}].school_week_days"
+            )
+            if sw_int not in (5, 6):
+                raise ValueError(f"children[{idx}].school_week_days must be 5 or 6")
+            child["school_week_days"] = sw_int
+
+        if "holiday_extension_mode" in child:
+            ext = child["holiday_extension_mode"]
+            if not isinstance(ext, str) or ext not in _VALID_EXTENSION_MODES:
+                raise ValueError(
+                    f"children[{idx}].holiday_extension_mode {ext!r} is invalid"
+                )
+
+        if "treat_camp_as_vacation" in child:
+            if not isinstance(child["treat_camp_as_vacation"], bool):
+                raise ValueError(
+                    f"children[{idx}].treat_camp_as_vacation must be a boolean"
+                )
+
+        if "max_school_days_missed" in child:
+            child["max_school_days_missed"] = _parse_strict_int(
+                child["max_school_days_missed"],
+                f"children[{idx}].max_school_days_missed",
+                min_val=0,
+                max_val=14,
             )
 
+        if "absence_penalty_weight" in child:
+            child["absence_penalty_weight"] = _parse_strict_float(
+                child["absence_penalty_weight"],
+                f"children[{idx}].absence_penalty_weight",
+                min_val=0.0,
+                max_val=1e6,
+            )
+
+        if "bagrut_blackout_dates" in child and child["bagrut_blackout_dates"] is not None:
+            bbd = child["bagrut_blackout_dates"]
+            if not isinstance(bbd, list) or len(bbd) > 366:
+                raise ValueError(
+                    f"children[{idx}].bagrut_blackout_dates must be a list of ISO dates"
+                )
+            for b_idx, bd_item in enumerate(bbd):
+                _parse_iso_date_strict(
+                    bd_item,
+                    f"children[{idx}].bagrut_blackout_dates[{b_idx}]",
+                )
+
+        if (
+            "bagrut_blackout_dates_json" in child
+            and child["bagrut_blackout_dates_json"] is not None
+        ):
+            bbd_json = child["bagrut_blackout_dates_json"]
+            _validate_optional_str(
+                bbd_json,
+                f"children[{idx}].bagrut_blackout_dates_json",
+                max_len=8192,
+            )
+            if bbd_json.strip():
+                try:
+                    parsed_bbd = json.loads(bbd_json)
+                except Exception as exc:
+                    raise ValueError(
+                        f"Invalid JSON in children[{idx}].bagrut_blackout_dates_json"
+                    ) from exc
+                if not isinstance(parsed_bbd, list) or len(parsed_bbd) > 366:
+                    raise ValueError(
+                        f"children[{idx}].bagrut_blackout_dates_json must decode to a list"
+                    )
+                for b_idx, bd_item in enumerate(parsed_bbd):
+                    _parse_iso_date_strict(
+                        bd_item,
+                        f"children[{idx}].bagrut_blackout_dates_json[{b_idx}]",
+                    )
+
+        norm_children.append(child)
+    if "children" in payload:
+        payload["children"] = norm_children
+
     wallets = payload.get("passenger_loyalty_wallets", [])
-    if not isinstance(wallets, list):
+    if not isinstance(wallets, list) or len(wallets) > 100:
         raise ValueError("passenger_loyalty_wallets must be a list")
-    for idx, wallet in enumerate(wallets):
-        if not isinstance(wallet, dict):
+    norm_wallets: list[dict[str, Any]] = []
+    for idx, raw_wallet in enumerate(wallets):
+        if not isinstance(raw_wallet, dict):
             raise ValueError(f"passenger_loyalty_wallets[{idx}] must be an object")
+        wallet = dict(raw_wallet)
+        for w_str_key in (
+            "id",
+            "family_profile_id",
+            "passenger_id",
+            "passenger_name",
+            "pool_group_id",
+            "created_at",
+            "updated_at",
+        ):
+            if w_str_key in wallet:
+                _validate_optional_str(
+                    wallet[w_str_key],
+                    f"passenger_loyalty_wallets[{idx}].{w_str_key}",
+                    max_len=256,
+                )
+
         prog = wallet.get("program_code")
-        if not prog or str(prog) not in _VALID_PROGRAMS:
+        if not isinstance(prog, str) or not prog or prog not in _VALID_PROGRAMS:
             raise ValueError(
                 f"passenger_loyalty_wallets[{idx}].program_code {prog!r} is invalid"
             )
-        pts = wallet.get("available_points", 0)
-        if isinstance(pts, bool) or not isinstance(pts, (int, float)) or int(pts) < 0:
-            raise ValueError(
-                f"passenger_loyalty_wallets[{idx}].available_points must be >= 0"
+
+        if "points_balance" in wallet:
+            pb_val = _parse_strict_int(
+                wallet["points_balance"],
+                f"passenger_loyalty_wallets[{idx}].points_balance",
+                allow_integral_float=True,
+                min_val=0,
+                max_val=_MAX_POINTS_BALANCE,
             )
-        vouchers = wallet.get("companion_vouchers_count", 0)
-        if (
-            isinstance(vouchers, bool)
-            or not isinstance(vouchers, (int, float))
-            or int(vouchers) < 0
-        ):
-            raise ValueError(
-                f"passenger_loyalty_wallets[{idx}].companion_vouchers_count must be >= 0"
+            wallet["points_balance"] = pb_val
+            if "available_points" not in wallet:
+                wallet["available_points"] = pb_val
+
+        if "available_points" in wallet:
+            wallet["available_points"] = _parse_strict_int(
+                wallet["available_points"],
+                f"passenger_loyalty_wallets[{idx}].available_points",
+                allow_integral_float=True,
+                min_val=0,
+                max_val=_MAX_POINTS_BALANCE,
             )
-        val_cents = wallet.get("point_valuation_cents", 1.4)
-        if float(val_cents) <= 0:
-            raise ValueError(
-                f"passenger_loyalty_wallets[{idx}].point_valuation_cents must be > 0"
+
+        for w_bool_key in ("can_pool_with_family", "has_club_credit_card"):
+            if w_bool_key in wallet:
+                if not isinstance(wallet[w_bool_key], bool):
+                    raise ValueError(
+                        f"passenger_loyalty_wallets[{idx}].{w_bool_key} must be a boolean"
+                    )
+
+        if "companion_vouchers_count" in wallet:
+            wallet["companion_vouchers_count"] = _parse_strict_int(
+                wallet["companion_vouchers_count"],
+                f"passenger_loyalty_wallets[{idx}].companion_vouchers_count",
+                allow_integral_float=True,
+                min_val=0,
+                max_val=_MAX_VOUCHERS_COUNT,
             )
+
+        if "point_valuation_cents" in wallet:
+            val_cents = _parse_strict_float(
+                wallet["point_valuation_cents"],
+                f"passenger_loyalty_wallets[{idx}].point_valuation_cents",
+                max_val=1e6,
+            )
+            if val_cents <= 0.0:
+                raise ValueError(
+                    f"passenger_loyalty_wallets[{idx}].point_valuation_cents must be > 0"
+                )
+            wallet["point_valuation_cents"] = val_cents
+
+        if "transfer_ratio_to_airline" in wallet:
+            tr_val = _parse_strict_float(
+                wallet["transfer_ratio_to_airline"],
+                f"passenger_loyalty_wallets[{idx}].transfer_ratio_to_airline",
+                max_val=1e6,
+            )
+            if tr_val <= 0.0:
+                raise ValueError(
+                    f"passenger_loyalty_wallets[{idx}].transfer_ratio_to_airline must be > 0"
+                )
+            wallet["transfer_ratio_to_airline"] = tr_val
+
+        norm_wallets.append(wallet)
+    if "passenger_loyalty_wallets" in payload:
+        payload["passenger_loyalty_wallets"] = norm_wallets
+
+
+def _validate_enum_str_list_strict(
+    val: Any, field_name: str, allowed_values: set[str]
+) -> list[str]:
+    if not isinstance(val, list) or len(val) > 100:
+        raise ValueError(f"{field_name} must be a list of valid string codes")
+    cleaned: list[str] = []
+    for idx, item in enumerate(val):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"{field_name}[{idx}] must be a string, got {type(item).__name__}"
+            )
+        norm = item.strip().upper()
+        if not norm or norm not in allowed_values:
+            raise ValueError(
+                f"Invalid {field_name}[{idx}]: {item!r}. Allowed: {sorted(allowed_values)}"
+            )
+        cleaned.append(norm)
+    return cleaned
 
 
 def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Search payload must be a JSON object")
 
-    d_mode = payload.get("date_selection_mode", "MOE_VACATION_MAXIMIZATION")
-    if str(d_mode) not in _VALID_DATE_MODES:
-        raise ValueError(f"Invalid date_selection_mode: {d_mode!r}")
+    for str_key in ("id", "family_profile_id", "profile_id", "created_at"):
+        if str_key in payload:
+            _validate_optional_str(payload[str_key], str_key, max_len=128)
 
-    a_mode = payload.get("airline_selection_mode", "EL_AL_ONLY")
-    if str(a_mode) not in _VALID_AIRLINE_MODES:
-        raise ValueError(f"Invalid airline_selection_mode: {a_mode!r}")
+    if "school_year" in payload:
+        _validate_optional_str(payload["school_year"], "school_year", max_len=32)
+        if isinstance(payload["school_year"], str):
+            if payload["school_year"].strip():
+                payload["school_year"] = _validate_school_year_strict(
+                    payload["school_year"]
+                )
+            else:
+                payload["school_year"] = None
 
-    if "overlap_policy" in payload and payload["overlap_policy"] is not None:
-        if str(payload["overlap_policy"]) not in _VALID_OVERLAP_POLICIES:
-            raise ValueError(f"Invalid overlap_policy: {payload['overlap_policy']!r}")
+    if "origin_iata" in payload:
+        payload["origin_iata"] = _validate_airport_iata_strict(
+            payload["origin_iata"], "origin_iata"
+        )
 
-    min_nights = int(payload.get("min_trip_nights", 4))
-    max_nights = int(payload.get("max_trip_nights", 10))
+    if "destination_iatas" in payload:
+        payload["destination_iatas"] = _validate_destination_codes_strict(
+            payload["destination_iatas"],
+            "destination_iatas",
+            allow_csv_str=False,
+        )
+
+    if "destination_iatas_json" in payload and payload["destination_iatas_json"] is not None:
+        raw_dj = payload["destination_iatas_json"]
+        _validate_optional_str(raw_dj, "destination_iatas_json", max_len=4096, non_empty=True)
+        try:
+            parsed_dj = json.loads(raw_dj)
+        except Exception as exc:
+            raise ValueError("Invalid JSON in destination_iatas_json") from exc
+        _validate_destination_codes_strict(
+            parsed_dj, "destination_iatas_json", allow_csv_str=False
+        )
+
+    if "enabled_loyalty_programs" in payload and payload["enabled_loyalty_programs"] is not None:
+        payload["enabled_loyalty_programs"] = _validate_enum_str_list_strict(
+            payload["enabled_loyalty_programs"],
+            "enabled_loyalty_programs",
+            _VALID_PROGRAMS,
+        )
+
+    if (
+        "enabled_loyalty_programs_json" in payload
+        and payload["enabled_loyalty_programs_json"] is not None
+    ):
+        raw_pj = payload["enabled_loyalty_programs_json"]
+        _validate_optional_str(raw_pj, "enabled_loyalty_programs_json", max_len=4096)
+        if raw_pj.strip():
+            try:
+                parsed_pj = json.loads(raw_pj)
+            except Exception as exc:
+                raise ValueError("Invalid JSON in enabled_loyalty_programs_json") from exc
+            _validate_enum_str_list_strict(
+                parsed_pj, "enabled_loyalty_programs_json", _VALID_PROGRAMS
+            )
+
+    if "preferred_cabins" in payload and payload["preferred_cabins"] is not None:
+        payload["preferred_cabins"] = _validate_enum_str_list_strict(
+            payload["preferred_cabins"], "preferred_cabins", _VALID_CABINS
+        )
+
+    if "preferred_cabins_json" in payload and payload["preferred_cabins_json"] is not None:
+        raw_cj = payload["preferred_cabins_json"]
+        _validate_optional_str(raw_cj, "preferred_cabins_json", max_len=2048)
+        if raw_cj.strip():
+            try:
+                parsed_cj = json.loads(raw_cj)
+            except Exception as exc:
+                raise ValueError("Invalid JSON in preferred_cabins_json") from exc
+            _validate_enum_str_list_strict(
+                parsed_cj, "preferred_cabins_json", _VALID_CABINS
+            )
+
+    if "target_holiday_codes" in payload and payload["target_holiday_codes"] is not None:
+        payload["target_holiday_codes"] = _validate_enum_str_list_strict(
+            payload["target_holiday_codes"],
+            "target_holiday_codes",
+            _VALID_HOLIDAY_CODES,
+        )
+
+    if (
+        "target_holiday_codes_json" in payload
+        and payload["target_holiday_codes_json"] is not None
+    ):
+        raw_hj = payload["target_holiday_codes_json"]
+        _validate_optional_str(raw_hj, "target_holiday_codes_json", max_len=4096)
+        if raw_hj.strip():
+            try:
+                parsed_hj = json.loads(raw_hj)
+            except Exception as exc:
+                raise ValueError("Invalid JSON in target_holiday_codes_json") from exc
+            _validate_enum_str_list_strict(
+                parsed_hj, "target_holiday_codes_json", _VALID_HOLIDAY_CODES
+            )
+
+    for bool_key in (
+        "search_elal_bonus_tickets",
+        "include_sundor_flights",
+        "allow_hybrid_bonus_cash",
+        "direct_flights_only",
+        "include_open_jaw",
+        "allow_school_absences",
+    ):
+        if bool_key in payload and payload[bool_key] is not None:
+            if not isinstance(payload[bool_key], bool):
+                raise ValueError(f"{bool_key} must be a boolean")
+
+    if "date_selection_mode" in payload:
+        d_mode = payload["date_selection_mode"]
+        if not isinstance(d_mode, str) or d_mode not in _VALID_DATE_MODES:
+            raise ValueError(f"Invalid date_selection_mode: {d_mode!r}")
+    else:
+        d_mode = "MOE_VACATION_MAXIMIZATION"
+
+    if "airline_selection_mode" in payload:
+        a_mode = payload["airline_selection_mode"]
+        if not isinstance(a_mode, str) or a_mode not in _VALID_AIRLINE_MODES:
+            raise ValueError(f"Invalid airline_selection_mode: {a_mode!r}")
+
+    if "overlap_policy" in payload:
+        ov_pol = payload["overlap_policy"]
+        if not isinstance(ov_pol, str) or ov_pol not in _VALID_OVERLAP_POLICIES:
+            raise ValueError(f"Invalid overlap_policy: {ov_pol!r}")
+
+    if "flex_days_plus_minus" in payload:
+        flex = _parse_strict_int(
+            payload["flex_days_plus_minus"],
+            "flex_days_plus_minus",
+            min_val=0,
+            max_val=7,
+        )
+        payload["flex_days_plus_minus"] = flex
+    else:
+        flex = 2
+
+    if "max_bridge_days_shift" in payload:
+        bridge = _parse_strict_int(
+            payload["max_bridge_days_shift"],
+            "max_bridge_days_shift",
+            min_val=0,
+            max_val=5,
+        )
+        payload["max_bridge_days_shift"] = bridge
+
+    dep_d: Optional[date] = None
+    ret_d: Optional[date] = None
+    if "specific_departure_date" in payload and payload["specific_departure_date"] != "":
+        if d_mode == "SPECIFIC_DATES" or payload["specific_departure_date"] is not None:
+            dep_d = _parse_iso_date_strict(
+                payload["specific_departure_date"], "specific_departure_date"
+            )
+    if "specific_return_date" in payload and payload["specific_return_date"] != "":
+        if d_mode == "SPECIFIC_DATES" or payload["specific_return_date"] is not None:
+            ret_d = _parse_iso_date_strict(
+                payload["specific_return_date"], "specific_return_date"
+            )
+
+    if dep_d is not None and ret_d is not None:
+        if d_mode == "SPECIFIC_DATES":
+            if ret_d <= dep_d:
+                raise ValueError(
+                    f"specific_return_date ({ret_d}) must be > specific_departure_date ({dep_d})"
+                )
+            if "min_trip_nights" not in payload and "max_trip_nights" not in payload:
+                base_nights = (ret_d - dep_d).days
+                payload["min_trip_nights"] = max(1, base_nights - 2 * flex)
+                payload["max_trip_nights"] = min(45, max(1, base_nights + 2 * flex))
+        elif ret_d < dep_d:
+            raise ValueError(
+                f"specific_return_date ({ret_d}) must be >= specific_departure_date ({dep_d})"
+            )
+
+    if "direct_holiday_code" in payload:
+        _validate_optional_str(
+            payload["direct_holiday_code"], "direct_holiday_code", max_len=64
+        )
+        if payload["direct_holiday_code"]:
+            h_code = payload["direct_holiday_code"]
+            if h_code.strip().upper() not in _VALID_HOLIDAY_CODES:
+                raise ValueError(f"Invalid direct_holiday_code: {h_code!r}")
+
+    if "direct_target_year" in payload and payload["direct_target_year"] != "":
+        t_year = _parse_strict_int(
+            payload["direct_target_year"],
+            "direct_target_year",
+            min_val=2025,
+            max_val=2099,
+        )
+        payload["direct_target_year"] = t_year
+
+    if d_mode == "HOLIDAY_DIRECT_INTENT":
+        if "max_trip_nights" in payload and "min_trip_nights" not in payload:
+            max_req = _parse_strict_int(payload["max_trip_nights"], "max_trip_nights")
+            if max_req >= 1:
+                payload["min_trip_nights"] = min(4, max_req)
+
+    if "min_trip_nights" in payload:
+        min_nights = _parse_strict_int(payload["min_trip_nights"], "min_trip_nights")
+        payload["min_trip_nights"] = min_nights
+    else:
+        min_nights = 4
+
+    if "max_trip_nights" in payload:
+        max_nights = _parse_strict_int(payload["max_trip_nights"], "max_trip_nights")
+        payload["max_trip_nights"] = max_nights
+    else:
+        max_nights = 10
+
     if min_nights < 1 or max_nights < 1 or min_nights > max_nights or max_nights > 45:
         raise ValueError(
             f"Invalid trip nights range: min_trip_nights={min_nights}, max_trip_nights={max_nights}"
         )
 
-    flex = int(payload.get("flex_days_plus_minus", 2))
-    if flex < 0 or flex > 7:
-        raise ValueError(f"flex_days_plus_minus must be in 0..7, got {flex}")
-
-    bridge = int(payload.get("max_bridge_days_shift", 2))
-    if bridge < 0 or bridge > 5:
-        raise ValueError(f"max_bridge_days_shift must be in 0..5, got {bridge}")
-
-    dep_raw = payload.get("specific_departure_date")
-    ret_raw = payload.get("specific_return_date")
-    if dep_raw and ret_raw:
-        dep_d = _parse_iso_date_strict(dep_raw, "specific_departure_date")
-        ret_d = _parse_iso_date_strict(ret_raw, "specific_return_date")
-        if ret_d < dep_d:
-            raise ValueError(
-                f"specific_return_date ({ret_d}) must be >= specific_departure_date ({dep_d})"
-            )
-
-    if str(d_mode) == "HOLIDAY_DIRECT_INTENT":
-        h_code = payload.get("direct_holiday_code")
-        if h_code is not None and str(h_code) not in _VALID_HOLIDAY_CODES:
-            raise ValueError(f"Invalid direct_holiday_code: {h_code!r}")
-        t_year = payload.get("direct_target_year")
-        if t_year is not None and (int(t_year) < 2024 or int(t_year) > 2040):
-            raise ValueError(f"Invalid direct_target_year: {t_year!r}")
-
-    raw_vtypes = (
-        payload.get("preferred_vacation_types")
-        if "preferred_vacation_types" in payload
-        else (
-            payload.get("vacation_types")
-            if "vacation_types" in payload
-            else payload.get("preferred_vacation_type")
+    if "matmid_points_balance" in payload and payload["matmid_points_balance"] != "":
+        mpb_val = _parse_strict_int(
+            payload["matmid_points_balance"],
+            "matmid_points_balance",
+            allow_integral_float=True,
+            min_val=0,
+            max_val=_MAX_POINTS_BALANCE,
         )
-    )
-    if raw_vtypes is not None:
-        if isinstance(raw_vtypes, str):
-            vlist = [v.strip().upper() for v in raw_vtypes.split(",") if v.strip()]
-        elif isinstance(raw_vtypes, list):
-            vlist = [str(v).strip().upper() for v in raw_vtypes if str(v).strip()]
-        else:
-            raise ValueError("preferred_vacation_types must be a list or comma-separated string")
-        for vt in vlist:
-            if vt not in _VALID_VACATION_TYPES:
+        payload["matmid_points_balance"] = mpb_val
+
+    for vt_key in (
+        "preferred_vacation_types",
+        "vacation_types",
+        "preferred_vacation_type",
+    ):
+        if vt_key in payload and payload[vt_key] is not None:
+            raw_vtypes = payload[vt_key]
+            if isinstance(raw_vtypes, str):
+                _validate_optional_str(raw_vtypes, vt_key, max_len=1024)
+                vlist = [v.strip().upper() for v in raw_vtypes.split(",") if v.strip()]
+            elif isinstance(raw_vtypes, list):
+                if len(raw_vtypes) > 50:
+                    raise ValueError(f"{vt_key} exceeds maximum list length")
+                for vt_item in raw_vtypes:
+                    if not isinstance(vt_item, str):
+                        raise ValueError(f"{vt_key} items must be strings")
+                vlist = [v.strip().upper() for v in raw_vtypes if v.strip()]
+            else:
                 raise ValueError(
-                    f"Invalid vacation_type: {vt!r}. Allowed: {sorted(_VALID_VACATION_TYPES)}"
+                    f"{vt_key} must be a list or comma-separated string"
                 )
+            for vt in vlist:
+                if vt not in _VALID_VACATION_TYPES:
+                    raise ValueError(
+                        f"Invalid vacation_type: {vt!r}. Allowed: {sorted(_VALID_VACATION_TYPES)}"
+                    )
 
-    raw_wmode = (
-        payload.get("weather_filter_mode")
-        if "weather_filter_mode" in payload
-        else payload.get("vacation_type_filter_mode")
-    )
-    if raw_wmode is not None and str(raw_wmode).strip():
-        wmode_str = str(raw_wmode).strip().upper()
-        if wmode_str not in _VALID_WEATHER_FILTER_MODES:
-            raise ValueError(
-                f"Invalid weather_filter_mode: {raw_wmode!r}. Allowed: {sorted(_VALID_WEATHER_FILTER_MODES)}"
-            )
-
-    raw_min_wss = payload.get("min_weather_suitability_score")
-    if raw_min_wss is not None and raw_min_wss != "":
-        if isinstance(raw_min_wss, bool) or not isinstance(raw_min_wss, (int, float)):
+    if (
+        "preferred_vacation_types_json" in payload
+        and payload["preferred_vacation_types_json"] is not None
+    ):
+        raw_vtj = payload["preferred_vacation_types_json"]
+        _validate_optional_str(raw_vtj, "preferred_vacation_types_json", max_len=4096)
+        if raw_vtj.strip():
             try:
-                min_wss_val = float(raw_min_wss)
+                parsed_vtj = json.loads(raw_vtj)
             except Exception as exc:
-                raise ValueError(
-                    f"min_weather_suitability_score must be a number in 0..100, got {raw_min_wss!r}"
-                ) from exc
-        else:
-            min_wss_val = float(raw_min_wss)
-        if min_wss_val < 0.0 or min_wss_val > 100.0:
-            raise ValueError(
-                f"min_weather_suitability_score must be between 0.0 and 100.0, got {min_wss_val}"
+                raise ValueError("Invalid JSON in preferred_vacation_types_json") from exc
+            _validate_enum_str_list_strict(
+                parsed_vtj, "preferred_vacation_types_json", _VALID_VACATION_TYPES
             )
+
+    for wm_key in ("weather_filter_mode", "vacation_type_filter_mode"):
+        if wm_key in payload and payload[wm_key] is not None:
+            raw_wmode = payload[wm_key]
+            if not isinstance(raw_wmode, str):
+                raise ValueError(f"Invalid {wm_key}: {raw_wmode!r}")
+            if raw_wmode.strip():
+                wmode_str = raw_wmode.strip().upper()
+                if wmode_str not in _VALID_WEATHER_FILTER_MODES:
+                    raise ValueError(
+                        f"Invalid {wm_key}: {raw_wmode!r}. Allowed: {sorted(_VALID_WEATHER_FILTER_MODES)}"
+                    )
+
+    if "min_weather_suitability_score" in payload and payload["min_weather_suitability_score"] != "":
+        min_wss_val = _parse_strict_float(
+            payload["min_weather_suitability_score"],
+            "min_weather_suitability_score",
+            min_val=0.0,
+            max_val=100.0,
+        )
+        payload["min_weather_suitability_score"] = min_wss_val
 
 
 class VacationPlannerAPIRouter:
@@ -342,7 +1060,8 @@ class VacationPlannerAPIRouter:
             # 2. GET /api/v1/profile
             if method_u == "GET" and path == "/api/v1/profile":
                 profile_id = q_params.get("profile_id", "default-family-profile")
-                profile = self.repository.get_profile(profile_id)
+                _validate_optional_str(profile_id, "profile_id", max_len=128)
+                profile = self.repository.get_profile(profile_id or "default-family-profile")
                 if profile is None:
                     return (
                         404,
@@ -357,7 +1076,9 @@ class VacationPlannerAPIRouter:
 
             # 3. PUT /api/v1/profile
             if method_u == "PUT" and path == "/api/v1/profile":
-                body = json_body if isinstance(json_body, dict) else {}
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                body = dict(json_body)
                 _validate_profile_payload_strict(body)
                 profile = FamilyProfile.from_dict(body)
                 saved = self.repository.save_profile(profile)
@@ -371,8 +1092,15 @@ class VacationPlannerAPIRouter:
             if method_u == "POST" and path.startswith("/api/v1/moe-calendar/sync/"):
                 school_year_raw = path[len("/api/v1/moe-calendar/sync/") :]
                 norm_year = _validate_school_year_strict(school_year_raw)
-                body = json_body if isinstance(json_body, dict) else {}
-                force_remote = bool(body.get("force_remote_check", False))
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                body = dict(json_body)
+                if "force_remote_check" in body:
+                    if not isinstance(body["force_remote_check"], bool):
+                        raise ValueError("force_remote_check must be a boolean")
+                    force_remote = body["force_remote_check"]
+                else:
+                    force_remote = False
                 sync_status = self.auto_updater.sync_school_year(
                     norm_year, force_remote_check=force_remote
                 )
@@ -384,12 +1112,49 @@ class VacationPlannerAPIRouter:
                     json.dumps(sync_status.to_dict(), ensure_ascii=False),
                 )
 
+            # 4b. GET /api/v1/moe-calendar/upcoming
+            if method_u == "GET" and path == "/api/v1/moe-calendar/upcoming":
+                profile_id = q_params.get("profile_id", "default-family-profile")
+                _validate_optional_str(profile_id, "profile_id", max_len=128)
+                profile = (
+                    self.repository.get_profile(profile_id or "default-family-profile")
+                    or FamilyProfile()
+                )
+                as_of_raw = q_params.get("as_of")
+                ref_d = (
+                    _parse_iso_date_strict(as_of_raw, "as_of")
+                    if as_of_raw
+                    else datetime.now(UTC).date()
+                )
+                holidays = self.calendar_service.get_upcoming_holidays_for_rolling_year(
+                    as_of_date=ref_d, profile=profile
+                )
+                try:
+                    win_end = ref_d.replace(year=ref_d.year + 1)
+                except ValueError:
+                    win_end = ref_d + timedelta(days=365)
+                upcoming_payload = {
+                    "as_of_date": ref_d.isoformat(),
+                    "window_end_date": win_end.isoformat(),
+                    "count": len(holidays),
+                    "holidays": holidays,
+                }
+                return (
+                    200,
+                    json_headers,
+                    json.dumps(upcoming_payload, ensure_ascii=False),
+                )
+
             # 5. GET /api/v1/moe-calendar/{school_year}
             if method_u == "GET" and path.startswith("/api/v1/moe-calendar/"):
                 school_year_raw = path[len("/api/v1/moe-calendar/") :]
                 norm_year = _validate_school_year_strict(school_year_raw)
                 profile_id = q_params.get("profile_id", "default-family-profile")
-                profile = self.repository.get_profile(profile_id) or FamilyProfile()
+                _validate_optional_str(profile_id, "profile_id", max_len=128)
+                profile = (
+                    self.repository.get_profile(profile_id or "default-family-profile")
+                    or FamilyProfile()
+                )
                 windows = self.calendar_service.get_calendar_windows(norm_year)
                 meta = self.calendar_service.get_calendar_metadata(norm_year)
                 y1, y2 = (int(p) for p in norm_year.split("-"))
@@ -432,30 +1197,68 @@ class VacationPlannerAPIRouter:
 
             # 6. POST /api/v1/elal-bonus/sync
             if method_u == "POST" and path == "/api/v1/elal-bonus/sync":
-                body = json_body if isinstance(json_body, dict) else {}
-                destinations = body.get("destinations") or body.get("destination_iatas") or ["FCO"]
-                if isinstance(destinations, str):
-                    destinations = [
-                        d.strip() for d in destinations.split(",") if d.strip()
-                    ]
-                if not isinstance(destinations, list) or not destinations:
-                    raise ValueError("destinations must be a non-empty list of IATA codes")
-                start_d = _parse_iso_date_strict(
-                    body.get("start_date", "2027-04-10"), "start_date"
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                body = dict(json_body)
+                destinations: Optional[list[str]] = None
+                if "destinations" in body:
+                    destinations = _validate_destination_codes_strict(
+                        body["destinations"], "destinations", allow_csv_str=True
+                    )
+                if "destination_iatas" in body:
+                    dest_alias = _validate_destination_codes_strict(
+                        body["destination_iatas"],
+                        "destination_iatas",
+                        allow_csv_str=True,
+                    )
+                    if destinations is None:
+                        destinations = dest_alias
+                if destinations is None:
+                    destinations = ["FCO"]
+
+                start_d = (
+                    _parse_iso_date_strict(body["start_date"], "start_date")
+                    if "start_date" in body
+                    else date(2027, 4, 10)
                 )
-                end_d = _parse_iso_date_strict(
-                    body.get("end_date", "2027-04-20"), "end_date"
+                end_d = (
+                    _parse_iso_date_strict(body["end_date"], "end_date")
+                    if "end_date" in body
+                    else date(2027, 4, 20)
                 )
                 if end_d < start_d:
                     raise ValueError(
                         f"end_date ({end_d}) must be >= start_date ({start_d})"
                     )
-                origin = str(body.get("origin", "TLV")).upper()
-                force_refresh = bool(body.get("force_refresh", False))
+
+                origin = "TLV"
+                if "origin" in body:
+                    origin = _validate_airport_iata_strict(body["origin"], "origin")
+                if "origin_iata" in body:
+                    origin_alias = _validate_airport_iata_strict(
+                        body["origin_iata"], "origin_iata"
+                    )
+                    if "origin" not in body:
+                        origin = origin_alias
+
+                if "force_refresh" in body:
+                    if not isinstance(body["force_refresh"], bool):
+                        raise ValueError("force_refresh must be a boolean")
+                    force_refresh = body["force_refresh"]
+                else:
+                    force_refresh = False
+
+                for m_key in ("months_ahead", "months"):
+                    if m_key in body:
+                        body[m_key] = _parse_strict_int(
+                            body[m_key], m_key, min_val=1, max_val=24
+                        )
+
                 expanded = self.elal_adapter.expand_metro_iatas(destinations)
 
-                # If caller provided an external `rbd_payload` (e.g. from browser/partner sync), import it directly
-                if "rbd_payload" in body and body["rbd_payload"]:
+                # If caller provided an external `rbd_payload` (e.g. from browser/partner sync), validate & import it directly
+                if "rbd_payload" in body and body["rbd_payload"] is not None:
+                    _validate_rbd_payload_strict(body["rbd_payload"])
                     imported_rows = self.elal_adapter.parse_and_import_external_rbd_payload(
                         raw_payload=body["rbd_payload"],
                         default_origin=origin,
@@ -524,7 +1327,9 @@ class VacationPlannerAPIRouter:
                 dest_raw = q_params.get("destination") or q_params.get("destinations")
                 if not dest_raw:
                     raise ValueError("Missing required query parameter 'destination'")
-                dest_list = [d.strip() for d in dest_raw.split(",") if d.strip()]
+                dest_list = _validate_destination_codes_strict(
+                    dest_raw, "destination", allow_csv_str=True
+                )
                 start_d = _parse_iso_date_strict(
                     q_params.get("start_date", ""), "start_date"
                 )
@@ -535,7 +1340,11 @@ class VacationPlannerAPIRouter:
                     raise ValueError(
                         f"end_date ({end_d}) must be >= start_date ({start_d})"
                     )
-                origin = str(q_params.get("origin", "TLV")).upper()
+                origin = (
+                    _validate_airport_iata_strict(q_params["origin"], "origin")
+                    if q_params.get("origin")
+                    else "TLV"
+                )
                 expanded = self.elal_adapter.expand_metro_iatas(dest_list)
                 rows = self.elal_adapter.get_award_availability(
                     destinations=dest_list,
@@ -557,22 +1366,58 @@ class VacationPlannerAPIRouter:
 
             # 8. POST /api/v1/vacations/search
             if method_u == "POST" and path == "/api/v1/vacations/search":
-                body = dict(json_body) if isinstance(json_body, dict) else {}
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                body = dict(json_body)
                 _validate_search_payload_strict(body)
                 if body.get("overlap_policy") == "CAMP_AWARE_ALL_CHILDREN_OFF":
                     body["overlap_policy"] = "CAMP_ADJUSTED_INTERSECTION"
                 elif body.get("overlap_policy") == "WEIGHTED_MIN_ABSENCE":
                     body["overlap_policy"] = "MAXIMIZE_EFFICIENCY_SCORE"
+
+                resolved_ty: Optional[int] = None
+                raw_ty = body.get("direct_target_year")
+                if isinstance(raw_ty, int) and not isinstance(raw_ty, bool) and raw_ty > 2035:
+                    resolved_ty = raw_ty
+                    body["direct_target_year"] = None
+                    if str(body.get("date_selection_mode") or "") == "HOLIDAY_DIRECT_INTENT":
+                        body["school_year"] = resolve_holiday_direct_intent_school_year(
+                            str(body.get("direct_holiday_code") or "PESACH"),
+                            resolved_ty,
+                        )
+
                 query = FlightSearchQuery.from_dict(body)
-                profile_id = str(body.get("profile_id", "default-family-profile"))
+                if resolved_ty is not None:
+                    setattr(query, "_resolved_target_year", resolved_ty)
+                profile_id = str(body.get("profile_id") or "default-family-profile")
                 profile = self.repository.get_profile(profile_id)
+                if (
+                    "matmid_points_balance" in body
+                    and body["matmid_points_balance"] is not None
+                    and body["matmid_points_balance"] != ""
+                ):
+                    base_prof = (
+                        profile
+                        or self.repository.get_profile()
+                        or FamilyProfile()
+                    )
+                    profile = FamilyProfile.from_dict(
+                        {
+                            **base_prof.to_dict(),
+                            "matmid_points_balance": int(body["matmid_points_balance"]),
+                            "passenger_loyalty_wallets": [],
+                        }
+                    )
                 expanded_dests = self.elal_adapter.expand_metro_iatas(
                     query.destination_iatas
                 )
                 proposals = self.planner_service.search_vacations(
                     query_data=query, profile=profile
                 )
-                live_mode = self.repository.is_live_fetch_mode()
+                live_mode = (
+                    self.repository.is_live_fetch_mode()
+                    or self.planner_service._has_live_only_inventory()
+                )
                 weather_fallback_he = getattr(
                     self.planner_service, "last_weather_fallback_message_he", None
                 )
@@ -591,8 +1436,11 @@ class VacationPlannerAPIRouter:
                         "No flights fetched from the server (no live flights synced in the database for this route/date. "
                         "Fictitious flights are disabled in production mode)."
                     )
+                query_dict = query.to_dict()
+                if resolved_ty is not None:
+                    query_dict["direct_target_year"] = resolved_ty
                 resp_payload = {
-                    "query": query.to_dict(),
+                    "query": query_dict,
                     "expanded_destinations": expanded_dests,
                     "count": len(proposals),
                     "live_fetch_mode": live_mode,
@@ -608,17 +1456,17 @@ class VacationPlannerAPIRouter:
                 month_param = q_params.get("month")
                 start_param = q_params.get("start_date")
                 end_param = q_params.get("end_date")
-                if start_param and end_param:
-                    start_d = _parse_iso_date_strict(start_param, "start_date")
-                    end_d = _parse_iso_date_strict(end_param, "end_date")
+                if start_param or end_param:
+                    start_d = _parse_iso_date_strict(start_param or "", "start_date")
+                    end_d = _parse_iso_date_strict(end_param or "", "end_date")
                     if end_d < start_d:
                         raise ValueError(
                             f"end_date ({end_d}) must be >= start_date ({start_d})"
                         )
                 elif month_param:
-                    m_int = int(month_param)
-                    if m_int < 1 or m_int > 12:
-                        raise ValueError(f"month must be between 1 and 12, got {m_int}")
+                    m_int = _parse_strict_int(
+                        month_param, "month", min_val=1, max_val=12
+                    )
                     start_d = date(2027, m_int, 10)
                     end_d = date(2027, m_int, 17)
                 else:
@@ -634,7 +1482,9 @@ class VacationPlannerAPIRouter:
                     v.strip().upper()
                     for v in vtype_raw.split(",")
                     if v.strip()
-                ] or ["ANY"]
+                ]
+                if not vtypes:
+                    raise ValueError("Invalid empty vacation_type parameter")
                 for vt in vtypes:
                     if vt not in _VALID_VACATION_TYPES:
                         raise ValueError(
@@ -644,11 +1494,9 @@ class VacationPlannerAPIRouter:
                 dest_filter_raw = q_params.get("destination") or q_params.get("destinations")
                 allowed_iatas: Optional[set[str]] = None
                 if dest_filter_raw:
-                    raw_codes = [
-                        d.strip().upper()
-                        for d in dest_filter_raw.split(",")
-                        if d.strip()
-                    ]
+                    raw_codes = _validate_destination_codes_strict(
+                        dest_filter_raw, "destination", allow_csv_str=True
+                    )
                     allowed_iatas = set(self.elal_adapter.expand_metro_iatas(raw_codes))
 
                 items: list[dict[str, Any]] = []
@@ -704,20 +1552,26 @@ class VacationPlannerAPIRouter:
 
             # 9. POST /api/v1/vacations/compare
             if method_u == "POST" and path == "/api/v1/vacations/compare":
-                body = json_body if isinstance(json_body, dict) else {}
-                proposal_ids = body.get("proposal_ids", [])
-                if not isinstance(proposal_ids, list) or not proposal_ids:
-                    return (
-                        422,
-                        json_headers,
-                        json.dumps(
-                            {"error": "proposal_ids must be a non-empty list"},
-                            ensure_ascii=False,
-                        ),
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                body = dict(json_body)
+                proposal_ids = body.get("proposal_ids")
+                if (
+                    not isinstance(proposal_ids, list)
+                    or not proposal_ids
+                    or len(proposal_ids) > 100
+                ):
+                    raise ValueError("proposal_ids must be a non-empty list")
+                clean_pids: list[str] = []
+                for idx, pid in enumerate(proposal_ids):
+                    _validate_optional_str(
+                        pid,
+                        f"proposal_ids[{idx}]",
+                        max_len=128,
+                        non_empty=True,
                     )
-                matrix = self.planner_service.compare_proposals(
-                    [str(pid) for pid in proposal_ids]
-                )
+                    clean_pids.append(pid.strip())
+                matrix = self.planner_service.compare_proposals(clean_pids)
                 matrix_dict = (
                     matrix.to_dict() if hasattr(matrix, "to_dict") else dict(matrix)
                 )
@@ -734,11 +1588,18 @@ class VacationPlannerAPIRouter:
                 and path.endswith("/export.ics")
             ):
                 middle = path[len("/api/v1/vacations/") : -len("/export.ics")].strip("/")
-                if not middle:
+                if (
+                    not middle
+                    or "/" in middle
+                    or "\r" in middle
+                    or "\n" in middle
+                    or "\x00" in middle
+                    or len(middle) > 128
+                ):
                     return (
                         400,
                         json_headers,
-                        json.dumps({"error": "Missing proposal_id"}),
+                        json.dumps({"error": "Invalid or missing proposal_id"}),
                     )
                 try:
                     ics_text = self.planner_service.export_proposal_ics(middle)
@@ -760,7 +1621,13 @@ class VacationPlannerAPIRouter:
                 json.dumps({"error": f"Unknown API endpoint: {method_u} {path}"}),
             )
 
-        except (ValueError, KeyError, sqlite3.IntegrityError) as exc:
+        except (
+            ValueError,
+            TypeError,
+            OverflowError,
+            KeyError,
+            sqlite3.Error,
+        ) as exc:
             return (
                 422,
                 json_headers,

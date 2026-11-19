@@ -18,6 +18,9 @@ Covers:
 from __future__ import annotations
 
 import copy
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from datetime import date
 
@@ -1360,6 +1363,679 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             self.assertNotEqual(lp.itinerary.return_date.isoformat(), "2026-12-12")
             for leg in lp.itinerary.inbound_legs:
                 self.assertNotEqual(leg.flight_number, "LY312")
+
+    def test_rolling_one_year_upcoming_holidays_year_rollover_and_lengths_run3_r1(
+        self,
+    ) -> None:
+        """22. Verify rolling 1-year holiday resolver, automatic year rollover, `(N days)` labels,
+        `YOM_KIPPUR_SUKKOT_BRIDGE` (14d) vs `SUKKOT` (9d), and 1..31d `max_trip_nights` search compatibility.
+        """
+        import re
+        from backend.app.main import VacationPlannerTestClient
+
+        iso_repo = SQLiteRepository(":memory:", auto_seed=True)
+        iso_cal = MoECalendarService(iso_repo)
+        iso_max = VacationMaximizerEngine(iso_cal)
+        prof = iso_repo.get_profile()
+
+        # 1. At 2026-11-19: Hanukkah is 2026 (7d); Spring/Summer are 2027; Autumn holidays rolled over to 2027
+        up_nov26 = iso_cal.get_upcoming_holidays_for_rolling_year(
+            as_of_date=date(2026, 11, 19), profile=prof
+        )
+        self.assertEqual(len(up_nov26), 11)
+        starts_nov26 = [h["start_date"] for h in up_nov26]
+        self.assertEqual(starts_nov26, sorted(starts_nov26))
+
+        by_code_26 = {h["holiday_code"]: h for h in up_nov26}
+        self.assertEqual(by_code_26["HANUKKAH"]["target_year"], 2026)
+        self.assertEqual(by_code_26["HANUKKAH"]["holiday_days"], 7)
+        self.assertEqual(by_code_26["HANUKKAH"]["label_he"], "חופשת חנוכה 2026 (7 ימים)")
+        self.assertEqual(by_code_26["HANUKKAH"]["label_en"], "Hanukkah Break 2026 (7 days)")
+        self.assertEqual(by_code_26["PESACH"]["target_year"], 2027)
+        self.assertEqual(by_code_26["PESACH"]["holiday_days"], 16)
+        self.assertEqual(by_code_26["YOM_HAATZMAUT"]["holiday_days"], 1)
+        self.assertIn("(1 יום)", by_code_26["YOM_HAATZMAUT"]["label_he"])
+        self.assertIn("(1 day)", by_code_26["YOM_HAATZMAUT"]["label_en"])
+        self.assertEqual(by_code_26["ROSH_HASHANAH"]["target_year"], 2027)
+        self.assertEqual(by_code_26["ROSH_HASHANAH"]["holiday_days"], 3)
+        self.assertEqual(by_code_26["YOM_KIPPUR_SUKKOT_BRIDGE"]["target_year"], 2027)
+        self.assertEqual(by_code_26["YOM_KIPPUR_SUKKOT_BRIDGE"]["holiday_days"], 14)
+        self.assertEqual(by_code_26["SUKKOT"]["target_year"], 2027)
+        self.assertEqual(by_code_26["SUKKOT"]["holiday_days"], 9)
+        self.assertEqual(by_code_26["SUMMER_JULY"]["holiday_days"], 31)
+        self.assertEqual(by_code_26["SUMMER_AUGUST"]["holiday_days"], 31)
+
+        for item in up_nov26:
+            self.assertGreaterEqual(date.fromisoformat(item["end_date"]), date(2026, 11, 19))
+            self.assertRegex(item["label_he"], r"\(\d+\s+(?:ימים|יום)\)$")
+            self.assertRegex(item["label_en"], r"\(\d+\s+days?\)$")
+
+        # 2. Automatic year rollover at later dates (2027-05-01 and 2028-09-01)
+        up_may27 = {
+            h["holiday_code"]: h
+            for h in iso_cal.get_upcoming_holidays_for_rolling_year(
+                as_of_date="2027-05-01", profile=prof
+            )
+        }
+        self.assertEqual(up_may27["HANUKKAH"]["target_year"], 2027)
+        self.assertEqual(up_may27["PURIM"]["target_year"], 2028)
+        self.assertEqual(up_may27["PESACH"]["target_year"], 2028)
+
+        up_sep28 = {
+            h["holiday_code"]: h
+            for h in iso_cal.get_upcoming_holidays_for_rolling_year(
+                as_of_date="2028-09-01", profile=prof
+            )
+        }
+        self.assertEqual(up_sep28["ROSH_HASHANAH"]["target_year"], 2028)
+        self.assertEqual(up_sep28["PESACH"]["target_year"], 2029)
+
+        # 3. Mode-3 YOM_KIPPUR_SUKKOT_BRIDGE (Oct 2027) vs SUKKOT (shifted +5d)
+        wins_bridge = iso_max.generate_candidate_windows(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "YOM_KIPPUR_SUKKOT_BRIDGE",
+                "direct_target_year": 2027,
+                "min_trip_nights": 4,
+                "max_trip_nights": 14,
+            },
+            prof,
+        )
+        self.assertGreater(len(wins_bridge), 0)
+        self.assertTrue(all(w.start_date.month in (9, 10) and w.start_date.year == 2027 for w in wins_bridge))
+
+        wins_sukkot = iso_max.generate_candidate_windows(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "SUKKOT",
+                "direct_target_year": 2027,
+                "min_trip_nights": 4,
+                "max_trip_nights": 9,
+                "max_bridge_days_shift": 0,
+            },
+            prof,
+        )
+        self.assertGreater(len(wins_sukkot), 0)
+        self.assertTrue(all(w.start_date >= date(2027, 10, 12) for w in wins_sukkot))
+
+        # 4. REST endpoint `/api/v1/moe-calendar/upcoming` + 1-day holiday max_trip_nights clamping
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r1_api.db")
+            resp_up = client.get("/api/v1/moe-calendar/upcoming?as_of=2027-05-01")
+            self.assertEqual(resp_up.status_code, 200)
+            up_json = resp_up.json()
+            self.assertEqual(up_json["count"], 11)
+            for h_obj in up_json["holidays"]:
+                resp_s = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                        "direct_holiday_code": h_obj["holiday_code"],
+                        "direct_target_year": h_obj["target_year"],
+                        "max_trip_nights": h_obj["holiday_days"],
+                        "airline_selection_mode": "EL_AL_ONLY",
+                        "destination_iatas": ["ATH"],
+                    },
+                )
+                self.assertEqual(resp_s.status_code, 200, f"Failed search for {h_obj}")
+
+    def test_manual_specific_dates_plus_minus_flexibility_and_anywhere_discovery_run3_r2_r4(
+        self,
+    ) -> None:
+        """23. Verify `SPECIFIC_DATES` + `±` day flexibility finds shifted `#live` flights across
+        single destinations and all 45 `ANYWHERE` destinations (including 2-night and 15-night spans).
+        """
+        from backend.app.schemas.domain import ChildFramework, FamilyProfile
+
+        live_repo = SQLiteRepository(":memory:", auto_seed=False)
+        live_cal = MoECalendarService(live_repo)
+        live_max = VacationMaximizerEngine(live_cal)
+        live_adapter = ElAlRbdDataClientAdapter(live_repo)
+        live_planner = BonusVacationPlannerService(
+            repository=live_repo,
+            calendar_service=live_cal,
+            maximizer=live_max,
+            elal_adapter=live_adapter,
+            commercial_adapter=AllAirlinesSearchAdapter(live_repo),
+        )
+
+        # Import `#live` flights ONLY on shifted dates (+2d outbound, +1d inbound) on SOF (outside top-14 offline list) and ATH
+        live_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "SOF",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY551",
+                    "flight_date": "2027-05-12",
+                    "economy_seats": 2,
+                    "dep_time": "07:15",
+                    "arr_time": "09:55",
+                },
+                {
+                    "destination_iata": "SOF",
+                    "direction": "INBOUND",
+                    "flight_number": "LY552",
+                    "flight_date": "2027-05-19",
+                    "economy_seats": 2,
+                    "dep_time": "11:10",
+                    "arr_time": "13:40",
+                },
+                {
+                    "destination_iata": "ATH",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY541",
+                    "flight_date": "2027-05-12",
+                    "economy_seats": 2,
+                    "dep_time": "08:00",
+                    "arr_time": "10:15",
+                },
+                {
+                    "destination_iata": "ATH",
+                    "direction": "INBOUND",
+                    "flight_number": "LY542",
+                    "flight_date": "2027-05-14",
+                    "economy_seats": 2,
+                    "dep_time": "12:00",
+                    "arr_time": "14:05",
+                },
+            ]
+        )
+
+        manual_prof = FamilyProfile(
+            id="manual-flex-prof",
+            adults_count=2,
+            matmid_points_balance=185000,
+            children=[ChildFramework(child_age_years=8, framework_type=None)],
+            passenger_loyalty_wallets=[],
+        )
+
+        # Exact flex=0 on 2027-05-10..2027-05-18 has 0 flights; flex=2 finds 2027-05-12..2027-05-19 on ANYWHERE (SOF)!
+        props_flex0 = live_planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ANYWHERE"],
+                "specific_departure_date": "2027-05-10",
+                "specific_return_date": "2027-05-18",
+                "flex_days_plus_minus": 0,
+            },
+            profile=manual_prof,
+        )
+        self.assertEqual(len(props_flex0), 0)
+
+        props_flex2 = live_planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ANYWHERE"],
+                "specific_departure_date": "2027-05-10",
+                "specific_return_date": "2027-05-18",
+                "flex_days_plus_minus": 2,
+            },
+            profile=manual_prof,
+        )
+        self.assertGreater(len(props_flex2), 0)
+        sof_props = [
+            p for p in props_flex2 if p.itinerary and p.itinerary.destination_iata == "SOF"
+        ]
+        self.assertGreater(len(sof_props), 0)
+        self.assertEqual(sof_props[0].itinerary.departure_date, date(2027, 5, 12))
+        self.assertEqual(sof_props[0].itinerary.return_date, date(2027, 5, 19))
+
+        # Short 2-night manual getaway without explicit min/max_trip_nights succeeds
+        short_props = live_planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ATH"],
+                "specific_departure_date": "2027-05-12",
+                "specific_return_date": "2027-05-14",
+                "flex_days_plus_minus": 0,
+            },
+            profile=manual_prof,
+        )
+        self.assertGreater(len(short_props), 0)
+        self.assertEqual(short_props[0].itinerary.trip_nights, 2)
+
+    def test_single_household_matmid_balance_pool_and_elal_egress_lock_run3_r3_r5(
+        self,
+    ) -> None:
+        """24. Verify single household `matmid_points_balance` (`0`, `30k`, `300k`) governs proposals
+        even when legacy DB wallets exist, suppresses single-wallet `MULTI_CLUB_PER_PASSENGER_SPLIT`
+        duplicates, and blocks outbound `elal.com` HTTP egress by default.
+        """
+        from unittest.mock import patch
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r3_api.db")
+            # Confirm seeded DB starts with 6 legacy wallets totaling 185k Matmid
+            prof_init = client.get("/api/v1/profile").json()
+            self.assertEqual(len(prof_init["passenger_loyalty_wallets"]), 6)
+
+            for bal, expected_max in ((0, 0), (30000, 30000), (300000, 300000)):
+                resp = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "SPECIFIC_DATES",
+                        "specific_departure_date": "2027-04-11",
+                        "specific_return_date": "2027-04-18",
+                        "flex_days_plus_minus": 0,
+                        "airline_selection_mode": "EL_AL_ONLY",
+                        "enabled_loyalty_programs": ["ELAL_MATMID"],
+                        "destination_iatas": ["FCO"],
+                        "matmid_points_balance": bal,
+                    },
+                )
+                self.assertEqual(resp.status_code, 200)
+                proposals = resp.json()["proposals"]
+                self.assertGreater(len(proposals), 0)
+                for p in proposals:
+                    itin = p["itinerary"]
+                    self.assertTrue(itin["is_elal_flight"])
+                    self.assertIn(itin["primary_carrier_iata"], ("LY", "2U"))
+                    self.assertLessEqual(itin["total_matmid_points"], expected_max)
+                    self.assertNotEqual(
+                        itin["fulfillment_strategy"], "MULTI_CLUB_PER_PASSENGER_SPLIT"
+                    )
+                if bal == 0:
+                    self.assertTrue(
+                        all(
+                            p["itinerary"]["fulfillment_strategy"] == "COMMERCIAL_CASH_ONLY"
+                            for p in proposals
+                        )
+                    )
+                elif bal == 300000:
+                    self.assertTrue(
+                        any(
+                            p["itinerary"]["fulfillment_strategy"] == "FULL_BONUS_SAME_CABIN"
+                            and p["itinerary"]["total_matmid_points"] == 150000
+                            for p in proposals
+                        )
+                    )
+
+        # Verify zero outbound HTTP traffic to elal.com even when ELAL_LIVE_FETCH_ENABLED=1
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        old_egress = os.environ.get("ELAL_ALLOW_DIRECT_HTTP_EGRESS")
+        try:
+            os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
+            os.environ.pop("ELAL_ALLOW_DIRECT_HTTP_EGRESS", None)
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=AssertionError("Forbidden outbound elal.com HTTP request!"),
+            ):
+                rows = self.elal_adapter._try_live_http_fetch(
+                    ["FCO"], date(2027, 4, 11), date(2027, 4, 18)
+                )
+                self.assertEqual(rows, [])
+        finally:
+            if old_live is None:
+                os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            else:
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_live
+            if old_egress is None:
+                os.environ.pop("ELAL_ALLOW_DIRECT_HTTP_EGRESS", None)
+            else:
+                os.environ["ELAL_ALLOW_DIRECT_HTTP_EGRESS"] = old_egress
+
+    def test_rolling_2036_2040_holiday_search_live_http_malformed_json_422_and_zero_point_infant_lap(
+        self,
+    ) -> None:
+        """25. Verify:
+        (a) Rolling 1-year holiday searches in `2036..2040` (`as_of=2035-12-31`, `as_of=2039-12-31`)
+            and `SPECIFIC_DATES` carrying `direct_target_year=2036` succeed with `HTTP 200` and
+            generate proposals in the exact requested `target_year`, while `2024` returns `422`.
+        (b) Live `create_http_server` returns clean `HTTP 422` JSON (never `RemoteDisconnected` or
+            silent `bool -> 1` coercion) on `None`, `bool`, `[]`, `{}`, `"inf"`, `"-inf"`, `"nan"`.
+        (c) `0`-point `COMMERCIAL_CASH_ONLY` fallback marks lap-infant allocations with `rbd_code="INF"`.
+        """
+        from datetime import timedelta
+        import json
+        import threading
+        import urllib.error
+        import urllib.request
+        from backend.app.main import VacationPlannerTestClient, create_http_server
+
+        client = VacationPlannerTestClient(":memory:")
+        for as_of_iso in ("2035-12-31", "2039-12-31"):
+            up_resp = client.get(f"/api/v1/moe-calendar/upcoming?as_of={as_of_iso}")
+            self.assertEqual(up_resp.status_code, 200)
+            holidays = up_resp.json()["holidays"]
+            self.assertEqual(len(holidays), 11)
+            for h in holidays:
+                s_resp = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                        "direct_holiday_code": h["holiday_code"],
+                        "direct_target_year": h["target_year"],
+                        "max_trip_nights": h["holiday_days"],
+                        "airline_selection_mode": "EL_AL_ONLY",
+                        "destination_iatas": ["ATH"],
+                        "matmid_points_balance": 185000,
+                    },
+                )
+                self.assertEqual(
+                    s_resp.status_code,
+                    200,
+                    f"Failed rolling search at {as_of_iso} for {h}: {s_resp.text}",
+                )
+                s_body = s_resp.json()
+                self.assertEqual(s_body["query"]["direct_target_year"], h["target_year"])
+                self.assertGreater(s_body["count"], 0)
+                min_bound = date.fromisoformat(h["start_date"]) - timedelta(days=5)
+                max_bound = date.fromisoformat(h["end_date"]) + timedelta(days=5)
+                for prop in s_body["proposals"]:
+                    dep_dt = date.fromisoformat(prop["itinerary"]["departure_date"])
+                    self.assertGreaterEqual(dep_dt, min_bound)
+                    self.assertLessEqual(dep_dt, max_bound)
+
+        # SPECIFIC_DATES carrying direct_target_year=2036 (matching app.js payload shape) -> 200
+        spec_2036 = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2036-05-11",
+                "specific_return_date": "2036-05-18",
+                "flex_days_plus_minus": 1,
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2036,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ATH"],
+                "matmid_points_balance": 185000,
+            },
+        )
+        self.assertEqual(spec_2036.status_code, 200)
+        self.assertGreater(spec_2036.json()["count"], 0)
+
+        # Out-of-range direct_target_year=2024 over HTTP -> 422
+        bad_2024 = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2024,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ATH"],
+            },
+        )
+        self.assertEqual(bad_2024.status_code, 422)
+
+        # Zero-point COMMERCIAL_CASH_ONLY fallback with an age-1 INFANT_LAP child -> rbd_code == "INF"
+        prof_inf = client.get("/api/v1/profile").json()
+        prof_inf["children"] = [
+            {
+                "id": "inf-0pt",
+                "child_name": "תינוק",
+                "child_age_years": 1,
+                "passenger_Current_type": "INFANT_LAP",
+                "framework_type": "DAYCARE_SUPERVISED",
+            }
+        ]
+        prof_inf["passenger_loyalty_wallets"] = []
+        prof_inf["matmid_points_balance"] = 0
+        self.assertEqual(client.put("/api/v1/profile", json=prof_inf).status_code, 200)
+        inf_zero_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "matmid_points_balance": 0,
+            },
+        )
+        self.assertEqual(inf_zero_resp.status_code, 200)
+        inf_props = inf_zero_resp.json()["proposals"]
+        self.assertGreater(len(inf_props), 0)
+        inf_rows = [
+            a
+            for a in inf_props[0]["itinerary"]["family_ticket_allocation"]
+            if a.get("passenger_id") == "CHILD_1"
+        ]
+        self.assertEqual(len(inf_rows), 1)
+        self.assertEqual(inf_rows[0]["rbd_code"], "INF")
+        self.assertEqual(inf_rows[0]["points_used"], 0)
+        self.assertEqual(inf_rows[0]["cash_fare_usd"], 0.0)
+        self.assertEqual(inf_rows[0]["taxes_usd"], 0.0)
+
+        # Live ThreadingHTTPServer malformed JSON boundary sweep -> 422 without socket drop
+        srv = create_http_server("127.0.0.1", 0, db_path=":memory:")
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base_spec = {
+            "date_selection_mode": "SPECIFIC_DATES",
+            "specific_departure_date": "2027-05-10",
+            "specific_return_date": "2027-05-18",
+        }
+        base_prof = {
+            "id": "default-family-profile",
+            "adults_count": 2,
+            "children": [],
+            "passenger_loyalty_wallets": [],
+        }
+        malformed_cases: list[tuple[str, str, object]] = [
+            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": None}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": True}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": []}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": "inf"}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "min_trip_nights": None}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "max_trip_nights": None}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "max_bridge_days_shift": None}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "direct_target_year": None}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "direct_target_year": True}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": None}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": True}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": []}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": {}}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "inf"}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "-inf"}),
+            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "nan"}),
+            ("POST", "/api/v1/vacations/search", []),
+            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": True}),
+            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": None}),
+            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": []}),
+            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": "inf"}),
+            ("PUT", "/api/v1/profile", {**base_prof, "adults_count": None}),
+            ("PUT", "/api/v1/profile", {**base_prof, "adults_count": True}),
+            ("PUT", "/api/v1/profile", {**base_prof, "annual_pto_days_budget": "nan"}),
+            ("PUT", "/api/v1/profile", []),
+        ]
+        try:
+            for method, path_url, payload_obj in malformed_cases:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}{path_url}",
+                    data=json.dumps(payload_obj).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method=method,
+                )
+                err_body = ""
+                try:
+                    with urllib.request.urlopen(req, timeout=5.0) as resp_ok:
+                        code = resp_ok.status
+                        err_body = resp_ok.read().decode("utf-8")
+                except urllib.error.HTTPError as http_err:
+                    code = http_err.code
+                    err_body = http_err.read().decode("utf-8")
+                self.assertEqual(
+                    code,
+                    422,
+                    f"Expected 422 for {method} {path_url} {payload_obj!r}, got {code}: {err_body}",
+                )
+                parsed_err = json.loads(err_body)
+                self.assertIn("error", parsed_err)
+
+            # Confirm live server remains healthy afterward
+            ok_req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/v1/vacations/search",
+                data=json.dumps({**base_spec, "destination_iatas": ["ATH"]}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(ok_req, timeout=5.0) as ok_resp:
+                self.assertEqual(ok_resp.status, 200)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            client.router.repository.close()
+
+    def test_holistic_live_http_schema_validation_sqlite_error_guard_and_profile_preservation(
+        self,
+    ) -> None:
+        """26. Verify holistic Iteration 3 API schema hardening over live `ThreadingHTTPServer`:
+        (a) All 16 Challenger Iteration 2 live-HTTP fuzzer cases (`school_year: []`, `created_at: [1]`,
+            `pool_group_id: []`, `b"null"`, `/elal-bonus/sync` non-dict roots / `destinations: []` /
+            `rbd_payload: 12345`, `enabled_loyalty_programs: [None, {}]`, `preferred_cabins: [None, {}]`,
+            `matmid_points_balance: 10**100`, `origin_iata: 123`) return clean `HTTP 422` JSON without
+            `sqlite3.ProgrammingError` thread crashes (`RemoteDisconnected`).
+        (b) `PUT /api/v1/profile` with `b"null"` (and non-dict/malformed bodies) preserves the saved
+            household profile (`children` count and `matmid_points_balance`) intact.
+        (c) Additional non-dict root, enum-list, boolean, 64-bit integer bound, and SQLite FK checks
+            across `/moe-calendar/sync/*`, `/vacations/compare`, `/elal-bonus/sync`, `/profile`, and
+            `/vacations/search` return `HTTP 422`, while empty-body sync (`b""`) and valid round-trips
+            return `HTTP 200`.
+        """
+        import http.client
+        import json
+        import threading
+        from backend.app.main import create_http_server
+
+        srv = create_http_server("127.0.0.1", 0, db_path=":memory:")
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        def raw_req(method: str, path_url: str, body_bytes: bytes) -> tuple[int | str, str]:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+            try:
+                conn.request(
+                    method,
+                    path_url,
+                    body=body_bytes,
+                    headers={"Content-Type": "application/json"},
+                )
+                resp = conn.getresponse()
+                return resp.status, resp.read().decode("utf-8", "replace")
+            except Exception as exc:  # pragma: no cover - surfaces thread crashes
+                return f"CRASH:{type(exc).__name__}", str(exc)
+            finally:
+                conn.close()
+
+        base_spec = {
+            "date_selection_mode": "SPECIFIC_DATES",
+            "specific_departure_date": "2027-05-10",
+            "specific_return_date": "2027-05-18",
+        }
+        base_prof = {
+            "id": "default-family-profile",
+            "adults_count": 2,
+            "children": [],
+            "passenger_loyalty_wallets": [],
+        }
+
+        try:
+            # Capture initial seeded household profile before adversarial PUTs
+            prof_before_code, prof_before_raw = raw_req("GET", "/api/v1/profile", b"")
+            self.assertEqual(prof_before_code, 200)
+            prof_before = json.loads(prof_before_raw)
+            self.assertGreater(len(prof_before["children"]), 0)
+            self.assertEqual(prof_before["matmid_points_balance"], 185000)
+
+            # Exact 16 Challenger Iteration 2 live-HTTP fuzzer cases + extended holistic matrix
+            cases: list[tuple[str, str, bytes]] = [
+                # 1-16: Exact Challenger Iteration 2 §5 reproducer cases
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "school_year": []}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "created_at": [1]}).encode()),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "created_at": [1]}).encode()),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "pool_group_id": []}]}).encode()),
+                ("PUT", "/api/v1/profile", b"null"),
+                ("POST", "/api/v1/vacations/search", b"null"),
+                ("POST", "/api/v1/elal-bonus/sync", b"null"),
+                ("POST", "/api/v1/elal-bonus/sync", b"[]"),
+                ("POST", "/api/v1/elal-bonus/sync", b"123"),
+                ("POST", "/api/v1/elal-bonus/sync", b"true"),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": []}).encode()),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": 12345}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "enabled_loyalty_programs": [None, {}]}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "preferred_cabins": [None, {}]}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "matmid_points_balance": 10**100}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "origin_iata": 123}).encode()),
+                # Extended holistic coverage across all routes & fields
+                ("PUT", "/api/v1/profile", b"NaN"),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "updated_at": [1]}).encode()),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "matmid_points_balance": 10**100}).encode()),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "has_flycard": 2}).encode()),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "children": [{"child_age_years": 6, "birth_date": []}]}).encode()),
+                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "points_balance": 10**100}]}).encode()),
+                ("POST", "/api/v1/moe-calendar/sync/2026-2027", b"null"),
+                ("POST", "/api/v1/moe-calendar/sync/2026-2027", json.dumps({"force_remote_check": "yes"}).encode()),
+                ("POST", "/api/v1/vacations/compare", b"null"),
+                ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": [None]}).encode()),
+                ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": ["   "]}).encode()),
+                ("POST", "/api/v1/elal-bonus/sync", b"NaN"),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": [None, 123, {}]}).encode()),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": False}).encode()),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "origin": 123}).encode()),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "force_refresh": "yes"}).encode()),
+                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "months_ahead": 99}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": []}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": [123]}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "target_holiday_codes": [None]}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "include_sundor_flights": "yes"}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "family_profile_id": [1, 2]}).encode()),
+                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "id": {"bad": 1}}).encode()),
+            ]
+
+            for method, path_url, body_bytes in cases:
+                status, resp_text = raw_req(method, path_url, body_bytes)
+                self.assertEqual(
+                    status,
+                    422,
+                    f"Expected HTTP 422 for {method} {path_url} {body_bytes[:80]!r}, got {status}: {resp_text}",
+                )
+                err_obj = json.loads(resp_text)
+                self.assertIn("error", err_obj)
+
+            # Verify saved profile was NOT wiped by PUT b"null" or any invalid PUT
+            prof_after_code, prof_after_raw = raw_req("GET", "/api/v1/profile", b"")
+            self.assertEqual(prof_after_code, 200)
+            prof_after = json.loads(prof_after_raw)
+            self.assertEqual(len(prof_after["children"]), len(prof_before["children"]))
+            self.assertEqual(
+                prof_after["matmid_points_balance"],
+                prof_before["matmid_points_balance"],
+            )
+            self.assertEqual(prof_after["adults_count"], prof_before["adults_count"])
+
+            # Verify empty HTTP body b"" on POST /api/v1/elal-bonus/sync and GET->PUT profile round-trip still return 200
+            empty_sync_code, _ = raw_req("POST", "/api/v1/elal-bonus/sync", b"")
+            self.assertEqual(empty_sync_code, 200)
+            roundtrip_code, _ = raw_req(
+                "PUT", "/api/v1/profile", json.dumps(prof_after).encode("utf-8")
+            )
+            self.assertEqual(roundtrip_code, 200)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        # Verify router-level base sqlite3.Error guard catches ProgrammingError/InterfaceError as clean HTTP 422
+        import sqlite3
+        from unittest.mock import patch
+        from backend.app.api.v1.endpoints import VacationPlannerAPIRouter
+
+        guard_router = VacationPlannerAPIRouter(db_path=":memory:")
+        try:
+            with patch.object(
+                guard_router.repository,
+                "get_profile",
+                side_effect=sqlite3.ProgrammingError("Simulated parameter binding error"),
+            ):
+                g_status, _, g_body = guard_router.dispatch("GET", "/api/v1/profile")
+                self.assertEqual(g_status, 422)
+                self.assertIn("Simulated parameter binding error", json.loads(g_body)["error"])
+        finally:
+            guard_router.repository.close()
 
 
 if __name__ == "__main__":
