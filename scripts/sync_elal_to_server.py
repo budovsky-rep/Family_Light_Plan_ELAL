@@ -658,19 +658,41 @@ def fetch_live_holiday_payloads_via_cdp(
                         f"(skipping {','.join(skipped)}; syncing {len(active_dests)} active destinations)."
                     )
 
-        unsupported_iatas: set[str] = set()
+        def _wait_ajax_ready(timeout_sec: float = 15.0) -> bool:
+            dl = time.time() + timeout_sec
+            while time.time() < dl:
+                r = cdp.call(
+                    "Runtime.evaluate",
+                    {
+                        "expression": (
+                            "Boolean(window.$ && typeof window.$.ajax === 'function' "
+                            "&& document.querySelectorAll('select').length >= 2)"
+                        ),
+                        "returnByValue": True,
+                    },
+                )
+                if r.get("result", {}).get("value") is True:
+                    return True
+                time.sleep(0.5)
+            return False
 
-        def _query_dest_subset(
-            subset_dests: list[str],
+        def _refresh_reblaze_session() -> bool:
+            print("  -> Refreshing El Al Reblaze session after transient throttle...")
+            time.sleep(3.0)
+            cdp.call("Page.reload", {"ignoreCache": False})
+            time.sleep(3.0)
+            return _wait_ajax_ready(20.0)
+
+        def _query_batch(
+            batch_dests: list[str],
             start_iso: str,
             end_iso: str,
             rbd: str,
-        ) -> list[dict[str, Any]]:
-            clean_subset = [d for d in subset_dests if d not in unsupported_iatas]
-            if not clean_subset:
-                return []
+        ) -> Optional[dict[str, Any]]:
+            if not batch_dests:
+                return None
             segs: list[dict[str, str]] = []
-            for d in clean_subset:
+            for d in batch_dests:
                 segs.append({"org": "TLV", "dest": d})
                 segs.append({"org": d, "dest": "TLV"})
             seg_json = json.dumps(segs)
@@ -702,7 +724,7 @@ def fetch_live_holiday_payloads_via_cdp(
                 }});
             }})
             """
-            for _attempt in range(2):
+            for attempt in range(2):
                 eval_res = cdp.call(
                     "Runtime.evaluate",
                     {
@@ -715,40 +737,30 @@ def fetch_live_holiday_payloads_via_cdp(
                 if isinstance(val, dict) and val.get("ok") and isinstance(val.get("data"), dict):
                     data_obj = val["data"]
                     if "AccumulatedOutput" in data_obj:
-                        return [data_obj]
-                time.sleep(0.5)
+                        return data_obj
+                if attempt == 0:
+                    _refresh_reblaze_session()
+            return None
 
-            # Bisect batch if El Al rejected an unsupported seasonal route inside this subset
-            if len(clean_subset) == 1:
-                bad_iata = clean_subset[0]
-                unsupported_iatas.add(bad_iata)
-                print(f"  Note: El Al API rejected route {bad_iata} — skipping {bad_iata} in remaining windows.")
-                return []
-            mid = len(clean_subset) // 2
-            out_payloads = _query_dest_subset(clean_subset[:mid], start_iso, end_iso, rbd)
-            time.sleep(0.25)
-            out_payloads.extend(_query_dest_subset(clean_subset[mid:], start_iso, end_iso, rbd))
-            return out_payloads
+        current_batches = [
+            active_dests[i : i + MAX_DESTINATIONS_PER_AJAX_BATCH]
+            for i in range(0, len(active_dests), MAX_DESTINATIONS_PER_AJAX_BATCH)
+        ]
 
         for w_idx, win in enumerate(active_windows, start=1):
             label = win["label"]
             start_iso = win["start_iso"]
             end_iso = win["end_iso"]
-            current_dests = [d for d in active_dests if d not in unsupported_iatas]
-            current_batches = [
-                current_dests[i : i + MAX_DESTINATIONS_PER_AJAX_BATCH]
-                for i in range(0, len(current_dests), MAX_DESTINATIONS_PER_AJAX_BATCH)
-            ]
             for rbd in CABIN_RBDS:
                 cabin_label = "Economy" if rbd == "E" else "Premium"
                 window_cabin_cnt = 0
                 for b_dests in current_batches:
-                    batch_objs = _query_dest_subset(b_dests, start_iso, end_iso, rbd)
-                    for data_obj in batch_objs:
+                    data_obj = _query_batch(b_dests, start_iso, end_iso, rbd)
+                    if data_obj is not None:
                         collected_payloads.append(data_obj)
                         _, _, _, _, rec_cnt = normalize_accumulated_payloads([data_obj])
                         window_cabin_cnt += rec_cnt
-                    time.sleep(0.25)
+                    time.sleep(0.55)
                 print(
                     f"  [{w_idx:02d}/{len(active_windows):02d}] {label} | "
                     f"{cabin_label} ({rbd}): {window_cabin_cnt} available flight records"
