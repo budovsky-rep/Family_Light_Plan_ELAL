@@ -3,9 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#0369a1" />
+  <meta name="theme-color" content="#0B1F3A" />
   <meta name="description" content="מתכנן חופשות משפחתיות חכם סביב חופשות משרד החינוך, מקסום ימי חופש וחיפוש כרטיסי בונוס באל על (rbddataclients) וכל חברות התעופה" />
   <title>מתכנן חופשות משפחתיות חכם | משרד החינוך וכרטיסי בונוס אל על</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@600;700&amp;family=Plus+Jakarta+Sans:wght@700;800&amp;family=Rubik:wght@600;700;800&amp;display=swap" media="print" onload="this.media='all'" />
+  <noscript>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@600;700&amp;family=Plus+Jakarta+Sans:wght@700;800&amp;family=Rubik:wght@600;700;800&amp;display=swap" />
+  </noscript>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/src/styles/app.css" />
   <script src="/src/app.js" defer></script>
@@ -36,149 +42,64 @@
         <p class="brand-subtitle" id="header-subtitle">מקסום ימי חופשה של משרד החינוך, קייטנות ניצנים וכרטיסי בונוס בנקודות</p>
       </div>
     </div>
-    <nav class="desktop-zone-nav" aria-label="ניווט אזורי שולחן עבודה">
-      <button type="button" class="desktop-nav-btn active" data-desktop-zone="zone-search">🔍 1. מצב חיפוש ויעד</button>
-      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-profile">👨‍👩‍👧‍👦 2. מבנה משפחתי ומועדונים</button>
-      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-results">✈️ 3. תוצאות וחלופות בונוס</button>
-      <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar">📅 לוח חופשות משרד החינוך (הצג)</button>
+    <nav class="desktop-zone-nav" aria-label="ניווט אזורי שולחן עבודה" data-aria-he="ניווט אזורי שולחן עבודה" data-aria-en="Workspace zone navigation">
+      <button type="button" class="desktop-nav-btn active" data-desktop-zone="zone-search" data-he="🔍 1. חיפוש" data-en="🔍 1. Search">🔍 1. חיפוש</button>
+      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-profile" data-he="👨‍👩‍👧‍👦 2. משפחה" data-en="👨‍👩‍👧‍👦 2. Family">👨‍👩‍👧‍👦 2. משפחה</button>
+      <button type="button" class="desktop-nav-btn" data-desktop-zone="zone-results" data-he="✈️ 3. חלופות" data-en="✈️ 3. Deals">✈️ 3. חלופות</button>
+      <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar">📅 לוח חופשות</button>
     </nav>
     <div class="header-summary-pills">
       <span class="pill pill-family" id="header-family-pill" dir="ltr">2 Adults + 3 Children</span>
       <span class="pill pill-points" id="header-points-pill" dir="ltr">185,000 Matmid pts</span>
-      <button type="button" class="btn-locale-toggle" id="btn-toggle-locale" aria-label="החלף שפה וכיוון טקסט">
+      <button type="button" class="btn-locale-toggle" id="btn-toggle-locale" aria-label="החלף שפה וכיוון טקסט" data-aria-he="החלף שפה וכיוון טקסט" data-aria-en="Toggle language and text direction">
         EN / LTR
       </button>
     </div>
   </header>
 
-  <!-- 4-Zone Desktop Workspace -->
+  <!-- Wide-Desktop Flight-Deck Workspace -->
   <main class="dashboard-shell" id="dashboard-shell">
-    <!-- Left/Start Column: Vacation Hero + Zone 2 (Search Control Panel) + Zone 1 (Family Profile & Multi-Club Wallets) -->
-    <div class="sidebar-column">
-      <!-- Atmospheric Vacation Hero & Interactive Destination Quick-Picker -->
-      <section class="vacation-hero-card" id="vacation-hero" aria-label="פתיח חופשה ובחירת יעד מהירה">
-        <div class="hero-main-grid">
-          <div class="hero-copy-col">
-            <span class="hero-eyebrow" id="hero-eyebrow">☀️ עונת החופשות המשפחתיות 2026–2029 · המראות מנתב״ג (TLV)</span>
-            <h2 class="hero-headline" id="hero-headline">הפכו כל חופשת בית ספר לחופשת חלומות משפחתית</h2>
-            <p class="hero-lead" id="hero-lead">
-              המערכת מצליבה בין לוח החופשות הרשמי של משרד החינוך (כולל גשרים וקייטנות ניצנים) לבין מושבי בונוס באל על ומועדוני תעופה — כדי שתטוסו יותר ותבזבזו פחות ימי חופש מהעבודה.
-            </p>
+    <!-- Full-Width Departure Overview Masthead -->
+    <section class="vacation-hero-card" id="vacation-hero" aria-label="פתיח מתכנן חופשות משפחתיות" data-aria-he="פתיח מתכנן חופשות משפחתיות" data-aria-en="Family vacation planner overview">
+      <div class="hero-main-grid">
+        <div class="hero-copy-col">
+          <div class="hero-masthead-top">
+            <span class="hero-eyebrow" id="hero-eyebrow">✈️ המראות מנתב״ג (TLV) · חופשות 2026–2029</span>
             <div class="hero-highlights-row" id="hero-highlights">
-              <span class="hero-highlight-chip">🏖️ עד פי 3.5 ימי חופשה על כל יום חופש הורה</span>
-              <span class="hero-highlight-chip">🎫 סריקת מושבי בונוס ופיצול חכם בין נוסעים</span>
-              <span class="hero-highlight-chip">🎒 חישוב אוטומטי לפי גיל ומסגרת כל ילד/ה</span>
+              <span class="hero-highlight-chip" data-he="🏖️ עד פי 3.5 חופשה ליום חופש" data-en="🏖️ Up to 3.5x Vacation per PTO">🏖️ עד פי 3.5 חופשה ליום חופש</span>
+              <span class="hero-highlight-chip" data-he="🎫 סריקת בונוס אל על + 9 מועדונים" data-en="🎫 EL AL Bonus + 9 Partner Clubs">🎫 סריקת בונוס אל על + 9 מועדונים</span>
+              <span class="hero-highlight-chip" data-he="🎒 סינכרון חופשות וקייטנות ניצנים" data-en="🎒 MoE Breaks &amp; Nitzanim Camps">🎒 סינכרון חופשות וקייטנות ניצנים</span>
             </div>
           </div>
-          <div class="hero-art-col" aria-hidden="true">
-            <svg class="hero-scenic-svg" viewBox="0 0 380 210" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect width="380" height="210" rx="16" fill="url(#skyGrad)" />
-              <circle cx="296" cy="58" r="34" fill="url(#sunGrad)" opacity="0.95" />
-              <circle cx="296" cy="58" r="48" fill="#fde68a" opacity="0.18" />
-              <!-- Flight arc from TLV -->
-              <path d="M46 138C118 52 225 38 332 76" stroke="rgba(255,255,255,0.55)" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" />
-              <circle cx="46" cy="138" r="5" fill="#fbbf24" />
-              <circle cx="332" cy="76" r="5" fill="#34d399" />
-              <!-- Airplane silhouette along the arc -->
-              <g transform="translate(185, 52) rotate(-8)">
-                <path d="M0 12L28 4L18 18L11 14L0 12Z" fill="#ffffff" />
-                <path d="M11 14L14 21L18 18" fill="#bae6fd" />
-              </g>
-              <!-- Mediterranean coastal hills & islands -->
-              <path d="M0 162C65 138 130 144 195 160C260 176 325 145 380 154V210H0V162Z" fill="#0284c7" opacity="0.45" />
-              <path d="M0 176C82 160 155 184 240 170C305 159 348 168 380 175V210H0V176Z" fill="#0d9488" opacity="0.65" />
-              <path d="M28 188C95 182 175 194 265 186C315 182 350 187 380 190" stroke="#99f6e4" stroke-width="2" stroke-linecap="round" opacity="0.7" />
-              <!-- Boarding pass floating mini badge -->
-              <rect x="22" y="22" width="124" height="44" rx="10" fill="rgba(15, 23, 42, 0.58)" stroke="rgba(255,255,255,0.28)" />
-              <text x="34" y="41" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="700">TLV ✈ BONUS</text>
-              <text x="34" y="56" fill="#e0f2fe" font-family="sans-serif" font-size="10">FAMILY LOUNGE</text>
-              <defs>
-                <linearGradient id="skyGrad" x1="0" y1="0" x2="380" y2="210" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="#0c4a6e" />
-                  <stop offset="55%" stop-color="#0284c7" />
-                  <stop offset="100%" stop-color="#0f766e" />
-                </linearGradient>
-                <linearGradient id="sunGrad" x1="296" y1="24" x2="296" y2="92" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stop-color="#fef08a" />
-                  <stop offset="100%" stop-color="#f59e0b" />
-                </linearGradient>
-              </defs>
-            </svg>
+          <div class="hero-title-band">
+            <h2 class="hero-headline" id="hero-headline">הפכו כל חופשת בית ספר לחופשת חלומות משפחתית</h2>
+            <p class="hero-lead" id="hero-lead">
+              הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס באל על ומועדוני תעופה — מקסימום חופשה במינימום ימי חופש מההורים.
+            </p>
           </div>
         </div>
+        <div class="hero-art-col" aria-hidden="true">
+          <svg class="hero-scenic-svg" viewBox="0 0 380 210" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="380" height="210" rx="16" fill="url(#skyGrad)" />
+            <circle cx="296" cy="58" r="34" fill="url(#sunGrad)" opacity="0.95" />
+            <path d="M46 138C118 52 225 38 332 76" stroke="rgba(255,255,255,0.55)" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" />
+            <defs>
+              <linearGradient id="skyGrad" x1="0" y1="0" x2="380" y2="210" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#0B1F3A" />
+                <stop offset="100%" stop-color="#1452A6" />
+              </linearGradient>
+              <linearGradient id="sunGrad" x1="296" y1="24" x2="296" y2="92" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FEF5E7" />
+                <stop offset="100%" stop-color="#C67A12" />
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+      </div>
+    </section>
 
-        <!-- Interactive Destination Quick-Picker Strip -->
-        <div class="dest-strip-header">
-          <span class="dest-strip-title" id="dest-strip-title">🌍 לאן מתחשק לכם לטוס? לחצו על יעד לבדיקת חופשות וכרטיסי בונוס:</span>
-          <span class="dest-strip-hint" id="dest-strip-hint">בחירה מעדכנת מיד את תוצאות החיפוש</span>
-        </div>
-        <div class="dest-postcard-grid" id="destination-cards-strip" role="group" aria-label="בחירת יעד מהירה">
-          <button type="button" class="dest-postcard active" data-dest-card="ROM">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">🏛️</span>
-              <span class="dest-iata" dir="ltr">ROM</span>
-            </span>
-            <strong class="dest-name" data-he="רומא, איטליה" data-en="Rome, Italy">רומא, איטליה</strong>
-            <span class="dest-vibe" data-he="פיאצות, ג׳לטו והיסטוריה" data-en="Piazzas, gelato &amp; history">פיאצות, ג׳לטו והיסטוריה</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="ATH">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">🏖️</span>
-              <span class="dest-iata" dir="ltr">ATH</span>
-            </span>
-            <strong class="dest-name" data-he="אתונה, יוון" data-en="Athens, Greece">אתונה, יוון</strong>
-            <span class="dest-vibe" data-he="חופים טורקיז וטברנות" data-en="Turquoise beaches &amp; tavernas">חופים טורקיז וטברנות</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="LCA">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">☀️</span>
-              <span class="dest-iata" dir="ltr">LCA</span>
-            </span>
-            <strong class="dest-name" data-he="לרנקה, קפריסין" data-en="Larnaca, Cyprus">לרנקה, קפריסין</strong>
-            <span class="dest-vibe" data-he="שעה טיסה לריזורט וים" data-en="1-hr flight to beach resorts">שעה טיסה לריזורט וים</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="PAR">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">🥐</span>
-              <span class="dest-iata" dir="ltr">PAR</span>
-            </span>
-            <strong class="dest-name" data-he="פריז, צרפת" data-en="Paris, France">פריז, צרפת</strong>
-            <span class="dest-vibe" data-he="קסם אירופאי ודיסנילנד" data-en="European magic &amp; Disneyland">קסם אירופאי ודיסנילנד</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="LON">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">🎡</span>
-              <span class="dest-iata" dir="ltr">LON</span>
-            </span>
-            <strong class="dest-name" data-he="לונדון, בריטניה" data-en="London, UK">לונדון, בריטניה</strong>
-            <span class="dest-vibe" data-he="מחזות זמר, פארקים וקניות" data-en="Musicals, parks &amp; shopping">מחזות זמר, פארקים וקניות</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="BCN">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">🌊</span>
-              <span class="dest-iata" dir="ltr">BCN</span>
-            </span>
-            <strong class="dest-name" data-he="ברצלונה, ספרד" data-en="Barcelona, Spain">ברצלונה, ספרד</strong>
-            <span class="dest-vibe" data-he="ים תיכון, גאודי ואטרקציות" data-en="Mediterranean coast &amp; Gaudí">ים תיכון, גאודי ואטרקציות</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="BKK">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">🌴</span>
-              <span class="dest-iata" dir="ltr">BKK</span>
-            </span>
-            <strong class="dest-name" data-he="בנגקוק, תאילנד" data-en="Bangkok, Thailand">בנגקוק, תאילנד</strong>
-            <span class="dest-vibe" data-he="איים טרופיים וחופשה אקזוטית" data-en="Tropical islands &amp; exotic escape">איים טרופיים וחופשה אקזוטית</span>
-          </button>
-          <button type="button" class="dest-postcard" data-dest-card="ANYWHERE">
-            <span class="dest-postcard-top">
-              <span class="dest-emoji">✨</span>
-              <span class="dest-iata" dir="ltr">ALL</span>
-            </span>
-            <strong class="dest-name" data-he="כל היעדים הפתוחים" data-en="Explore All Open">כל היעדים הפתוחים</strong>
-            <span class="dest-vibe" data-he="גילוי אוטומטי של מושבי בונוס" data-en="Auto-discover award seats">גילוי אוטומטי של מושבי בונוס</span>
-          </button>
-        </div>
-      </section>
+    <!-- Inline-Start Control Rail: Search & Mode Control Panel + Compact Family Profile -->
+    <div class="sidebar-column">
 
       <!-- Zone 2: Search & Mode Control Panel -->
       <section class="zone-card" id="zone-search" aria-labelledby="zone-search-title">
@@ -190,83 +111,83 @@
           <span class="badge-vacation" id="active-mode-badge">תכנון לפי חג ושנה</span>
         </div>
 
-        <p id="bonus-holiday-focus-banner" class="profile-helper-banner">
-          ℹ️ <strong>מיקוד בחגים וחופשות (Economy &amp; Premium):</strong> מאגר כרטיסי הבונוס של אל על מסונכרן ומעודכן במיוחד סביב חגי ישראל וחופשות משרד החינוך. האפליקציה ממוקדת בתכנון חופשות סביב החגים ולוח החופשות השנתי שבהם נתוני הבונוס מעודכנים.
+        <p id="bonus-holiday-focus-banner" class="profile-helper-banner" data-he="ℹ️ מיקוד בחגים וחופשות: מאגר מושבי הבונוס של אל על מסונכרן סביב חגי ישראל ולוח החופשות השנתי." data-en="ℹ️ Holiday &amp; Award Focus: EL AL bonus availability is synced around Israeli holidays and official MoE school breaks.">
+          ℹ️ מיקוד בחגים וחופשות: מאגר מושבי הבונוס של אל על מסונכרן סביב חגי ישראל ולוח החופשות השנתי.
         </p>
 
-        <!-- Holiday & School Vacation Selection Modes (Specific Dates hidden since bonus sync targets holidays) -->
-        <div class="mode-tabs" role="tablist" aria-label="מצבי בחירת חופשה וחגים">
-          <button type="button" class="mode-tab-btn" data-mode="SPECIFIC_DATES" id="tab-mode-specific" hidden style="display: none;">
-            📅 תאריכים ספציפיים (±גמישות)
+        <!-- Holiday & School Vacation Selection Modes (Specific Dates tab stays hidden since bonus sync targets holidays) -->
+        <div class="mode-tabs" role="tablist" aria-label="מצבי בחירת חופשה וחגים" data-aria-he="מצבי בחירת חופשה וחגים" data-aria-en="Date selection modes">
+          <button type="button" class="mode-tab-btn active" data-mode="HOLIDAY_DIRECT_INTENT" id="tab-mode-holiday" data-he="✨ לפי חג ושנה" data-en="✨ By Holiday">
+            ✨ לפי חג ושנה
           </button>
-          <button type="button" class="mode-tab-btn active" data-mode="HOLIDAY_DIRECT_INTENT" id="tab-mode-holiday">
-            ✨ 1. תכנון לפי חג / חופשה ושנה (למשל פסח 2027)
+          <button type="button" class="mode-tab-btn" data-mode="MOE_VACATION_MAXIMIZATION" id="tab-mode-moe" data-he="🎓 מקסום שנתי" data-en="🎓 Annual MoE">
+            🎓 מקסום שנתי
           </button>
-          <button type="button" class="mode-tab-btn" data-mode="MOE_VACATION_MAXIMIZATION" id="tab-mode-moe">
-            🎓 2. מקסום חופשות משרד החינוך (שנתי — כל החגים)
+          <button type="button" class="mode-tab-btn" data-mode="SPECIFIC_DATES" id="tab-mode-specific" hidden style="display: none;" data-he="📅 תאריכים" data-en="📅 Exact Dates">
+            📅 תאריכים
           </button>
         </div>
 
         <!-- Mode-Specific Controls -->
         <div id="controls-holiday-direct" class="form-grid form-grid-2">
           <div class="form-field">
-            <label for="select-direct-holiday">בחר חג / חופשה למקסום ימי חופש:</label>
+            <label for="select-direct-holiday" data-he="חג / חופשה למקסום:" data-en="Holiday / School Break:">חג / חופשה למקסום:</label>
             <select id="select-direct-holiday">
-              <option value="PESACH" selected>חופשת פסח (Pesach)</option>
-              <option value="SUKKOT">חופשת סוכות (Sukkot)</option>
-              <option value="YOM_KIPPUR_SUKKOT_BRIDGE">גשר יום כיפור–סוכות</option>
-              <option value="HANUKKAH">חופשת חנוכה (Hanukkah)</option>
-              <option value="ROSH_HASHANAH">ראש השנה (Rosh Hashanah)</option>
-              <option value="PURIM">חופשת פורים (Purim)</option>
-              <option value="SHAVUOT">חופשת שבועות (Shavuot)</option>
-              <option value="YOM_HAATZMAUT">יום העצמאות</option>
-              <option value="SUMMER_JUNE_20_30">החופש הגדול — 20–30 ביוני (חטיבה/תיכון)</option>
-              <option value="SUMMER_JULY">החופש הגדול — יולי</option>
-              <option value="SUMMER_AUGUST">החופש הגדול — אוגוסט</option>
+              <option value="PESACH" selected data-he="חופשת פסח (Pesach)" data-en="Passover Break (Pesach)">חופשת פסח (Pesach)</option>
+              <option value="SUKKOT" data-he="חופשת סוכות (Sukkot)" data-en="Sukkot Break">חופשת סוכות (Sukkot)</option>
+              <option value="YOM_KIPPUR_SUKKOT_BRIDGE" data-he="גשר יום כיפור–סוכות" data-en="Yom Kippur–Sukkot Bridge">גשר יום כיפור–סוכות</option>
+              <option value="HANUKKAH" data-he="חופשת חנוכה (Hanukkah)" data-en="Hanukkah Break">חופשת חנוכה (Hanukkah)</option>
+              <option value="ROSH_HASHANAH" data-he="ראש השנה (Rosh Hashanah)" data-en="Rosh Hashanah">ראש השנה (Rosh Hashanah)</option>
+              <option value="PURIM" data-he="חופשת פורים (Purim)" data-en="Purim Break">חופשת פורים (Purim)</option>
+              <option value="SHAVUOT" data-he="חופשת שבועות (Shavuot)" data-en="Shavuot Break">חופשת שבועות (Shavuot)</option>
+              <option value="YOM_HAATZMAUT" data-he="יום העצמאות" data-en="Independence Day">יום העצמאות</option>
+              <option value="SUMMER_JUNE_20_30" data-he="החופש הגדול — 20–30 ביוני (חטיבה/תיכון)" data-en="Summer Break — June 20–30 (Grades 7–12)">החופש הגדול — 20–30 ביוני (חטיבה/תיכון)</option>
+              <option value="SUMMER_JULY" data-he="החופש הגדול — יולי" data-en="Summer Break — July">החופש הגדול — יולי</option>
+              <option value="SUMMER_AUGUST" data-he="החופש הגדול — אוגוסט" data-en="Summer Break — August">החופש הגדול — אוגוסט</option>
             </select>
           </div>
           <div class="form-field">
-            <label for="select-direct-year">שנה מבוקשת (מתעדכן אוטומטית):</label>
+            <label for="select-direct-year" data-he="שנה מבוקשת:" data-en="Target Year:">שנה מבוקשת:</label>
             <select id="select-direct-year">
-              <option value="2026">2026 (תשפ"ו–תשפ"ז)</option>
-              <option value="2027" selected>2027 (תשפ"ז–תשפ"ח)</option>
-              <option value="2028">2028 (תשפ"ח–תשפ"ט)</option>
-              <option value="2029">2029 (תשפ"ט–תש"ץ)</option>
+              <option value="2026" data-he="2026 (תשפ״ו–תשפ״ז)" data-en="2026 (2025–2027)">2026 (תשפ״ו–תשפ״ז)</option>
+              <option value="2027" selected data-he="2027 (תשפ״ז–תשפ״ח)" data-en="2027 (2026–2028)">2027 (תשפ״ז–תשפ״ח)</option>
+              <option value="2028" data-he="2028 (תשפ״ח–תשפ״ט)" data-en="2028 (2027–2029)">2028 (תשפ״ח–תשפ״ט)</option>
+              <option value="2029" data-he="2029 (תשפ״ט–תש״ץ)" data-en="2029 (2028–2030)">2029 (תשפ״ט–תש״ץ)</option>
             </select>
           </div>
         </div>
 
         <div id="controls-moe-maximize" class="form-grid form-grid-2" style="display: none;">
           <div class="form-field">
-            <label for="select-school-year">שנת לימודים (משרד החינוך):</label>
+            <label for="select-school-year" data-he="שנת לימודים (משרד החינוך):" data-en="MoE School Year:">שנת לימודים (משרד החינוך):</label>
             <select id="select-school-year">
-              <option value="2025-2026">תשפ"ו (2025-2026)</option>
-              <option value="2026-2027" selected>תשפ"ז (2026-2027)</option>
-              <option value="2027-2028">תשפ"ח (2027-2028)</option>
-              <option value="2028-2029">תשפ"ט (2028-2029)</option>
+              <option value="2025-2026" data-he="תשפ״ו (2025-2026)" data-en="2025–2026 School Year">תשפ״ו (2025-2026)</option>
+              <option value="2026-2027" selected data-he="תשפ״ז (2026-2027)" data-en="2026–2027 School Year">תשפ״ז (2026-2027)</option>
+              <option value="2027-2028" data-he="תשפ״ח (2027-2028)" data-en="2027–2028 School Year">תשפ״ח (2027-2028)</option>
+              <option value="2028-2029" data-he="תשפ״ט (2028-2029)" data-en="2028–2029 School Year">תשפ״ט (2028-2029)</option>
             </select>
           </div>
           <div class="form-field">
-            <label for="select-overlap-policy">מדיניות חפיפת חופשות ילדים:</label>
+            <label for="select-overlap-policy" data-he="מדיניות חפיפת חופשות:" data-en="Children Overlap Policy:">מדיניות חפיפת חופשות:</label>
             <select id="select-overlap-policy">
-              <option value="MAXIMIZE_EFFICIENCY_SCORE" selected>מקסום ציון יעילות משוקלל (כולל ניצנים וגשרים)</option>
-              <option value="CAMP_ADJUSTED_INTERSECTION">כל הילדים בחופש (כולל קייטנות ניצנים)</option>
-              <option value="STRICT_ALL_CHILDREN_OFF">כל הילדים בחופש רשמי בלבד (אפס לימודים)</option>
+              <option value="MAXIMIZE_EFFICIENCY_SCORE" selected data-he="מקסום ציון יעילות (כולל ניצנים וגשרים)" data-en="Maximize Efficiency Score (Camps &amp; Bridges)">מקסום ציון יעילות (כולל ניצנים וגשרים)</option>
+              <option value="CAMP_ADJUSTED_INTERSECTION" data-he="כל הילדים בחופש (כולל קייטנות ניצנים)" data-en="All Children Off (Including Nitzanim Camps)">כל הילדים בחופש (כולל קייטנות ניצנים)</option>
+              <option value="STRICT_ALL_CHILDREN_OFF" data-he="חופשה רשמית בלבד (אפס ימי לימודים)" data-en="Strict Official Vacation Only (Zero School)">חופשה רשמית בלבד (אפס ימי לימודים)</option>
             </select>
           </div>
         </div>
 
         <div id="controls-specific-dates" class="form-grid form-grid-3" style="display: none;">
           <div class="form-field">
-            <label for="input-dep-date">תאריך המראה מבוקש:</label>
+            <label for="input-dep-date" data-he="תאריך המראה:" data-en="Departure Date:">תאריך המראה:</label>
             <input type="date" id="input-dep-date" value="2027-04-11" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="input-ret-date">תאריך נחיתה/חזרה מבוקש:</label>
+            <label for="input-ret-date" data-he="תאריך חזרה:" data-en="Return Date:">תאריך חזרה:</label>
             <input type="date" id="input-ret-date" value="2027-04-18" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="input-flex-days">גמישות בימים (±0 עד 7):</label>
+            <label for="input-flex-days" data-he="גמישות (±0..7):" data-en="Flex Days (±0..7):">גמישות (±0..7):</label>
             <input type="number" id="input-flex-days" min="0" max="7" value="2" dir="ltr" />
           </div>
         </div>
@@ -274,39 +195,39 @@
         <!-- Airline Focus & Destination Selection -->
         <div class="form-grid form-grid-2">
           <div class="form-field">
-            <label for="select-airline-mode">התמקדות בחברת תעופה:</label>
+            <label for="select-airline-mode" data-he="חברות תעופה ומועדון:" data-en="Airline &amp; Award Mode:">חברות תעופה ומועדון:</label>
             <select id="select-airline-mode">
-              <option value="EL_AL_ONLY" selected>אל על בלבד + חיפוש כרטיסי בונוס (rbddataclients)</option>
-              <option value="ALL_AIRLINES">כל חברות התעופה (כולל מועדונים שותפים וכבודה)</option>
+              <option value="EL_AL_ONLY" selected data-he="אל על + מושבי בונוס" data-en="EL AL + Matmid Bonus">אל על + מושבי בונוס</option>
+              <option value="ALL_AIRLINES" data-he="כל החברות + מועדונים שותפים" data-en="All Airlines + Partners">כל החברות + מועדונים שותפים</option>
             </select>
           </div>
           <div class="form-field">
-            <label for="select-destination">יעד חופשה (או ANYWHERE לגילוי יעדים):</label>
+            <label for="select-destination" data-he="יעד חופשה (או ANYWHERE):" data-en="Destination (or ANYWHERE):">יעד חופשה (או ANYWHERE):</label>
             <select id="select-destination">
-              <option value="ROM" selected>רומא, איטליה (ROM / FCO)</option>
-              <option value="MXP">מילאנו / דולומיטים, איטליה (MXP)</option>
-              <option value="ATH">אתונה, יוון (ATH)</option>
-              <option value="RHO">רודוס, יוון (RHO)</option>
-              <option value="LCA">לרנקה, קפריסין (LCA)</option>
-              <option value="PFO">פאפוס, קפריסין (PFO)</option>
-              <option value="TBS">טביליסי / גודאורי, גאורגיה (TBS)</option>
-              <option value="LON">לונדון, בריטניה (LON / LHR / LTN)</option>
-              <option value="PAR">פריז, צרפת (PAR / CDG)</option>
-              <option value="MAD">מדריד, ספרד (MAD)</option>
-              <option value="BCN">ברצלונה, ספרד (BCN)</option>
-              <option value="MUC">מינכן / טירול והאלפים, גרמניה (MUC)</option>
-              <option value="BER">ברלין, גרמניה (BER)</option>
-              <option value="VIE">וינה, אוסטריה (VIE)</option>
-              <option value="PRG">פראג, צ׳כיה (PRG)</option>
-              <option value="BUD">בודפשט, הונגריה (BUD)</option>
-              <option value="AMS">אמסטרדם, הולנד (AMS)</option>
-              <option value="NYC">ניו יורק, ארה"ב (NYC / JFK / EWR)</option>
-              <option value="MIA">מיאמי / פלורידה, ארה"ב (MIA)</option>
-              <option value="FLL">פורט לודרדייל / פלורידה, ארה"ב (FLL)</option>
-              <option value="BKK">בנגקוק, תאילנד (BKK)</option>
-              <option value="HKT">פוקט, תאילנד (HKT)</option>
-              <option value="TYO">טוקיו, יפן (TYO / NRT)</option>
-              <option value="ANYWHERE">🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)</option>
+              <option value="ROM" selected data-he="רומא, איטליה (ROM / FCO)" data-en="Rome, Italy (ROM / FCO)">רומא, איטליה (ROM / FCO)</option>
+              <option value="MXP" data-he="מילאנו / דולומיטים, איטליה (MXP)" data-en="Milan / Dolomites, Italy (MXP)">מילאנו / דולומיטים, איטליה (MXP)</option>
+              <option value="ATH" data-he="אתונה, יוון (ATH)" data-en="Athens, Greece (ATH)">אתונה, יוון (ATH)</option>
+              <option value="RHO" data-he="רודוס, יוון (RHO)" data-en="Rhodes, Greece (RHO)">רודוס, יוון (RHO)</option>
+              <option value="LCA" data-he="לרנקה, קפריסין (LCA)" data-en="Larnaca, Cyprus (LCA)">לרנקה, קפריסין (LCA)</option>
+              <option value="PFO" data-he="פאפוס, קפריסין (PFO)" data-en="Paphos, Cyprus (PFO)">פאפוס, קפריסין (PFO)</option>
+              <option value="TBS" data-he="טביליסי / גודאורי, גאורגיה (TBS)" data-en="Tbilisi / Gudauri, Georgia (TBS)">טביליסי / גודאורי, גאורגיה (TBS)</option>
+              <option value="LON" data-he="לונדון, בריטניה (LON / LHR / LTN)" data-en="London, UK (LON / LHR / LTN)">לונדון, בריטניה (LON / LHR / LTN)</option>
+              <option value="PAR" data-he="פריז, צרפת (PAR / CDG)" data-en="Paris, France (PAR / CDG)">פריז, צרפת (PAR / CDG)</option>
+              <option value="MAD" data-he="מדריד, ספרד (MAD)" data-en="Madrid, Spain (MAD)">מדריד, ספרד (MAD)</option>
+              <option value="BCN" data-he="ברצלונה, ספרד (BCN)" data-en="Barcelona, Spain (BCN)">ברצלונה, ספרד (BCN)</option>
+              <option value="MUC" data-he="מינכן / טירול והאלפים, גרמניה (MUC)" data-en="Munich / Alps, Germany (MUC)">מינכן / טירול והאלפים, גרמניה (MUC)</option>
+              <option value="BER" data-he="ברלין, גרמניה (BER)" data-en="Berlin, Germany (BER)">ברלין, גרמניה (BER)</option>
+              <option value="VIE" data-he="וינה, אוסטריה (VIE)" data-en="Vienna, Austria (VIE)">וינה, אוסטריה (VIE)</option>
+              <option value="PRG" data-he="פראג, צ׳כיה (PRG)" data-en="Prague, Czechia (PRG)">פראג, צ׳כיה (PRG)</option>
+              <option value="BUD" data-he="בודפשט, הונגריה (BUD)" data-en="Budapest, Hungary (BUD)">בודפשט, הונגריה (BUD)</option>
+              <option value="AMS" data-he="אמסטרדם, הולנד (AMS)" data-en="Amsterdam, Netherlands (AMS)">אמסטרדם, הולנד (AMS)</option>
+              <option value="NYC" data-he="ניו יורק, ארה״ב (NYC / JFK / EWR)" data-en="New York, USA (NYC / JFK / EWR)">ניו יורק, ארה״ב (NYC / JFK / EWR)</option>
+              <option value="MIA" data-he="מיאמי / פלורידה, ארה״ב (MIA)" data-en="Miami / Florida, USA (MIA)">מיאמי / פלורידה, ארה״ב (MIA)</option>
+              <option value="FLL" data-he="פורט לודרדייל / פלורידה, ארה״ב (FLL)" data-en="Fort Lauderdale, USA (FLL)">פורט לודרדייל / פלורידה, ארה״ב (FLL)</option>
+              <option value="BKK" data-he="בנגקוק, תאילנד (BKK)" data-en="Bangkok, Thailand (BKK)">בנגקוק, תאילנד (BKK)</option>
+              <option value="HKT" data-he="פוקט, תאילנד (HKT)" data-en="Phuket, Thailand (HKT)">פוקט, תאילנד (HKT)</option>
+              <option value="TYO" data-he="טוקיו, יפן (TYO / NRT)" data-en="Tokyo, Japan (TYO / NRT)">טוקיו, יפן (TYO / NRT)</option>
+              <option value="ANYWHERE" data-he="🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)" data-en="🌍 All Open Award Destinations (ANYWHERE)">🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)</option>
             </select>
           </div>
         </div>
@@ -316,61 +237,61 @@
           <div class="vacation-type-filter-header">
             <div>
               <strong id="vacation-type-title">🌤️ סגנון חופשה ותיעדוף מזג אוויר ביעד:</strong>
-              <span class="vacation-type-hint" id="vacation-type-hint">בחרו סגנון חופשה אחד או יותר כדי לתעדף יעדים עם מזג אוויר אידיאלי לתאריכי החופשה</span>
+              <span class="vacation-type-hint" id="vacation-type-hint">בחרו סגנון חופשה אחד או יותר לתיעדוף מזג אוויר אידיאלי</span>
             </div>
             <div class="weather-mode-select-wrap">
-              <label for="select-weather-filter-mode" id="label-weather-filter-mode">אופן סינון מזג אוויר:</label>
+              <label for="select-weather-filter-mode" id="label-weather-filter-mode" data-he="סינון:" data-en="Filter:">סינון:</label>
               <select id="select-weather-filter-mode">
-                <option value="SOFT_PRIORITIZE" selected>⭐ תעדוף חכם בציון הכללי (מומלץ)</option>
-                <option value="HARD_THRESHOLD">🔒 סינון קשיח (הסתר יעדים עם מזג אוויר לא מתאים)</option>
+                <option value="SOFT_PRIORITIZE" selected data-he="⭐ תעדוף חכם בציון" data-en="⭐ Smart Priority">⭐ תעדוף חכם בציון</option>
+                <option value="HARD_THRESHOLD" data-he="🔒 סינון קשיח" data-en="🔒 Strict Filter">🔒 סינון קשיח</option>
               </select>
             </div>
           </div>
-          <div class="vacation-type-pills" id="vacation-type-selector" role="group" aria-label="בחירת סגנון חופשה לתיעדוף מזג אוויר">
-            <button type="button" class="vacation-type-pill active" data-vacation-type="ANY" data-he="🌍 הכל (ללא סינון)" data-en="🌍 All Styles (No Filter)">
-              🌍 הכל (ללא סינון)
+          <div class="vacation-type-pills" id="vacation-type-selector" role="group" aria-label="בחירת סגנון חופשה לתיעדוף מזג אוויר" data-aria-he="בחירת סגנון חופשה לתיעדוף מזג אוויר" data-aria-en="Select vacation style for weather prioritization">
+            <button type="button" class="vacation-type-pill active" data-vacation-type="ANY" data-he="🌍 הכל" data-en="🌍 All Styles">
+              🌍 הכל
             </button>
-            <button type="button" class="vacation-type-pill" data-vacation-type="BEACH_AND_POOL" data-he="🏖️ חופשת בטן-גב (חוף ובריכה)" data-en="🏖️ Beach &amp; Pool">
-              🏖️ חופשת בטן-גב (חוף ובריכה)
+            <button type="button" class="vacation-type-pill" data-vacation-type="BEACH_AND_POOL" data-he="🏖️ חוף ובריכה" data-en="🏖️ Beach &amp; Pool">
+              🏖️ חוף ובריכה
             </button>
-            <button type="button" class="vacation-type-pill" data-vacation-type="NATURE_TRIP" data-he="🥾 טיול בטבע ונופים" data-en="🥾 Nature &amp; Hiking">
-              🥾 טיול בטבע ונופים
+            <button type="button" class="vacation-type-pill" data-vacation-type="NATURE_TRIP" data-he="🥾 טבע ונופים" data-en="🥾 Nature &amp; Hiking">
+              🥾 טבע ונופים
             </button>
-            <button type="button" class="vacation-type-pill" data-vacation-type="URBAN_CULTURE" data-he="🏛️ עיר, תרבות ושופינג" data-en="🏛️ Urban, Culture &amp; Shopping">
-              🏛️ עיר, תרבות ושופינג
+            <button type="button" class="vacation-type-pill" data-vacation-type="URBAN_CULTURE" data-he="🏛️ עיר ותרבות" data-en="🏛️ Urban &amp; Culture">
+              🏛️ עיר ותרבות
             </button>
-            <button type="button" class="vacation-type-pill" data-vacation-type="FAMILY_ATTRACTIONS_PARKS" data-he="🎢 פארקים ואטרקציות" data-en="🎢 Theme Parks &amp; Family">
-              🎢 פארקים ואטרקציות
+            <button type="button" class="vacation-type-pill" data-vacation-type="FAMILY_ATTRACTIONS_PARKS" data-he="🎢 פארקים" data-en="🎢 Theme Parks">
+              🎢 פארקים
             </button>
-            <button type="button" class="vacation-type-pill" data-vacation-type="SNOW_AND_SKI" data-he="⛷️ חופשת שלג וסקי" data-en="⛷️ Snow &amp; Family Ski">
-              ⛷️ חופשת שלג וסקי
+            <button type="button" class="vacation-type-pill" data-vacation-type="SNOW_AND_SKI" data-he="⛷️ שלג וסקי" data-en="⛷️ Snow &amp; Ski">
+              ⛷️ שלג וסקי
             </button>
-            <button type="button" class="vacation-type-pill" data-vacation-type="WINTER_FESTIVE" data-he="🎄 שווקי חורף ואווירה אירופאית" data-en="🎄 Winter Markets &amp; Festive">
-              🎄 שווקי חורף ואווירה אירופאית
+            <button type="button" class="vacation-type-pill" data-vacation-type="WINTER_FESTIVE" data-he="🎄 שווקי חורף" data-en="🎄 Winter Markets">
+              🎄 שווקי חורף
             </button>
           </div>
         </div>
 
-        <div class="form-grid form-grid-3">
+        <div class="form-grid form-grid-3 compact-num-trio">
           <div class="form-field">
-            <label for="input-min-nights">מינימום לילות:</label>
+            <label for="input-min-nights" data-he="מינ׳ לילות:" data-en="Min Nights:">מינ׳ לילות:</label>
             <input type="number" id="input-min-nights" min="1" max="30" value="4" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="input-max-nights">מקסימום לילות:</label>
+            <label for="input-max-nights" data-he="מקס׳ לילות:" data-en="Max Nights:">מקס׳ לילות:</label>
             <input type="number" id="input-max-nights" min="1" max="30" value="10" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="input-bridge-days">גמישות סביב החג / ימי גשר (±0..5):</label>
+            <label for="input-bridge-days" data-he="ימי גשר (±0..5):" data-en="Bridge (±0..5):">ימי גשר (±0..5):</label>
             <input type="number" id="input-bridge-days" min="0" max="5" value="3" dir="ltr" />
           </div>
         </div>
 
         <div class="search-actions-bar">
-          <button type="button" class="btn-primary" id="btn-run-search" style="flex: 1;">
+          <button type="button" class="btn-primary" id="btn-run-search" data-he="✈️ חפש ומקסם אפשרויות חופשה וכרטיסי בונוס" data-en="✈️ Search &amp; Maximize Family Award Vacations">
             ✈️ חפש ומקסם אפשרויות חופשה וכרטיסי בונוס
           </button>
-          <button type="button" class="btn-secondary" id="btn-sync-elal" title="סנכרן מול https://www.elal.com/rbddataclients/" hidden style="display: none;">
+          <button type="button" class="btn-secondary" id="btn-sync-elal" title="סנכרן מול https://www.elal.com/rbddataclients/" hidden style="display: none;" data-he="🔄 סנכרון אל על rbddataclients" data-en="🔄 Sync EL AL rbddataclients">
             🔄 סנכרון אל על rbddataclients
           </button>
         </div>
@@ -381,51 +302,51 @@
         <div class="zone-header">
           <div class="zone-title-wrap">
             <span class="zone-step-pill" dir="ltr">STEP 02</span>
-            <h2 id="zone-profile-title">2. פרופיל משפחה, גילאי ומסגרות ילדים ונקודות מועדונים</h2>
+            <h2 id="zone-profile-title">2. פרופיל משפחה, גילאי ילדים וארנקי מועדונים</h2>
           </div>
-          <button type="button" class="btn-secondary" id="btn-save-profile">💾 שמור פרופיל ועדכן חיפוש</button>
+          <button type="button" class="btn-secondary btn-compact-action" id="btn-save-profile" data-he="💾 שמור ועדכן" data-en="💾 Save &amp; Refresh">💾 שמור ועדכן</button>
         </div>
-        <p id="mode1-optional-framework-hint" class="profile-helper-banner">
-          💡 שים לב: הזנת מסגרת לימודים לכל ילד היא <strong>אופציונלית (Optional)</strong> ואינה חובה בחיפוש לפי תאריכים ספציפיים. בחיפוש לפי חופשות משרד החינוך, המסגרת מתאימה אוטומטית את ימי החופש של כל ילד.
+        <p id="mode1-optional-framework-hint" class="profile-helper-banner" data-he="💡 מסגרת לימודים לכל ילד היא אופציונלית (Optional) בתאריכים ספציפיים, ומתאימה אוטומטית את ימי החופש בחיפוש חגים." data-en="💡 Child educational framework is Optional in Exact Dates mode, and automatically aligns school breaks in Holiday/MoE modes.">
+          💡 מסגרת לימודים לכל ילד היא <strong>אופציונלית (Optional)</strong> בתאריכים ספציפיים, ומתאימה אוטומטית את ימי החופש בחיפוש חגים.
         </p>
 
-        <div class="form-grid form-grid-3">
+        <div class="form-grid form-grid-3 compact-num-trio">
           <div class="form-field">
-            <label for="prof-adults-count">מספר מבוגרים (1–6):</label>
+            <label for="prof-adults-count" data-he="מבוגרים (1–6):" data-en="Adults (1–6):">מבוגרים (1–6):</label>
             <input type="number" id="prof-adults-count" min="1" max="6" value="2" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="prof-pto-budget">תקציב ימי חופשה שנתי להורים:</label>
+            <label for="prof-pto-budget" data-he="תקציב חופש:" data-en="PTO Budget:">תקציב חופש:</label>
             <input type="number" id="prof-pto-budget" min="0" max="60" step="0.5" value="18" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="prof-matmid-points">יתרת נקודות אל על מתמיד (משפחתי — מחושב אוטומטית):</label>
+            <label for="prof-matmid-points" data-he="יתרת מתמיד:" data-en="Matmid (Auto):">יתרת מתמיד:</label>
             <input type="number" id="prof-matmid-points" min="0" step="1000" value="185000" dir="ltr" />
           </div>
         </div>
-        <div id="family-clubs-totals-strip" class="score-strip" style="margin-block-end: 12px;"></div>
+        <div id="family-clubs-totals-strip" class="score-strip clubs-totals-strip"></div>
 
         <!-- Children Ages & Optional Frameworks List -->
-        <div class="sub-panel-section">
-          <div class="sub-panel-header">
-            <strong>👶 גילאי הילדים ומסגרת חינוכית (אופציונלי במצב 1):</strong>
-            <button type="button" class="btn-secondary" id="btn-add-child" style="min-height: 34px; font-size: 0.8rem;">+ הוסף ילד/ה</button>
-          </div>
-          <div id="children-list-container"></div>
-        </div>
+        <details class="sub-panel-section profile-collapsible" open>
+          <summary class="sub-panel-header">
+            <strong class="sub-panel-title-text" data-he="👶 ילדים ומסגרות חינוך (אופציונלי במצב תאריכים)" data-en="👶 Children &amp; MoE Frameworks (Optional in Exact Dates)">👶 ילדים ומסגרות חינוך (אופציונלי במצב תאריכים)</strong>
+            <button type="button" class="btn-secondary btn-compact-action" id="btn-add-child" data-he="+ ילד/ה" data-en="+ Add Child">+ ילד/ה</button>
+          </summary>
+          <div id="children-list-container" class="compact-profile-list"></div>
+        </details>
 
         <!-- Per-Passenger Multi-Club Loyalty Wallets -->
-        <div class="sub-panel-section">
-          <div class="sub-panel-header">
-            <strong>💳 נקודות זמינות לנוסע לפי מועדוני תעופה (Multi-Club Wallets):</strong>
-            <button type="button" class="btn-secondary" id="btn-add-wallet" style="min-height: 34px; font-size: 0.8rem;">+ הוסף מועדון לנוסע</button>
-          </div>
-          <div id="wallets-list-container"></div>
-        </div>
+        <details class="sub-panel-section profile-collapsible" open>
+          <summary class="sub-panel-header">
+            <strong class="sub-panel-title-text" data-he="💳 ארנקי מועדוני תעופה לנוסעים (Multi-Club)" data-en="💳 Passenger Loyalty Wallets (10 Clubs)">💳 ארנקי מועדוני תעופה לנוסעים (Multi-Club)</strong>
+            <button type="button" class="btn-secondary btn-compact-action" id="btn-add-wallet" data-he="+ מועדון" data-en="+ Add Wallet">+ מועדון</button>
+          </summary>
+          <div id="wallets-list-container" class="compact-profile-list compact-wallets-scroll"></div>
+        </details>
       </section>
     </div>
 
-    <!-- Step 3: Ranked Vacation & El Al Bonus Proposals + Optional MoE Calendar -->
+    <!-- Inline-End Deal Stream: Ranked Perforated Boarding-Pass Proposals + Optional MoE Calendar -->
     <div class="content-column">
       <!-- Zone 4: Ranked Vacation & El Al Bonus Proposals -->
       <section class="zone-card" id="zone-results" aria-labelledby="zone-results-title">
@@ -434,18 +355,18 @@
             <span class="zone-step-pill zone-step-pill-gold" dir="ltr">STEP 03</span>
             <h2 id="zone-results-title">3. תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס</h2>
           </div>
-          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <button type="button" class="btn-secondary" id="btn-toggle-calendar-inline" style="min-height: 36px; font-size: 0.82rem;">
+          <div class="zone-actions-row">
+            <button type="button" class="btn-secondary btn-compact-action" id="btn-toggle-calendar-inline">
               📅 הצג לוח חופשות משרד החינוך
             </button>
-            <button type="button" class="btn-secondary" id="btn-compare-selected" style="min-height: 36px; font-size: 0.82rem;">
-              ⚖️ השווה חלופות נבחרות
+            <button type="button" class="btn-secondary btn-compact-action" id="btn-compare-selected" data-he="⚖️ השווה נבחרות" data-en="⚖️ Compare Selected">
+              ⚖️ השווה נבחרות
             </button>
           </div>
         </div>
-        <div id="comparison-banner-container" style="display: none; margin-block-end: 14px;"></div>
+        <div id="comparison-banner-container" class="comparison-banner-wrap" style="display: none;"></div>
         <div class="proposals-grid" id="proposals-container">
-          <p>מחשב חלופות חופשה משפחתית וכרטיסי בונוס...</p>
+          <p data-he="מחשב חלופות חופשה משפחתית וכרטיסי בונוס..." data-en="Computing family vacation &amp; award seat proposals...">מחשב חלופות חופשה משפחתית וכרטיסי בונוס...</p>
         </div>
       </section>
 
@@ -456,13 +377,13 @@
             <span class="zone-step-pill" dir="ltr">MOE CALENDAR</span>
             <h2 id="zone-calendar-title">לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)</h2>
           </div>
-          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <span class="pill" id="calendar-sync-badge" style="background: #e0f2fe; color: #0369a1;">OFFICIAL_MOE_CIRCULAR</span>
-            <button type="button" class="btn-secondary" id="btn-sync-moe-year" style="min-height: 36px; font-size: 0.82rem;">
-              🔄 עדכן לוח שנה אוטומטי
+          <div class="zone-actions-row">
+            <span class="pill pill-calendar-sync" id="calendar-sync-badge">OFFICIAL_MOE_CIRCULAR</span>
+            <button type="button" class="btn-secondary btn-compact-action" id="btn-sync-moe-year" data-he="🔄 עדכן לוח שנה" data-en="🔄 Sync School Year">
+              🔄 עדכן לוח שנה
             </button>
-            <button type="button" class="btn-secondary" id="btn-close-calendar" style="min-height: 36px; font-size: 0.82rem;">
-              ✖️ הסתר לוח חופשות
+            <button type="button" class="btn-secondary btn-compact-action" id="btn-close-calendar" data-he="✖️ הסתר לוח" data-en="✖️ Hide Calendar">
+              ✖️ הסתר לוח
             </button>
           </div>
         </div>
@@ -470,17 +391,17 @@
           <table class="calendar-heatmap-table" id="moe-calendar-table">
             <thead>
               <tr>
-                <th class="sticky-col">חג / חופשה</th>
-                <th>מסגרת חינוכית</th>
-                <th>תחילת חופשה</th>
-                <th>סיום חופשה</th>
-                <th>חזרה ללימודים</th>
-                <th>ימים</th>
-                <th>קייטנת ניצנים</th>
+                <th class="sticky-col" data-he="חג / חופשה" data-en="Holiday / Break">חג / חופשה</th>
+                <th data-he="מסגרת חינוכית" data-en="Educational Framework">מסגרת חינוכית</th>
+                <th data-he="תחילת חופשה" data-en="Break Starts">תחילת חופשה</th>
+                <th data-he="סיום חופשה" data-en="Break Ends">סיום חופשה</th>
+                <th data-he="חזרה ללימודים" data-en="School Resumes">חזרה ללימודים</th>
+                <th data-he="ימים" data-en="Days">ימים</th>
+                <th data-he="קייטנת ניצנים" data-en="Nitzanim Camp">קייטנת ניצנים</th>
               </tr>
             </thead>
             <tbody id="moe-calendar-tbody">
-              <tr><td colspan="7">טוען נתוני לוח חופשות משרד החינוך...</td></tr>
+              <tr><td colspan="7" data-he="טוען נתוני לוח חופשות משרד החינוך..." data-en="Loading official MoE calendar data...">טוען נתוני לוח חופשות משרד החינוך...</td></tr>
             </tbody>
           </table>
         </div>
@@ -490,10 +411,10 @@
 
   <!-- Legacy Mobile Bottom Navigation (Hidden on Desktop Layout) -->
   <nav class="mobile-bottom-nav" aria-label="ניווט תחתון למובייל" hidden aria-hidden="true">
-    <button type="button" class="mobile-nav-btn active" data-mobile-zone="zone-search">🔍 חיפוש</button>
-    <button type="button" class="mobile-nav-btn" data-mobile-zone="zone-calendar">📅 לוח חופשות</button>
-    <button type="button" class="mobile-nav-btn" data-mobile-zone="zone-results">✈️ תוצאות בונוס</button>
-    <button type="button" class="mobile-nav-btn" data-mobile-zone="zone-profile">👨‍👩‍👧‍👦 פרופיל ומועדונים</button>
+    <button type="button" class="mobile-nav-btn active" data-mobile-zone="zone-search" data-he="🔍 חיפוש" data-en="🔍 Search">🔍 חיפוש</button>
+    <button type="button" class="mobile-nav-btn" data-mobile-zone="zone-calendar" data-he="📅 לוח חופשות" data-en="📅 Calendar">📅 לוח חופשות</button>
+    <button type="button" class="mobile-nav-btn" data-mobile-zone="zone-results" data-he="✈️ תוצאות בונוס" data-en="✈️ Deals">✈️ תוצאות בונוס</button>
+    <button type="button" class="mobile-nav-btn" data-mobile-zone="zone-profile" data-he="👨‍👩‍👧‍👦 פרופיל ומועדונים" data-en="👨‍👩‍👧‍👦 Family">👨‍👩‍👧‍👦 פרופיל ומועדונים</button>
   </nav>
 </body>
 </html>

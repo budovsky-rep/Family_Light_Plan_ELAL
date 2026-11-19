@@ -649,46 +649,90 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                             styles.setdefault(sel, {}).update(decls)
             return styles
 
-        for vp_w, vp_h, expected_gap_px, expected_pad_px in (
-            (1280, 800, 24, 32),
-            (1440, 900, 28, 36),
+        # The workspace shell is styled by ONE cascade: the single `.dashboard-shell` selector, its base rule
+        # placed before every `@media` block, and `@media (min-width: Npx)` blocks in ascending order. Under these
+        # conditions the styles computed above (base rules, then media blocks by min-width) are exactly what a
+        # browser applies, so the assertions below describe the layout that is really rendered.
+        all_selectors = [s.strip() for group in re.findall(r"([^{}]+)\{[^{}]*\}", clean_css) for s in group.split(",")]
+        self.assertEqual({s for s in all_selectors if "dashboard-shell" in s}, {".dashboard-shell"})
+        self.assertNotRegex(clean_css, r"@media[^{]*max-width")
+        media_min_widths = [int(w) for w in re.findall(r"@media[^{]*min-width:\s*(\d+)px", clean_css)]
+        self.assertEqual(media_min_widths, sorted(media_min_widths))
+        first_media_at = clean_css.find("@media")
+        self.assertEqual(len(re.findall(r"(?:^|\})\s*\.dashboard-shell\s*\{", clean_css[:first_media_at])), 1)
+        css_after_media = re.sub(r"@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", clean_css[first_media_at:])
+        self.assertNotIn(".dashboard-shell", css_after_media)
+
+        def px(value):
+            match = re.fullmatch(r"(\d+)px", (value or "").strip())
+            self.assertIsNotNone(match, f"expected a px length, got {value!r}")
+            return int(match.group(1))
+
+        # Mobile 390x844, tablet and small laptops (below 1180px): single-column sequential flow
+        for vp_w in (390, 768, 1024, 1179):
+            shell_style = compute_styles_for_viewport(vp_w).get(".dashboard-shell", {})
+            self.assertEqual(shell_style.get("display"), "grid")
+            self.assertEqual(
+                shell_style.get("grid-template-columns"),
+                "minmax(0, 1fr)",
+                f"single column expected at {vp_w}px",
+            )
+
+        # Desktop from 1180px (first two-column width), 1280x800 and 1440x900:
+        # control rail (inline-start track) + deal stream (inline-end track)
+        for vp_w, vp_h, expected_sidebar_px, expected_gap_px, expected_pad_px in (
+            (1180, 800, 424, 18, 24),
+            (1280, 800, 428, 18, 28),
+            (1440, 900, 472, 24, 36),
         ):
             computed = compute_styles_for_viewport(vp_w)
             shell_style = computed.get(".dashboard-shell", {})
             self.assertEqual(shell_style.get("display"), "grid")
             self.assertEqual(
                 shell_style.get("grid-template-columns"),
-                "minmax(0, 1fr)",
+                f"{expected_sidebar_px}px minmax(0, 1fr)",
             )
-            self.assertEqual(shell_style.get("max-width"), "1200px")
-            self.assertEqual(shell_style.get("padding-block"), "24px 36px")
+            self.assertEqual(shell_style.get("max-width"), "1640px")
+            self.assertEqual(px(shell_style.get("gap")), expected_gap_px)
+            self.assertEqual(px(shell_style.get("padding-inline")), expected_pad_px)
 
             # Verify every overflow-sensitive container has min-width: 0
             for sel in (".sidebar-column", ".content-column", ".zone-card", ".form-field", ".proposals-grid", ".proposal-card", ".calendar-scroll-wrapper"):
                 self.assertEqual(computed.get(sel, {}).get("min-width"), "0", f"{sel} missing min-width: 0 at {vp_w}x{vp_h}")
 
-            # Compute exact bounding boxes in both RTL ("rtl") and LTR ("ltr") for single-column desktop flow
-            container_w = min(vp_w, 1200)
+            # Compute exact bounding boxes in both RTL ("rtl") and LTR ("ltr") for the two-column desktop flow
+            container_w = min(vp_w, px(shell_style.get("max-width")))
             inner_w = container_w - (2 * expected_pad_px)
-            self.assertGreaterEqual(inner_w, 1100)
+            content_w = inner_w - expected_sidebar_px - expected_gap_px
+            self.assertGreaterEqual(content_w, 680)
+            self.assertGreater(content_w, expected_sidebar_px)
 
             for direction in ("rtl", "ltr"):
                 margin_side = (vp_w - container_w) / 2.0
-                col_box = (margin_side + expected_pad_px, margin_side + expected_pad_px + inner_w)
+                inline_start = margin_side + expected_pad_px
+                if direction == "ltr":
+                    sidebar_box = (inline_start, inline_start + expected_sidebar_px)
+                    content_box = (sidebar_box[1] + expected_gap_px, sidebar_box[1] + expected_gap_px + content_w)
+                else:
+                    sidebar_box = (vp_w - inline_start - expected_sidebar_px, vp_w - inline_start)
+                    content_box = (sidebar_box[0] - expected_gap_px - content_w, sidebar_box[0] - expected_gap_px)
 
-                # Assert zero horizontal overflow (`scrollWidth <= viewport_width`)
-                self.assertGreaterEqual(col_box[0], 0)
-                self.assertLessEqual(col_box[1], vp_w)
+                # Assert zero horizontal overflow (`scrollWidth <= viewport_width`) and no overlap of the two columns
+                for col_box in (sidebar_box, content_box):
+                    self.assertGreaterEqual(col_box[0], 0)
+                    self.assertLessEqual(col_box[1], vp_w)
+                self.assertTrue(sidebar_box[1] <= content_box[0] or content_box[1] <= sidebar_box[0])
 
-                # Verify 3 mode tabs and form grids inside single-column card render side-by-side without overlapping
-                card_inner_w = inner_w - 36 - 2
-                tab_gap = 10
+                # Verify 3 mode tabs and form grids inside the control-rail card render side-by-side without overlapping
+                card_inner_w = expected_sidebar_px - (2 * px(computed.get(".zone-card", {}).get("padding-inline"))) - 2
+                tab_gap = px(computed.get(".mode-tabs", {}).get("gap"))
                 tab_w = (card_inner_w - 2 * tab_gap) / 3.0
-                self.assertGreater(tab_w, 250.0)
-                form3_w = (card_inner_w - 2 * 12) / 3.0
-                self.assertGreater(form3_w, 250.0)
-                form2_w = (card_inner_w - 12) / 2.0
-                self.assertGreater(form2_w, 400.0)
+                self.assertGreater(tab_w, 115.0)
+                form_gap = px(computed.get(".form-grid", {}).get("gap"))
+                form3_w = (card_inner_w - 2 * form_gap) / 3.0
+                self.assertGreater(form3_w, 115.0)
+                form2_w = (card_inner_w - form_gap) / 2.0
+                self.assertGreater(form2_w, 180.0)
 
         # Verify MoE calendar is optional (hidden by default) and toggleable on demand
         cal_zone = soup.find("section", id="zone-calendar")

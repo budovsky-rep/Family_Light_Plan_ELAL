@@ -32,7 +32,7 @@
   ];
 
   const LOYALTY_PROGRAMS = [
-    { value: 'ELAL_MATMID', label: 'El Al Matmid (אל על הנוסע המתמיד)' },
+    { value: 'ELAL_MATMID', labelHe: 'אל על הנוסע המתמיד (El Al Matmid)', labelEn: 'El Al Matmid Frequent Flyer' },
     { value: 'BRITISH_AVIOS', label: 'British Airways Avios (Oneworld)' },
     { value: 'FLYING_BLUE', label: 'Air France / KLM Flying Blue (SkyTeam)' },
     { value: 'UNITED_MILEAGEPLUS', label: 'United MileagePlus (Star Alliance)' },
@@ -100,6 +100,18 @@
     WINTER_FESTIVE: '🎄 Winter Markets'
   };
 
+  const INITIAL_PROPOSALS_LIMIT = 6;
+  const userEditedWalletKeys = new Set();
+
+  function escapeHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   const state = {
     locale: 'he',
     dir: 'rtl',
@@ -108,7 +120,11 @@
     selectedVacationTypes: [],
     weatherFilterMode: 'SOFT_PRIORITIZE',
     weatherFallbackMessageHe: null,
+    validationErrorHe: null,
+    validationErrorEn: null,
     isCalendarVisible: false,
+    showAllProposals: false,
+    lastComparison: null,
     profile: null,
     calendarData: null,
     proposals: [],
@@ -135,12 +151,6 @@
       : (VACATION_TYPE_LABELS_EN[code] || code);
   }
 
-  function syncDestinationPostcards(selectedIata) {
-    document.querySelectorAll('[data-dest-card]').forEach((btn) => {
-      btn.classList.toggle('active', btn.getAttribute('data-dest-card') === selectedIata);
-    });
-  }
-
   function setCalendarVisibility(visible, scrollToIt) {
     state.isCalendarVisible = Boolean(visible);
     const calZone = document.getElementById('zone-calendar');
@@ -161,11 +171,11 @@
     if (btnTop) {
       btnTop.textContent = state.isCalendarVisible
         ? isHe
-          ? '📅 הסתר לוח משרד החינוך'
-          : '📅 Hide MoE Calendar'
+          ? '📅 הסתר לוח'
+          : '📅 Hide Calendar'
         : isHe
-          ? '📅 לוח חופשות משרד החינוך (הצג)'
-          : '📅 Show MoE Calendar';
+          ? '📅 לוח חופשות'
+          : '📅 MoE Calendar';
     }
     const btnInline = document.getElementById('btn-toggle-calendar-inline');
     if (btnInline) {
@@ -256,16 +266,18 @@
     const stratLabel = formatStrategyLabel(it.fulfillment_strategy);
     const pts = Number(it.total_matmid_points || 0).toLocaleString();
     const cashOop = Number(it.total_out_of_pocket_cash_usd || 0).toFixed(0);
-    const saved = Number(it.net_cash_saved_usd || 0).toFixed(0);
+    const savedNum = Math.round(Number(it.net_cash_saved_usd || 0));
+    const savedDisplay =
+      savedNum > 0 ? `+$${savedNum}` : savedNum < 0 ? `-$${Math.abs(savedNum)}` : '$0';
     const totalScore = Number(p.combined_trip_optimization_score || 0).toFixed(1);
     const vacScore = Number(p.vacation_utilization_score || 0).toFixed(1);
     const bonusScore = Number(p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0).toFixed(1);
     const weatherScore = Number(p.weather_suitability_score || 0).toFixed(1);
 
     if (!isHe) {
-      return `${city} (${it.destination_iata}) | ${it.departure_date} to ${it.return_date} (${it.trip_nights} nights) | Strategy: ${stratLabel} | Points: ${pts} | Out-of-Pocket Cash: $${cashOop} (Net Saved: $${saved}) | Overall Score: ${totalScore}/100 (Weather: ${weatherScore}, Vacation Match: ${vacScore}, Bonus Value: ${bonusScore})`;
+      return `${city} (${it.destination_iata}) | ${it.departure_date} to ${it.return_date} (${it.trip_nights} nights) | Strategy: ${stratLabel} | Points: ${pts} | Out-of-Pocket Cash: $${cashOop} (Net Saved: ${savedDisplay}) | Overall Score: ${totalScore}/100 (Weather: ${weatherScore}, Vacation Match: ${vacScore}, Bonus Value: ${bonusScore})`;
     }
-    return `${city} (${it.destination_iata}) | ${it.departure_date} עד ${it.return_date} (${it.trip_nights} לילות / ${p.total_vacation_days || (it.trip_nights + 1)} ימים) | אסטרטגיה: ${stratLabel} | נקודות: ${pts} | תשלום במזומן: $${cashOop} (חיסכון נטו: $${saved}) | ציון משוקלל: ${totalScore}/100 (מזג אוויר: ${weatherScore}, ניצול חופשה: ${vacScore}, כדאיות טיסה ובונוס: ${bonusScore})`;
+    return `${city} (${it.destination_iata}) | ${it.departure_date} עד ${it.return_date} (${it.trip_nights} לילות / ${p.total_vacation_days || (it.trip_nights + 1)} ימים) | אסטרטגיה: ${stratLabel} | נקודות: ${pts} | תשלום במזומן: $${cashOop} (חיסכון נטו: ${savedDisplay}) | ציון משוקלל: ${totalScore}/100 (מזג אוויר: ${weatherScore}, ניצול חופשה: ${vacScore}, כדאיות טיסה ובונוס: ${bonusScore})`;
   }
 
   function classifyFareByAge(ageYears) {
@@ -291,9 +303,28 @@
     });
     if (!resp.ok) {
       const errText = await resp.text();
-      throw new Error(`${method} ${path} failed (${resp.status}): ${errText}`);
+      const err = new Error(`${method} ${path} failed (${resp.status}): ${errText}`);
+      err.status = resp.status;
+      err.bodyText = errText;
+      throw err;
     }
     return resp.json();
+  }
+
+  function extractApiErrorDetail(err) {
+    if (!err) return '';
+    if (err.bodyText) {
+      try {
+        const parsed = JSON.parse(err.bodyText);
+        const msg = parsed && (typeof parsed.detail === 'string' ? parsed.detail : typeof parsed.error === 'string' ? parsed.error : '');
+        if (msg) {
+          return msg.trim();
+        }
+      } catch (_ignore) {
+        // Non-JSON error body
+      }
+    }
+    return '';
   }
 
   function recalculateHouseholdPointsFromWallets() {
@@ -321,10 +352,16 @@
 
     const ptsPill = document.getElementById('header-points-pill');
     if (ptsPill) {
+      const fmtCompact = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+      ptsPill.setAttribute('dir', 'ltr');
+      ptsPill.setAttribute(
+        'title',
+        `${matmidTotal.toLocaleString()} El Al Matmid / ${allClubsTotal.toLocaleString()} Total Points`
+      );
       if (allClubsTotal > matmidTotal) {
-        ptsPill.textContent = `${matmidTotal.toLocaleString()} Matmid (${allClubsTotal.toLocaleString()} Total pts)`;
+        ptsPill.textContent = `${fmtCompact(matmidTotal)} LY · ${fmtCompact(allClubsTotal)} pts`;
       } else {
-        ptsPill.textContent = `${matmidTotal.toLocaleString()} Matmid pts`;
+        ptsPill.textContent = `${fmtCompact(matmidTotal)} Matmid`;
       }
     }
 
@@ -347,12 +384,12 @@
         .filter(([, total]) => total > 0)
         .map(
           ([prog, total]) =>
-            `<span class="score-pill" dir="ltr">${progShortLabels[prog] || prog}: <strong>${Number(total).toLocaleString()}</strong></span>`
+            `<span class="score-pill" dir="ltr">${escapeHtml(progShortLabels[prog] || prog)}: <strong>${Number(total).toLocaleString()}</strong></span>`
         )
         .join('');
-      const totalTitle = isHe ? 'סה״כ נקודות משפחתי (מכל המועדונים):' : 'Total Family Points (All Clubs):';
+      const totalTitle = isHe ? 'סה״כ נקודות:' : 'Total Points:';
       stripEl.innerHTML = `
-        <span class="score-pill" style="background: #eff6ff; border-color: #93c5fd; color: #1e3a8a;">
+        <span class="score-pill" style="background: var(--azure-tint); border-color: var(--azure-border); color: var(--azure-elal);">
           ${totalTitle} <strong dir="ltr">${allClubsTotal.toLocaleString()}</strong>
         </span>
         ${breakdownPills}
@@ -362,8 +399,48 @@
     return { matmidTotal, allClubsTotal, byProgram };
   }
 
+  function getWalletKey(w, idx) {
+    return (w && w.id) ? String(w.id) : `idx-${idx}`;
+  }
+
+  const DEFAULT_HE_WALLET_NAMES = new Set([
+    'יוני (הורה 1)',
+    'בת זוג (הורה 2)',
+    'נוסע'
+  ]);
+
+  function isDefaultHebrewWalletPlaceholder(raw) {
+    if (!raw) return false;
+    if (DEFAULT_HE_WALLET_NAMES.has(raw)) return true;
+    return /^(הורה|נוסע|ילד\/ה)\s*#?\d+$/.test(raw);
+  }
+
+  function formatWalletDisplayName(rawName, passengerId, idx, walletKey) {
+    const isHe = state.locale === 'he';
+    const raw = String(rawName || '').trim();
+    const pid = String(passengerId || '').toUpperCase();
+    const wasEditedByUser = walletKey && userEditedWalletKeys.has(walletKey);
+    if (!wasEditedByUser && !isHe && isDefaultHebrewWalletPlaceholder(raw)) {
+      if (pid.startsWith('ADULT_')) {
+        return `Parent ${pid.split('_')[1] || (idx + 1)}`;
+      }
+      if (pid.startsWith('CHILD_')) {
+        return `Child ${pid.split('_')[1] || (idx + 1)}`;
+      }
+      const numMatch = raw.match(/(\d+)/);
+      return numMatch ? `Parent ${numMatch[1]}` : `Passenger #${idx + 1}`;
+    }
+    if (raw) return raw;
+    if (pid.startsWith('ADULT_')) {
+      const n = pid.split('_')[1] || (idx + 1);
+      return isHe ? `הורה ${n}` : `Parent ${n}`;
+    }
+    return isHe ? `נוסע #${idx + 1}` : `Passenger #${idx + 1}`;
+  }
+
   function renderProfileControls() {
     if (!state.profile) return;
+    const isHe = state.locale === 'he';
     recalculateHouseholdPointsFromWallets();
     const adultsInput = document.getElementById('prof-adults-count');
     const ptoInput = document.getElementById('prof-pto-budget');
@@ -374,7 +451,13 @@
 
     const famPill = document.getElementById('header-family-pill');
     if (famPill) {
-      famPill.textContent = `${state.profile.adults_count} Adults + ${state.profile.children.length} Children`;
+      // Words render in the body face; only the numerals keep the telemetry face (`.num`)
+      const adultsNum = `<span class="num">${escapeHtml(state.profile.adults_count)}</span>`;
+      const childrenNum = `<span class="num">${escapeHtml(state.profile.children.length)}</span>`;
+      famPill.setAttribute('dir', 'auto');
+      famPill.innerHTML = isHe
+        ? `${adultsNum} מבוגרים + ${childrenNum} ילדים`
+        : `${adultsNum} Adults + ${childrenNum} Children`;
     }
 
     const childrenContainer = document.getElementById('children-list-container');
@@ -385,23 +468,22 @@
           const fwOptions = MOE_FRAMEWORKS.map((fw) => {
             const currentFw = child.framework_type === null ? '' : String(child.framework_type || '');
             const selected = currentFw === fw.value ? 'selected' : '';
-            const label = state.locale === 'he' ? fw.labelHe : fw.labelEn;
-            return `<option value="${fw.value}" ${selected}>${label}</option>`;
+            const label = isHe ? fw.labelHe : fw.labelEn;
+            return `<option value="${escapeHtml(fw.value)}" ${selected}>${escapeHtml(label)}</option>`;
           }).join('');
           return `
-            <div class="proposal-card" style="padding: 12px; margin-block-end: 10px;">
-              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;">
-                <strong>🧒 ${formatGenericChildTitle(idx)}</strong>
-                <span class="score-pill">${classifyFareByAge(child.child_age_years)}</span>
-                <button type="button" class="btn-secondary" data-remove-child="${idx}" style="min-height: 30px; padding: 2px 10px; font-size: 0.75rem;">${state.locale === 'he' ? 'הסר' : 'Remove'}</button>
+            <div class="compact-profile-item">
+              <div class="compact-item-top">
+                <span class="compact-item-title">🧒 ${escapeHtml(formatGenericChildTitle(idx))} · <span class="compact-item-sub compact-item-sub-text">${escapeHtml(classifyFareByAge(child.child_age_years))}</span></span>
+                <button type="button" class="btn-secondary btn-remove-inline" data-remove-child="${idx}">${isHe ? 'הסר' : 'Remove'}</button>
               </div>
-              <div class="form-grid form-grid-2" style="margin-block-end: 4px; margin-block-start: 6px;">
+              <div class="form-grid form-grid-2">
                 <div class="form-field">
-                  <label>${state.locale === 'he' ? 'גיל הילד/ה (0–18):' : 'Child Age (0–18):'}</label>
-                  <input type="number" min="0" max="18" value="${child.child_age_years}" data-child-age="${idx}" dir="ltr" />
+                  <label>${isHe ? 'גיל (0–18):' : 'Age (0–18):'}</label>
+                  <input type="number" min="0" max="18" value="${escapeHtml(child.child_age_years)}" data-child-age="${idx}" dir="ltr" />
                 </div>
                 <div class="form-field">
-                  <label>${state.locale === 'he' ? 'מסגרת חינוכית (' + (isOptionalMode ? 'אופציונלי / Optional' : 'לפי משרד החינוך') + '):' : 'MoE Framework (' + (isOptionalMode ? 'Optional / אופציונלי' : 'MoE Calendar') + '):'}</label>
+                  <label>${isHe ? 'מסגרת (' + (isOptionalMode ? 'אופציונלי / Optional' : 'משרד החינוך') + '):' : 'Framework (' + (isOptionalMode ? 'Optional' : 'MoE Calendar') + '):'}</label>
                   <select data-child-fw="${idx}">
                     ${fwOptions}
                   </select>
@@ -419,28 +501,33 @@
         .map((w, idx) => {
           const progOptions = LOYALTY_PROGRAMS.map((p) => {
             const sel = w.program_code === p.value ? 'selected' : '';
-            return `<option value="${p.value}" ${sel}>${p.label}</option>`;
+            const progLabel = isHe ? (p.labelHe || p.label) : (p.labelEn || p.label);
+            return `<option value="${escapeHtml(p.value)}" ${sel}>${escapeHtml(progLabel)}</option>`;
           }).join('');
+          const wKey = getWalletKey(w, idx);
+          const dispName = formatWalletDisplayName(w.passenger_name, w.passenger_id, idx, wKey);
+          const safeDispName = escapeHtml(dispName);
+          const safePassengerId = escapeHtml(w.passenger_id);
           return `
-            <div class="proposal-card" style="padding: 12px; margin-block-end: 10px; border-inline-start-color: #d97706;">
-              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-block-end: 6px;">
-                <strong style="font-size: 0.88rem;">💳 ${w.passenger_name || (state.locale === 'he' ? 'נוסע #' + (idx + 1) : 'Passenger #' + (idx + 1))} <span style="font-weight: 400; color: var(--text-secondary);">(${w.passenger_id})</span></strong>
-                <button type="button" class="btn-secondary" data-remove-wallet="${idx}" style="min-height: 28px; padding: 2px 10px; font-size: 0.75rem; color: #be123c; border-color: #fecdd3; background: #fff1f2;">
-                  ${state.locale === 'he' ? '🗑️ הסר מועדון' : '🗑️ Remove Club'}
+            <div class="compact-profile-item wallet-item">
+              <div class="compact-item-top">
+                <span class="compact-item-title">💳 ${safeDispName} <span class="compact-item-sub" dir="ltr">(${safePassengerId})</span></span>
+                <button type="button" class="btn-secondary btn-remove-inline" data-remove-wallet="${idx}">
+                  ${isHe ? 'הסר מועדון' : 'Remove'}
                 </button>
               </div>
-              <div class="form-grid form-grid-3" style="margin-block-end: 0;">
+              <div class="form-grid form-grid-3 wallet-fields">
                 <div class="form-field">
-                  <label>${state.locale === 'he' ? 'נוסע' : 'Passenger'} (${w.passenger_id}):</label>
-                  <input type="text" value="${w.passenger_name}" data-wallet-name="${idx}" />
+                  <label>${isHe ? 'נוסע:' : 'Passenger:'}</label>
+                  <input type="text" value="${safeDispName}" data-wallet-name="${idx}" />
                 </div>
                 <div class="form-field">
-                  <label>${state.locale === 'he' ? 'מועדון תעופה:' : 'Loyalty Club:'}</label>
+                  <label>${isHe ? 'נקודות:' : 'Points:'}</label>
+                  <input type="number" min="0" step="1000" value="${escapeHtml(w.available_points)}" data-wallet-pts="${idx}" dir="ltr" />
+                </div>
+                <div class="form-field wallet-club-field">
+                  <label>${isHe ? 'מועדון תעופה:' : 'Loyalty Club:'}</label>
                   <select data-wallet-prog="${idx}">${progOptions}</select>
-                </div>
-                <div class="form-field">
-                  <label>${state.locale === 'he' ? 'נקודות זמינות לנוסע:' : 'Available Points:'}</label>
-                  <input type="number" min="0" step="1000" value="${w.available_points}" data-wallet-pts="${idx}" dir="ltr" />
                 </div>
               </div>
             </div>
@@ -492,7 +579,8 @@
       const syncSourceLabel = state.calendarData.calendar_sync_source === 'OFFICIAL_MOE_CIRCULAR'
         ? (isHe ? 'חוזר מנכ״ל משרד החינוך' : 'Official MoE Circular')
         : state.calendarData.calendar_sync_source;
-      syncBadge.textContent = `${state.calendarData.school_year} | ${syncSourceLabel}`;
+      // School year stays in the telemetry face; the worded source label renders in the body face
+      syncBadge.innerHTML = `<span class="num" dir="ltr">${escapeHtml(state.calendarData.school_year)}</span> | ${escapeHtml(syncSourceLabel)}`;
     }
 
     const windows = state.calendarData.windows || [];
@@ -529,8 +617,9 @@
 
     tbody.innerHTML = groupedRows
       .map((g) => {
+        // Same wording as before; each date is an unbreakable token so the badge wraps between words, never inside a date
         const nitzBadge = g.is_covered_by_nitzanim
-          ? `<span class="badge-camp">${isHe ? `קייטנת ניצנים (${g.nitzanim_start_date} עד ${g.nitzanim_end_date})` : `Nitzanim (${g.nitzanim_start_date} to ${g.nitzanim_end_date})`}</span>`
+          ? `<span class="badge-camp">${isHe ? 'קייטנת ניצנים' : 'Nitzanim'} (<span class="cal-nowrap">${escapeHtml(g.nitzanim_start_date)}</span> ${isHe ? 'עד' : 'to'} <span class="cal-nowrap">${escapeHtml(g.nitzanim_end_date)}</span>)</span>`
           : `<span class="badge-vacation">${isHe ? 'חופשה מלאה' : 'Full Vacation'}</span>`;
         const daysCount =
           g.total_calendar_days ||
@@ -539,12 +628,12 @@
         const holidayTitle = isHe ? g.holiday_name_he : g.holiday_name_en;
         return `
           <tr>
-            <td class="sticky-col">${holidayTitle}</td>
-            <td><span style="font-weight: 600; color: var(--text-primary); white-space: normal;">${fwLabel}</span></td>
-            <td dir="ltr">${g.start_date}</td>
-            <td dir="ltr">${g.end_date}</td>
-            <td dir="ltr">${g.resume_date}</td>
-            <td dir="ltr">${daysCount}</td>
+            <td class="sticky-col">${escapeHtml(holidayTitle)}</td>
+            <td><span style="font-weight: 600; color: var(--text-primary); white-space: normal;">${escapeHtml(fwLabel)}</span></td>
+            <td dir="ltr">${escapeHtml(g.start_date)}</td>
+            <td dir="ltr">${escapeHtml(g.end_date)}</td>
+            <td dir="ltr">${escapeHtml(g.resume_date)}</td>
+            <td dir="ltr">${escapeHtml(daysCount)}</td>
             <td>${nitzBadge}</td>
           </tr>
         `;
@@ -612,13 +701,88 @@
     const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
     const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
     const times = depT && arrT ? ` · ${depT}–${arrT}` : depT ? ` · ${depT}` : '';
-    return `<span class="route-flight-meta">${fn}${times}</span>`;
+    return `<span class="route-flight-meta">${escapeHtml(fn + times)}</span>`;
+  }
+
+  function updateZoneResultsTitle() {
+    const zResults = document.getElementById('zone-results-title');
+    if (!zResults) return;
+    const isHe = state.locale === 'he';
+    const count = (state.proposals && state.proposals.length) || 0;
+    const countSuffix = count > 0 ? ` (${count})` : '';
+    zResults.textContent = isHe
+      ? `3. תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס${countSuffix}`
+      : `3. Ranked Vacation Proposals & Award Fulfillment${countSuffix}`;
+  }
+
+  function renderComparisonBanner() {
+    const banner = document.getElementById('comparison-banner-container');
+    if (!banner) return;
+    const cmp = state.lastComparison;
+    if (!cmp) {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+      return;
+    }
+    const isHe = state.locale === 'he';
+    const props = cmp.proposals || [];
+    const byId = new Map(props.map((p) => [p.id, p]));
+    const fmtWinner = (pid) => {
+      const p = byId.get(pid);
+      if (!p || !p.itinerary) return null;
+      const it = p.itinerary;
+      const city = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
+      const strat = formatStrategyLabel(it.fulfillment_strategy);
+      return `${city} (${it.departure_date} → ${it.return_date} · ${strat})`;
+    };
+
+    const bestOverall = fmtWinner(cmp.best_by_ctos_id);
+    const bestSavings = fmtWinner(cmp.best_by_cash_savings_id);
+    const bestPer = fmtWinner(cmp.best_by_per_id);
+    const bestWeather = fmtWinner(cmp.best_by_weather_id);
+
+    let summaryLine = isHe ? (cmp.summary_he || '') : (cmp.summary_en || '');
+    if (!summaryLine) {
+      const parts = [];
+      if (bestOverall) parts.push(isHe ? `ציון משוקלל מוביל: ${bestOverall}` : `Best Overall Score: ${bestOverall}`);
+      if (bestSavings) parts.push(isHe ? `חיסכון כספי מרבי: ${bestSavings}` : `Highest Net Savings: ${bestSavings}`);
+      if (bestPer) parts.push(isHe ? `מכפיל ימי חופש מרבי: ${bestPer}` : `Best PTO Multiplier: ${bestPer}`);
+      if (bestWeather) parts.push(isHe ? `מזג אוויר מיטבי: ${bestWeather}` : `Best Weather Match: ${bestWeather}`);
+      summaryLine = parts.join(' · ');
+    }
+
+    banner.style.display = 'block';
+    banner.innerHTML = `
+      <div class="comparison-banner-card">
+        <strong class="comparison-banner-title">⚖️ ${isHe ? `תוצאת השוואת ${props.length} חלופות נבחרות:` : `Comparison Summary (${props.length} selected proposals):`}</strong>
+        <p class="comparison-banner-text">${escapeHtml(summaryLine)}</p>
+      </div>
+    `;
   }
 
   function renderProposals() {
     const container = document.getElementById('proposals-container');
     if (!container) return;
     const isHe = state.locale === 'he';
+    updateZoneResultsTitle();
+
+    if (state.validationErrorHe || state.validationErrorEn) {
+      const valMsg = isHe
+        ? (state.validationErrorHe || 'נא לבדוק את ערכי הקלט בטופס ולנסות שוב.')
+        : (state.validationErrorEn || 'Check your search or profile inputs and try again.');
+      container.innerHTML = `
+        <div class="status-banner-card">
+          <strong class="status-banner-title">
+            ⚠️ ${isHe ? 'ערכי קלט לא תקינים' : 'Invalid Search or Profile Inputs'}
+          </strong>
+          <p class="status-banner-body">
+            ${escapeHtml(valMsg)}
+          </p>
+        </div>
+      `;
+      return;
+    }
+
     if (!state.proposals || state.proposals.length === 0) {
       const emptyMsg = state.statusMessageHe && isHe
         ? state.statusMessageHe
@@ -628,133 +792,152 @@
             ? 'אין משיכה של טיסות מהשרת (לא נמצאו טיסות מסונכרנות במסד הנתונים עבור יעד ומועד זה).'
             : 'No flights fetched from the server for this route and date window.';
       container.innerHTML = `
-        <div class="proposal-card" style="border-inline-start-color: #ef4444; background: #fef2f2; padding: 18px;">
-          <strong style="color: #991b1b; font-size: 1rem;">
+        <div class="status-banner-card">
+          <strong class="status-banner-title">
             ⚠️ ${isHe ? 'אין משיכה של טיסות מהשרת' : 'No Flights Fetched From Server'}
           </strong>
-          <p style="margin: 6px 0 0 0; font-size: 0.9rem; color: #7f1d1d;">
-            ${emptyMsg}
+          <p class="status-banner-body">
+            ${escapeHtml(emptyMsg)}
           </p>
         </div>
       `;
       return;
     }
+
     const fallbackBannerHtml = state.weatherFallbackMessageHe
       ? `
-        <div class="proposal-card" style="border-inline-start-color: #f59e0b; background: #fffbeb; padding: 12px 16px; margin-block-end: 10px;">
-          <strong style="color: #92400e; font-size: 0.9rem;">
-            🌤️ ${isHe ? state.weatherFallbackMessageHe : 'Strict weather filter was relaxed to display the highest-rated weather options for these dates.'}
-          </strong>
+        <div class="weather-fallback-card">
+          🌤️ ${escapeHtml(isHe ? state.weatherFallbackMessageHe : 'Strict weather filter was relaxed to display the highest-rated weather options for these dates.')}
         </div>
       `
       : '';
-    container.innerHTML =
-      fallbackBannerHtml +
-      state.proposals
-        .map((p, idx) => {
-          const it = p.itinerary || {};
-          const wm = p.weather_metrics || null;
-          const wssVal = Number(
-            p.weather_suitability_score ??
-              (wm && wm.overall_weather_suitability_score) ??
-              0
-          );
-          const wssPillStyle =
-            wssVal >= 75
-              ? 'background: #ecfdf5; border-color: #6ee7b7; color: #065f46;'
-              : wssVal >= 60
-                ? 'background: #f0f9ff; border-color: #7dd3fc; color: #0c4a6e;'
-                : 'background: #fffbeb; border-color: #fcd34d; color: #92400e;';
-          let weatherStripHtml = '';
-          if (wm) {
-            const scoresByType = wm.scores_by_vacation_type || {};
-            const beachScore = Number(scoresByType.BEACH_AND_POOL ?? 0).toFixed(0);
-            const natureScore = Number(scoresByType.NATURE_TRIP ?? 0).toFixed(0);
-            const recTypes = (wm.recommended_vacation_types || [])
-              .slice(0, 3)
-              .map((vt) => `<span class="weather-badge-tag">${formatVacationTypeBadge(vt)}</span>`)
-              .join('');
-            const seaTempChip =
-              wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined
-                ? `<span class="weather-metric-chip">🌊 ${isHe ? 'טמפ׳ מים:' : 'Sea:'} <strong dir="ltr">${Number(wm.sea_water_temp_c).toFixed(0)}°C</strong></span>`
-                : '';
-            const extraSelectedChips = (state.selectedVacationTypes || [])
-              .filter((vt) => vt !== 'ANY' && vt !== 'BEACH_AND_POOL' && vt !== 'NATURE_TRIP')
-              .map(
-                (vt) =>
-                  `<span class="weather-metric-chip">${formatVacationTypeBadge(vt)}: <strong dir="ltr">${Number(scoresByType[vt] ?? 0).toFixed(0)}/100</strong></span>`
-              )
-              .join('');
-            weatherStripHtml = `
-              <div class="weather-telemetry-strip">
-                <div class="weather-telemetry-row">
-                  <span class="weather-metric-chip">🌡️ ${isHe ? 'טמפ׳ יום/לילה:' : 'Day/Night:'} <strong dir="ltr">${Number(wm.avg_day_high_c || 0).toFixed(0)}°C / ${Number(wm.avg_night_low_c || 0).toFixed(0)}°C</strong></span>
-                  ${seaTempChip}
-                  <span class="weather-metric-chip">☀️ ${isHe ? 'שעות שמש:' : 'Sunshine:'} <strong dir="ltr">${Number(wm.sunshine_hours_per_day || 0).toFixed(1)}h</strong></span>
-                  <span class="weather-metric-chip">🌧️ ${isHe ? 'ימי גשם משוערים:' : 'Est. Rain Days:'} <strong dir="ltr">${Number(wm.estimated_rain_days_in_trip || 0).toFixed(1)}</strong></span>
-                  <span class="weather-metric-chip">🏖️ ${isHe ? 'ציון בטן-גב:' : 'Beach Score:'} <strong dir="ltr">${beachScore}/100</strong></span>
-                  <span class="weather-metric-chip">🥾 ${isHe ? 'ציון טיול בטבע:' : 'Nature Score:'} <strong dir="ltr">${natureScore}/100</strong></span>
-                  ${extraSelectedChips}
-                </div>
-                <div class="weather-telemetry-footer">
-                  <span class="weather-summary-note">${isHe ? (wm.weather_summary_he || '') : (wm.weather_summary_en || wm.weather_summary_he || '')}</span>
-                  <div class="weather-rec-tags">${recTypes}</div>
-                </div>
-              </div>
-            `;
+
+    const totalCount = state.proposals.length;
+    const visibleList = state.showAllProposals
+      ? state.proposals
+      : state.proposals.slice(0, INITIAL_PROPOSALS_LIMIT);
+
+    const cardsHtml = visibleList
+      .map((p, idx) => {
+        const it = p.itinerary || {};
+        const wm = p.weather_metrics || null;
+        const wssVal = Number(
+          p.weather_suitability_score ??
+            (wm && wm.overall_weather_suitability_score) ??
+            0
+        );
+
+        let topStyleChipHtml = '';
+        let weatherStripHtml = '';
+        if (wm) {
+          const scoresByType = wm.scores_by_vacation_type || {};
+          const recList = wm.recommended_vacation_types || [];
+          if (recList.length > 0) {
+            topStyleChipHtml = `<span class="weather-badge-tag">${formatVacationTypeBadge(recList[0])}</span>`;
           }
-          const allocList = it.family_ticket_allocation || it.passenger_allocations || [];
-          const seatedCount = allocList.filter((a) => {
-            const pts = Number(a.points_used ?? a.points_charged ?? 0);
-            const cash = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
-            const tax = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
-            return pts > 0 || cash > 0 || tax > 0;
-          }).length;
-          const twoPlusVerifyBannerHtml = it.requires_two_plus_seat_verification
-            ? `
-              <div class="two-plus-verify-banner">
-                <strong>ℹ️ ${isHe ? `שימו לב למכסת 2+ מושבי בונוס קלאסי באל על (${seatedCount} מושבים נדרשים):` : `Note on EL AL 2+ Classic Award Seat Cap (${seatedCount} seats needed):`}</strong>
-                <span>
-                  ${
-                    isHe
-                      ? `מחשבון הזמינות של אל על מאשר שיש לפחות 2 מושבי בונוס קלאסי בטיסה זו (המקסימום שהמחשבון חושף). אם בחיפוש באתר אל על ל-${seatedCount} מושבים יחד מופיע מחיר נקודות גבוה של Cash & Points, חפשו באתר אל על עבור 2 נוסעים בלבד למימוש הבונוס הקלאסי המוזל והשלימו את היתר בהזמנה נפרדת (או בחרו בהצעת "שילוב בונוס + מזומן").`
-                      : `EL AL's calculator confirms at least 2 Classic Award seats on this flight (its maximum reported indicator). If searching for ${seatedCount} seated passengers together on elal.com switches pricing to higher Cash & Points rates, search for 2 passengers to claim the Classic Award rate and book the remaining passenger separately.`
-                  }
-                </span>
+          const recTypes = recList
+            .slice(0, 3)
+            .map((vt) => `<span class="weather-badge-tag">${formatVacationTypeBadge(vt)}</span>`)
+            .join('');
+          const seaTempChip =
+            wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined
+              ? `<span class="weather-metric-chip">🌊 ${isHe ? 'ים:' : 'Sea:'} <strong dir="ltr">${Number(wm.sea_water_temp_c).toFixed(0)}°C</strong></span>`
+              : '';
+          const extraSelectedChips = (state.selectedVacationTypes || [])
+            .filter((vt) => vt !== 'ANY')
+            .slice(0, 2)
+            .map(
+              (vt) =>
+                `<span class="weather-metric-chip">${formatVacationTypeBadge(vt)}: <strong dir="ltr">${Number(scoresByType[vt] ?? 0).toFixed(0)}</strong></span>`
+            )
+            .join('');
+          const summaryNoteText = isHe
+            ? (wm.weather_summary_he || '')
+            : (wm.weather_summary_en ||
+              `Expected ${Number(wm.avg_day_high_c || 0).toFixed(0)}°C day / ${Number(wm.avg_night_low_c || 0).toFixed(0)}°C night` +
+                (wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined ? `, sea ${Number(wm.sea_water_temp_c).toFixed(0)}°C` : '') +
+                `, ~${Number(wm.sunshine_hours_per_day || 0).toFixed(1)}h daily sunshine & ~${Number(wm.estimated_rain_days_in_trip || 0).toFixed(1)} rain days.`);
+          weatherStripHtml = `
+            <div class="weather-telemetry-strip">
+              <div class="weather-telemetry-row">
+                <span class="weather-metric-chip">🌤️ ${isHe ? 'ציון אקלים:' : 'Climate:'} <strong dir="ltr">${wssVal.toFixed(0)}/100</strong></span>
+                <span class="weather-metric-chip">🌡️ <strong dir="ltr">${Number(wm.avg_day_high_c || 0).toFixed(0)}°/${Number(wm.avg_night_low_c || 0).toFixed(0)}°C</strong></span>
+                ${seaTempChip}
+                <span class="weather-metric-chip">☀️ <strong dir="ltr">${Number(wm.sunshine_hours_per_day || 0).toFixed(1)}h</strong></span>
+                <span class="weather-metric-chip">🌧️ <strong dir="ltr">${Number(wm.estimated_rain_days_in_trip || 0).toFixed(1)}${isHe ? ' ימי גשם' : 'd rain'}</strong></span>
+                ${extraSelectedChips}
               </div>
-            `
-            : '';
+              <div class="weather-telemetry-footer">
+                <span class="weather-summary-note">${escapeHtml(summaryNoteText)}</span>
+                <div class="weather-rec-tags">${recTypes}</div>
+              </div>
+            </div>
+          `;
+        }
+
+        const allocList = it.family_ticket_allocation || it.passenger_allocations || [];
+        const seatedCount = allocList.filter((a) => {
+          const pts = Number(a.points_used ?? a.points_charged ?? 0);
+          const cash = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
+          const tax = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
+          return pts > 0 || cash > 0 || tax > 0;
+        }).length;
+
+        const twoPlusVerifyBannerHtml = it.requires_two_plus_seat_verification
+          ? `
+            <div class="two-plus-verify-banner">
+              <strong>ℹ️ ${isHe ? `מכסת 2+ מושבי בונוס קלאסי באל על (${seatedCount} מושבים נדרשים):` : `EL AL 2+ Classic Award Seat Cap (${seatedCount} seats needed):`}</strong>
+              <span>
+                ${
+                  isHe
+                    ? `אל על מאשרת לפחות 2 מושבי בונוס קלאסי בטיסה זו. אם בחיפוש ל-${seatedCount} נוסעים מופיע תעריף Cash & Points, הזמינו 2 מושבי בונוס קלאסי והשלימו את היתר בנפרד.`
+                    : `EL AL confirms at least 2 Classic Award seats on this flight. If searching for ${seatedCount} passengers switches to Cash & Points rates, book 2 Classic Award seats first and complete the remaining seat separately.`
+                }
+              </span>
+            </div>
+          `
+          : '';
+
         const allocRows = allocList
-          .map(
-            (a, aIdx) => {
-              const ptsVal = Number(a.points_used ?? a.points_charged ?? 0);
-              const taxVal = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
-              const cashVal = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
-              const isLapInfant = ptsVal === 0 && taxVal === 0 && cashVal === 0 && String(a.rbd_code || '') !== 'Y';
-              const modeLabel = isLapInfant
-                ? (isHe ? 'תינוק ללא מושב — על הברכיים (INFANT_LAP)' : 'Lap Infant — No Separate Seat (INFANT_LAP)')
-                : `${a.ticket_mode || a.outbound_ticket_kind || ''} (${a.cabin_class || a.outbound_cabin || 'ECONOMY'})`;
-              return `
+          .map((a, aIdx) => {
+            const ptsVal = Number(a.points_used ?? a.points_charged ?? 0);
+            const taxVal = Number(a.taxes_usd ?? a.taxes_and_fees_usd ?? 0);
+            const cashVal = Number(a.cash_fare_usd ?? a.cash_fare_charged_usd ?? 0);
+            const isLapInfant = ptsVal === 0 && taxVal === 0 && cashVal === 0 && String(a.rbd_code || '') !== 'Y';
+            const modeLabel = isLapInfant
+              ? (isHe ? 'תינוק ללא מושב — על הברכיים (INFANT_LAP)' : 'Lap Infant — No Separate Seat (INFANT_LAP)')
+              : `${a.ticket_mode || a.outbound_ticket_kind || ''} (${a.cabin_class || a.outbound_cabin || 'ECONOMY'})`;
+            return `
               <tr>
-                <td>${formatGenericPassengerLabel(a, aIdx)}</td>
-                <td><code>${isLapInfant ? 'INFANT' : (a.program_code || a.program_used || 'CASH')}</code></td>
-                <td>${modeLabel}</td>
+                <td>${escapeHtml(formatGenericPassengerLabel(a, aIdx))}</td>
+                <td><code>${escapeHtml(isLapInfant ? 'INFANT' : (a.program_code || a.program_used || 'CASH'))}</code></td>
+                <td>${escapeHtml(modeLabel)}</td>
                 <td dir="ltr">${ptsVal.toLocaleString()} pts</td>
                 <td dir="ltr">$${taxVal.toFixed(0)} + $${cashVal.toFixed(0)}</td>
               </tr>
             `;
-            }
-          )
+          })
           .join('');
 
         const checked = state.selectedProposalIds.has(p.id) ? 'checked' : '';
         const rankNum = p.rank_order || p.rank || (idx + 1);
         const tierCode = p.recommendation_tier || (idx === 0 ? 'RECOMMENDED' : idx < 4 ? 'TOP_CHOICE' : 'ALTERNATIVE');
         const tierBadgeText = formatRecommendationTierLabel(tierCode);
+        const tierBadgeCls =
+          tierCode === 'RECOMMENDED'
+            ? 'badge-vacation'
+            : tierCode === 'TOP_CHOICE'
+              ? 'badge-camp'
+              : 'badge-tier-alt';
         const fbvsVal = p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0;
         const perVal = p.pto_efficiency_ratio ?? p.parent_pto_efficiency_ratio ?? 0;
+        const perDisplay = isHe ? `פי ${Number(perVal).toFixed(1)}` : `${Number(perVal).toFixed(1)}x`;
+        const schoolMissed = Number(p.total_school_days_missed_across_children || 0);
+        const schoolCellCls = schoolMissed === 0 ? 'score-pill kpi-cell kpi-cell-pine' : 'score-pill kpi-cell';
+        const schoolText = schoolMissed === 0
+          ? (isHe ? '0 ימים ✓' : '0 days ✓')
+          : (isHe ? `${schoolMissed} ימים` : `${schoolMissed} days`);
         const stratText = formatStrategyLabel(it.fulfillment_strategy);
-        const summaryText = buildIntuitiveProposalSummary(p);
         const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
         const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
         const elalBookUrl = resolveElAlBookingUrl(it);
@@ -762,128 +945,196 @@
         const inLeg = (it.inbound_legs && it.inbound_legs[0]) || null;
         const outFlightBadgeHtml = formatLegFlightBadge(outLeg);
         const inFlightBadgeHtml = formatLegFlightBadge(inLeg);
+        // Flight-number tags get their own line of the route bar: outbound at the start edge, inbound at the end edge
+        const flightsRowHtml = outFlightBadgeHtml || inFlightBadgeHtml
+          ? `
+                  <div class="route-flights-row">
+                    <span class="route-flight-slot">${outFlightBadgeHtml}</span>
+                    <span class="route-flight-slot route-flight-slot-end">${inFlightBadgeHtml}</span>
+                  </div>`
+          : '';
         const returnOriginLabel =
           it.return_origin_iata && it.return_origin_iata !== it.destination_iata
-            ? `${it.destination_iata} / ${it.return_origin_iata}`
+            ? `${it.destination_iata}/${it.return_origin_iata}`
             : it.destination_iata;
+        const totalVacDays = p.total_vacation_days || ((Number(it.trip_nights) || 0) + 1);
+        const ptsTotal = Number(it.total_matmid_points || 0).toLocaleString();
+        const oopCash = Number(it.total_out_of_pocket_cash_usd || 0).toFixed(0);
+        const netSavedNum = Math.round(Number(it.net_cash_saved_usd || 0));
+        const netSavedDisplay =
+          netSavedNum > 0
+            ? `+$${netSavedNum}`
+            : netSavedNum < 0
+              ? `-$${Math.abs(netSavedNum)}`
+              : '$0';
+        const savedRowCls = netSavedNum > 0 ? 'stub-fare-row stub-fare-saved' : 'stub-fare-row';
+        const cppVal = Number(it.cents_per_point_value || 0).toFixed(2);
+
         const elalBookBtnHtml = elalBookUrl
           ? `
-                <a class="btn-elal-book" href="${elalBookUrl}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת טיסת אל על ב-Google Flights למעבר מאומת ישירות להזמנה באל על' : 'Open EL AL flight on Google Flights for verified handoff to EL AL booking'}">
-                  ✈️ ${isHe ? 'להזמנת טיסת אל על (Google Flights) ↗' : 'Book EL AL Flight (Google Flights) ↗'}
-                </a>
+              <a class="btn-elal-book" href="${escapeHtml(elalBookUrl)}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת טיסת אל על ב-Google Flights למעבר מאומת ישירות להזמנה באל על' : 'Open EL AL flight on Google Flights for verified handoff to EL AL booking'}">
+                <span>✈️ ${isHe ? 'להזמנת טיסת אל על (Google Flights)' : 'Book EL AL (Google Flights)'}</span>
+                <span dir="ltr" aria-hidden="true">↗</span>
+              </a>
             `
           : '';
 
         return `
-          <article class="proposal-card tier-${tierCode}">
-            <div class="proposal-top-bar">
-              <div class="proposal-dest-header">
-                <span class="proposal-dest-icon" aria-hidden="true">${destIcon}</span>
-                <div>
-                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
-                    <span class="badge-vacation">#${rankNum} ${tierBadgeText}</span>
-                    <strong class="proposal-dest-title">
-                      ${cityTitle} (${it.origin_iata} ⇄ ${it.destination_iata})
-                    </strong>
+          <article class="proposal-card tier-${escapeHtml(tierCode)}">
+            <div class="proposal-pass-grid">
+              <div class="proposal-pass-main">
+                <div class="proposal-top-bar">
+                  <div class="proposal-dest-header">
+                    <span class="proposal-dest-icon" aria-hidden="true">${destIcon}</span>
+                    <div class="proposal-title-group">
+                      <span class="${tierBadgeCls}">#${rankNum} ${escapeHtml(tierBadgeText)}</span>
+                      <strong class="proposal-dest-title">${escapeHtml(cityTitle)}</strong>
+                      <span class="proposal-route-pair" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')} ⇄ ${escapeHtml(it.destination_iata)}</span>
+                    </div>
+                  </div>
+                  ${topStyleChipHtml}
+                </div>
+
+                <div class="boarding-route-bar" dir="ltr">
+                  <div class="route-endpoint">
+                    <span class="route-iata">${escapeHtml(it.origin_iata || 'TLV')}</span>
+                    <span class="route-date">${escapeHtml(it.departure_date)}</span>
+                  </div>
+                  <div class="route-arc-Track">
+                    <span class="route-nights-pill" dir="auto">${escapeHtml(it.trip_nights)} ${isHe ? 'לילות' : 'Nights'} · ${escapeHtml(totalVacDays)} ${isHe ? 'ימי חופש' : 'Days'}</span>
+                    <div class="route-arc-line">
+                      <span>●</span>
+                      <span class="route-arc-dash"></span>
+                      <span>✈️</span>
+                      <span class="route-arc-dash"></span>
+                      <span>●</span>
+                    </div>
+                  </div>
+                  <div class="route-endpoint route-endpoint-end">
+                    <span class="route-iata">${escapeHtml(returnOriginLabel)}</span>
+                    <span class="route-date">${escapeHtml(it.return_date)}</span>
+                  </div>${flightsRowHtml}
+                </div>
+
+                <div class="score-strip pass-kpi-grid">
+                  <div class="score-pill kpi-cell">
+                    <span class="kpi-cell-label">🏖️ ${isHe ? 'ניצול חופשה' : 'Vacation Match'}</span>
+                    <strong class="kpi-cell-val" dir="ltr">${Number(p.vacation_utilization_score || 0).toFixed(1)}/100</strong>
+                  </div>
+                  <div class="score-pill kpi-cell">
+                    <span class="kpi-cell-label">📈 ${isHe ? 'מכפיל חופש הורה' : 'PTO Multiplier'}</span>
+                    <strong class="kpi-cell-val" dir="ltr">${escapeHtml(perDisplay)}</strong>
+                  </div>
+                  <div class="${schoolCellCls}">
+                    <span class="kpi-cell-label">🎒 ${isHe ? 'חיסור מבי״ס' : 'School Missed'}</span>
+                    <strong class="kpi-cell-val">${escapeHtml(schoolText)}</strong>
+                  </div>
+                  <div class="score-pill kpi-cell">
+                    <span class="kpi-cell-label">💎 ${isHe ? 'כדאיות בונוס' : 'Award Value'}</span>
+                    <strong class="kpi-cell-val" dir="ltr">${Number(fbvsVal).toFixed(1)}/100</strong>
+                  </div>
+                </div>
+
+                ${weatherStripHtml}
+              </div>
+
+              <div class="proposal-pass-stub">
+                <div class="stub-score-header">
+                  <div class="stub-ctos-badge" dir="ltr" title="${isHe ? 'ציון התאמה משוקלל' : 'Overall Optimization Score'}">
+                    <span>⭐</span>
+                    <span class="stub-ctos-num">${Number(p.combined_trip_optimization_score || 0).toFixed(1)}</span>
+                    <span class="stub-ctos-max">/100</span>
+                  </div>
+                  <span class="stub-strategy-tag" title="${escapeHtml(stratText)}">${escapeHtml(stratText)}</span>
+                </div>
+
+                <div class="stub-fare-ledger">
+                  <div class="stub-fare-row">
+                    <span class="stub-fare-label">💳 ${isHe ? 'נקודות מועדון' : 'Points Used'}</span>
+                    <span class="stub-fare-val stub-fare-points" dir="ltr">${ptsTotal}</span>
+                  </div>
+                  <div class="stub-fare-row">
+                    <span class="stub-fare-label">💵 ${isHe ? 'תשלום במזומן' : 'Out-of-Pocket'}</span>
+                    <span class="stub-fare-val" dir="ltr">$${oopCash}</span>
+                  </div>
+                  <div class="${savedRowCls}">
+                    <span class="stub-fare-label">${isHe ? 'חיסכון נטו' : 'Net Saved'}</span>
+                    <span class="stub-fare-val" dir="ltr">${netSavedDisplay} (${cppVal}¢)</span>
+                  </div>
+                </div>
+
+                <div class="stub-actions-stack">
+                  ${elalBookBtnHtml}
+                  <div class="stub-secondary-actions">
+                    <label class="compare-check-label">
+                      <input type="checkbox" data-compare-id="${escapeHtml(p.id)}" ${checked} />
+                      <span>${isHe ? 'השווה' : 'Compare'}</span>
+                    </label>
+                    <a class="btn-ics-link" href="/api/v1/vacations/${encodeURIComponent(p.id)}/export.ics" download>
+                      📅 ${isHe ? 'ייצוא .ics' : 'Export .ics'}
+                    </a>
                   </div>
                 </div>
               </div>
-              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
-                ${elalBookBtnHtml}
-                <label style="font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                  <input type="checkbox" data-compare-id="${p.id}" ${checked} /> ${isHe ? 'השווה חלופה' : 'Compare'}
-                </label>
-                <a class="btn-secondary" href="/api/v1/vacations/${encodeURIComponent(p.id)}/export.ics" download style="text-decoration: none; font-size: 0.82rem; padding: 6px 12px; min-height: 34px; border-radius: 999px;">
-                  📅 ${isHe ? 'ייצוא .ics ליומן' : 'Export .ics'}
-                </a>
-              </div>
             </div>
 
-            <!-- Boarding-Pass Visual Flight Route Telemetry Bar -->
-            <div class="boarding-route-bar" dir="ltr">
-              <div class="route-endpoint">
-                <span class="route-iata">${it.origin_iata || 'TLV'}</span>
-                <span class="route-date">${it.departure_date}</span>
-                ${outFlightBadgeHtml}
-              </div>
-              <div class="route-arc-Track">
-                <span class="route-nights-pill">${it.trip_nights} ${isHe ? 'לילות חופשה' : 'Nights'} · ${stratText}</span>
-                <div class="route-arc-line">
-                  <span>●</span>
-                  <span class="route-arc-dash"></span>
-                  <span>✈️</span>
-                  <span class="route-arc-dash"></span>
-                  <span>●</span>
+            <div class="proposal-pass-footer">
+              ${twoPlusVerifyBannerHtml}
+              <details class="allocations-details">
+                <summary class="allocations-summary">
+                  🎫 ${isHe ? `פירוט הקצאת כרטיסי בונוס ומועדונים לכל נוסע (${allocList.length} נוסעים)` : `Per-Passenger Ticket & Club Allocation (${allocList.length} passengers)`}
+                </summary>
+                <div class="allocations-table-wrap">
+                  <table class="allocations-table">
+                    <thead>
+                      <tr>
+                        <th>${isHe ? 'נוסע' : 'Passenger'}</th>
+                        <th>${isHe ? 'מועדון' : 'Club'}</th>
+                        <th>${isHe ? 'סוג כרטיס ומחלקה' : 'Ticket Mode & Cabin'}</th>
+                        <th>${isHe ? 'נקודות' : 'Points'}</th>
+                        <th>${isHe ? 'מסים + השלמת מזומן' : 'Taxes + Cash'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>${allocRows}</tbody>
+                  </table>
                 </div>
-              </div>
-              <div class="route-endpoint route-endpoint-end">
-                <span class="route-iata">${returnOriginLabel}</span>
-                <span class="route-date">${it.return_date}</span>
-                ${inFlightBadgeHtml}
-              </div>
+              </details>
             </div>
-
-            <div class="boarding-perforation" aria-hidden="true"></div>
-
-            <div class="score-strip">
-              <span class="score-pill" style="background: #eff6ff; border-color: #93c5fd; color: #1e3a8a;">
-                ⭐ ${isHe ? 'ציון התאמה כללי:' : 'Overall Match Score:'} <strong dir="ltr">${Number(p.combined_trip_optimization_score).toFixed(1)}/100</strong>
-              </span>
-              <span class="score-pill" style="${wssPillStyle}">
-                🌤️ ${isHe ? 'ציון מזג אוויר:' : 'Weather Suitability:'} <strong dir="ltr">${wssVal.toFixed(1)}/100</strong>
-              </span>
-              <span class="score-pill">
-                🏖️ ${isHe ? 'ניצול ימי חופשה:' : 'Vacation Match:'} <strong dir="ltr">${Number(p.vacation_utilization_score).toFixed(1)}/100</strong>
-              </span>
-              <span class="score-pill">
-                💎 ${isHe ? 'כדאיות כרטיסי בונוס:' : 'Bonus Value Score:'} <strong dir="ltr">${Number(fbvsVal).toFixed(1)}/100</strong>
-              </span>
-              <span class="score-pill">
-                📈 ${isHe ? 'ימי חופשה לכל יום חופש הורה:' : 'Vacation per Parent PTO Day:'} <strong dir="ltr">פי ${Number(perVal).toFixed(1)}</strong>
-              </span>
-              <span class="score-pill">
-                🎒 ${isHe ? 'חיסור ממוסדות לימוד:' : 'School Days Missed:'} <strong>${Number(p.total_school_days_missed_across_children || 0)} ${isHe ? 'ימים סה״כ' : 'days total'}</strong>
-              </span>
-              <span class="score-pill">
-                🎫 ${isHe ? 'אסטרטגיית מימוש:' : 'Ticket Strategy:'} <strong>${stratText}</strong>
-              </span>
-              <span class="score-pill">
-                💳 ${isHe ? 'נקודות מועדון:' : 'Points Used:'} <strong dir="ltr">${Number(it.total_matmid_points || 0).toLocaleString()}</strong>
-              </span>
-              <span class="score-pill" style="background: #ecfdf5; border-color: #6ee7b7; color: #065f46;">
-                💰 ${isHe ? 'חיסכון כספי נטו:' : 'Net Cash Saved:'} <strong dir="ltr">$${Number(it.net_cash_saved_usd || 0).toFixed(0)} (${Number(it.cents_per_point_value || 0).toFixed(2)}¢ ${isHe ? 'לנקודה' : '/pt'})</strong>
-              </span>
-            </div>
-
-            ${weatherStripHtml}
-
-            ${twoPlusVerifyBannerHtml}
-
-            <p style="margin: 0; font-size: 0.88rem; color: var(--text-secondary);">
-              ${summaryText}
-            </p>
-
-            <details class="allocations-details">
-              <summary style="cursor: pointer; font-weight: 700; font-size: 0.85rem; color: var(--brand-primary);">
-                🎫 ${isHe ? `פירוט הקצאת כרטיסי בונוס ומועדונים לכל נוסע (${allocList.length} נוסעים)` : `Per-Passenger Ticket & Club Allocation (${allocList.length} passengers)`}
-              </summary>
-              <table class="allocations-table">
-                <thead>
-                  <tr>
-                    <th>${isHe ? 'נוסע' : 'Passenger'}</th>
-                    <th>${isHe ? 'מועדון' : 'Club'}</th>
-                    <th>${isHe ? 'סוג כרטיס ומחלקה' : 'Ticket Mode & Cabin'}</th>
-                    <th>${isHe ? 'נקודות' : 'Points'}</th>
-                    <th>${isHe ? 'מסים + השלמת מזומן' : 'Taxes + Cash'}</th>
-                  </tr>
-                </thead>
-                <tbody>${allocRows}</tbody>
-              </table>
-            </details>
           </article>
         `;
       })
       .join('');
+
+    const toggleFeedHtml =
+      totalCount > INITIAL_PROPOSALS_LIMIT
+        ? `
+          <div class="proposals-feed-toggle-wrap">
+            <button type="button" class="btn-secondary btn-feed-toggle" data-toggle-all-proposals="true">
+              ${
+                state.showAllProposals
+                  ? (isHe ? `הצג ${INITIAL_PROPOSALS_LIMIT} חלופות מובילות בלבד ▴` : `Show top ${INITIAL_PROPOSALS_LIMIT} proposals only ▴`)
+                  : (isHe ? `הצג את כל ${totalCount} החלופות ▾` : `Show all ${totalCount} proposals ▾`)
+              }
+            </button>
+          </div>
+        `
+        : '';
+
+    container.innerHTML = fallbackBannerHtml + cardsHtml + toggleFeedHtml;
+  }
+
+  function updateActiveModeBadge() {
+    const badge = document.getElementById('active-mode-badge');
+    if (!badge) return;
+    const isHe = state.locale === 'he';
+    const mode = state.dateSelectionMode;
+    if (mode === 'SPECIFIC_DATES') {
+      badge.textContent = isHe ? 'תאריכים ספציפיים (±גמישות)' : 'Exact Dates (±Flex)';
+    } else if (mode === 'MOE_VACATION_MAXIMIZATION') {
+      badge.textContent = isHe ? 'מקסום שנתי (משרד החינוך)' : 'Annual MoE Maximization';
+    } else {
+      badge.textContent = isHe ? 'תכנון לפי חג ושנה' : 'Holiday & Year Intent';
+    }
   }
 
   function setDateMode(mode) {
@@ -898,13 +1149,98 @@
     if (cMoe) cMoe.style.display = mode === 'MOE_VACATION_MAXIMIZATION' ? 'grid' : 'none';
     if (cSpec) cSpec.style.display = mode === 'SPECIFIC_DATES' ? 'grid' : 'none';
 
-    const badge = document.getElementById('active-mode-badge');
-    if (badge) {
-      if (mode === 'SPECIFIC_DATES') badge.textContent = 'תאריכים ספציפיים (ללא סנכרון בונוס חגים)';
-      else if (mode === 'MOE_VACATION_MAXIMIZATION') badge.textContent = 'מקסום שנתי (חופשות משרד החינוך)';
-      else badge.textContent = 'תכנון לפי חג ושנה';
-    }
+    updateActiveModeBadge();
     renderProfileControls();
+  }
+
+  function applyLocaleStrings() {
+    const isHe = state.locale === 'he';
+    const dataAttr = isHe ? 'data-he' : 'data-en';
+    const ariaAttr = isHe ? 'data-aria-he' : 'data-aria-en';
+
+    document.querySelectorAll('[data-he][data-en]').forEach((el) => {
+      const txt = el.getAttribute(dataAttr);
+      if (txt !== null) {
+        el.textContent = txt;
+      }
+    });
+
+    document.querySelectorAll('[data-aria-he][data-aria-en]').forEach((el) => {
+      const ariaTxt = el.getAttribute(ariaAttr);
+      if (ariaTxt) {
+        el.setAttribute('aria-label', ariaTxt);
+      }
+    });
+
+    document.title = isHe
+      ? 'מתכנן חופשות משפחתיות חכם | משרד החינוך וכרטיסי בונוס אל על'
+      : 'Smart Family Vacation Planner | MoE Breaks & EL AL Award Flights';
+
+    const headerTitle = document.getElementById('header-title');
+    if (headerTitle) {
+      headerTitle.textContent = isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner';
+    }
+    const headerSubtitle = document.getElementById('header-subtitle');
+    if (headerSubtitle) {
+      headerSubtitle.textContent = isHe
+        ? 'מקסום ימי חופשה של משרד החינוך, קייטנות ניצנים וכרטיסי בונוס בנקודות'
+        : 'Maximize MoE school holidays, Nitzanim camps & airline award flights';
+    }
+    const heroEyebrow = document.getElementById('hero-eyebrow');
+    if (heroEyebrow) {
+      heroEyebrow.textContent = isHe
+        ? '✈️ המראות מנתב״ג (TLV) · חופשות 2026–2029'
+        : '✈️ Departing TLV · Family Vacation Seasons 2026–2029';
+    }
+    const heroHeadline = document.getElementById('hero-headline');
+    if (heroHeadline) {
+      heroHeadline.textContent = isHe
+        ? 'הפכו כל חופשת בית ספר לחופשת חלומות משפחתית'
+        : 'Turn Every School Break Into a Family Escape';
+    }
+    const heroLead = document.getElementById('hero-lead');
+    if (heroLead) {
+      heroLead.textContent = isHe
+        ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס באל על ומועדוני תעופה — מקסימום חופשה במינימום ימי חופש מההורים.'
+        : 'Cross-references official MoE school breaks & Nitzanim camps with EL AL Matmid and partner loyalty seats — more vacation days for every parent PTO day.';
+    }
+    const vtTitle = document.getElementById('vacation-type-title');
+    if (vtTitle) {
+      vtTitle.textContent = isHe
+        ? '🌤️ סגנון חופשה ותיעדוף מזג אוויר ביעד:'
+        : '🌤️ Vacation Style & Destination Weather Prioritization:';
+    }
+    const vtHint = document.getElementById('vacation-type-hint');
+    if (vtHint) {
+      vtHint.textContent = isHe
+        ? 'בחרו סגנון חופשה אחד או יותר לתיעדוף מזג אוויר אידיאלי'
+        : 'Select one or more styles to prioritize ideal destination weather';
+    }
+    const zSearch = document.getElementById('zone-search-title');
+    if (zSearch) {
+      zSearch.textContent = isHe
+        ? '1. תכנון חופשה סביב חגים וחופשות משרד החינוך'
+        : '1. Holiday, Dates & Airline Search Controls';
+    }
+    const zProfile = document.getElementById('zone-profile-title');
+    if (zProfile) {
+      zProfile.textContent = isHe
+        ? '2. פרופיל משפחה, גילאי ילדים וארנקי מועדונים'
+        : '2. Family Profile, Children & Loyalty Wallets';
+    }
+    const zCalendar = document.getElementById('zone-calendar-title');
+    if (zCalendar) {
+      zCalendar.textContent = isHe
+        ? 'לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)'
+        : 'MoE Multi-Child Vacation Calendar (Optional View)';
+    }
+
+    updateActiveModeBadge();
+    setCalendarVisibility(state.isCalendarVisible, false);
+    renderProfileControls();
+    renderCalendarTable();
+    renderComparisonBanner();
+    renderProposals();
   }
 
   async function loadInitialData() {
@@ -921,7 +1257,6 @@
 
   async function runVacationSearch() {
     const destVal = (document.getElementById('select-destination') || {}).value || 'ROM';
-    syncDestinationPostcards(destVal);
     const airlineVal = (document.getElementById('select-airline-mode') || {}).value || 'EL_AL_ONLY';
     const holidayVal = (document.getElementById('select-direct-holiday') || {}).value || 'PESACH';
     const yearVal = Number((document.getElementById('select-direct-year') || {}).value || 2027);
@@ -957,12 +1292,30 @@
       weather_filter_mode: weatherModeVal
     };
 
-    const res = await apiSend('POST', '/api/v1/vacations/search', payload);
-    state.proposals = res.proposals || [];
-    state.statusMessageHe = res.status_message_he || null;
-    state.statusMessageEn = res.status_message_en || null;
-    state.weatherFallbackMessageHe = res.weather_fallback_message_he || null;
-    state.selectedProposalIds = new Set(state.proposals.slice(0, 2).map((p) => p.id));
+    state.validationErrorHe = null;
+    state.validationErrorEn = null;
+
+    try {
+      const res = await apiSend('POST', '/api/v1/vacations/search', payload);
+      state.proposals = res.proposals || [];
+      state.showAllProposals = false;
+      state.lastComparison = null;
+      state.statusMessageHe = res.status_message_he || null;
+      state.statusMessageEn = res.status_message_en || null;
+      state.weatherFallbackMessageHe = res.weather_fallback_message_he || null;
+      state.selectedProposalIds = new Set(state.proposals.slice(0, 2).map((p) => p.id));
+    } catch (err) {
+      const detail = extractApiErrorDetail(err);
+      const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
+      const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
+      state.proposals = [];
+      state.showAllProposals = false;
+      state.lastComparison = null;
+      state.selectedProposalIds = new Set();
+      state.validationErrorHe = `נא לוודא שטווח התאריכים ומספר הלילות בטופס החיפוש תקינים ולנסות שוב.${detailSuffixHe}`;
+      state.validationErrorEn = `Verify that the return date is on or after the departure date and the nights range is valid, then try again.${detailSuffixEn}`;
+    }
+    renderComparisonBanner();
     renderProposals();
   }
 
@@ -972,25 +1325,6 @@
         setDateMode(btn.getAttribute('data-mode'));
       });
     });
-
-    document.querySelectorAll('[data-dest-card]').forEach((cardBtn) => {
-      cardBtn.addEventListener('click', () => {
-        const iata = cardBtn.getAttribute('data-dest-card');
-        const selectDest = document.getElementById('select-destination');
-        if (selectDest && iata) {
-          selectDest.value = iata;
-          syncDestinationPostcards(iata);
-          runVacationSearch();
-        }
-      });
-    });
-
-    const selectDestEl = document.getElementById('select-destination');
-    if (selectDestEl) {
-      selectDestEl.addEventListener('change', () => {
-        syncDestinationPostcards(selectDestEl.value);
-      });
-    }
 
     document.querySelectorAll('[data-vacation-type]').forEach((pillBtn) => {
       pillBtn.addEventListener('click', () => {
@@ -1043,99 +1377,7 @@
           document.documentElement.setAttribute('lang', 'he');
           btnToggleLocale.textContent = 'EN / LTR';
         }
-        const isHe = state.locale === 'he';
-        const headerTitle = document.getElementById('header-title');
-        if (headerTitle) {
-          headerTitle.textContent = isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner';
-        }
-        const headerSubtitle = document.getElementById('header-subtitle');
-        if (headerSubtitle) {
-          headerSubtitle.textContent = isHe
-            ? 'מקסום ימי חופשה של משרד החינוך, קייטנות ניצנים וכרטיסי בונוס בנקודות'
-            : 'Maximize Ministry of Education holidays, Nitzanim camps & award flights';
-        }
-        const heroEyebrow = document.getElementById('hero-eyebrow');
-        if (heroEyebrow) {
-          heroEyebrow.textContent = isHe
-            ? '☀️ עונת החופשות המשפחתיות 2026–2029 · המראות מנתב״ג (TLV)'
-            : '☀️ Family Vacation Seasons 2026–2029 · Departing TLV';
-        }
-        const heroHeadline = document.getElementById('hero-headline');
-        if (heroHeadline) {
-          heroHeadline.textContent = isHe
-            ? 'הפכו כל חופשת בית ספר לחופשת חלומות משפחתית'
-            : 'Turn Every School Break Into a Dream Family Escape';
-        }
-        const heroLead = document.getElementById('hero-lead');
-        if (heroLead) {
-          heroLead.textContent = isHe
-            ? 'המערכת מצליבה בין לוח החופשות הרשמי של משרד החינוך (כולל גשרים וקייטנות ניצנים) לבין מושבי בונוס באל על ומועדוני תעופה — כדי שתטוסו יותר ותבזבזו פחות ימי חופש מהעבודה.'
-            : 'Cross-references official school vacation calendars & Nitzanim camps with El Al Matmid and partner airline award seats — so your family flies more while spending fewer parent PTO days.';
-        }
-        const destStripTitle = document.getElementById('dest-strip-title');
-        if (destStripTitle) {
-          destStripTitle.textContent = isHe
-            ? '🌍 לאן מתחשק לכם לטוס? לחצו על יעד לבדיקת חופשות וכרטיסי בונוס:'
-            : '🌍 Where to next? Click a destination to scan school breaks & bonus seats:';
-        }
-        const destStripHint = document.getElementById('dest-strip-hint');
-        if (destStripHint) {
-          destStripHint.textContent = isHe
-            ? 'בחירה מעדכנת מיד את תוצאות החיפוש'
-            : 'Selecting a postcard updates search results immediately';
-        }
-        document.querySelectorAll('[data-dest-card]').forEach((card) => {
-          const nameEl = card.querySelector('.dest-name');
-          const vibeEl = card.querySelector('.dest-vibe');
-          if (nameEl) nameEl.textContent = nameEl.getAttribute(isHe ? 'data-he' : 'data-en') || nameEl.textContent;
-          if (vibeEl) vibeEl.textContent = vibeEl.getAttribute(isHe ? 'data-he' : 'data-en') || vibeEl.textContent;
-        });
-
-        document.querySelectorAll('[data-vacation-type]').forEach((pillBtn) => {
-          const labelTxt = pillBtn.getAttribute(isHe ? 'data-he' : 'data-en');
-          if (labelTxt) pillBtn.textContent = labelTxt;
-        });
-        const vtTitle = document.getElementById('vacation-type-title');
-        if (vtTitle) {
-          vtTitle.textContent = isHe
-            ? '🌤️ סגנון חופשה ותיעדוף מזג אוויר ביעד:'
-            : '🌤️ Vacation Style & Destination Weather Prioritization:';
-        }
-        const vtHint = document.getElementById('vacation-type-hint');
-        if (vtHint) {
-          vtHint.textContent = isHe
-            ? 'בחרו סגנון חופשה אחד או יותר כדי לתעדף יעדים עם מזג אוויר אידיאלי לתאריכי החופשה'
-            : 'Select one or more vacation styles to prioritize destinations with ideal weather for your trip dates';
-        }
-
-        const zSearch = document.getElementById('zone-search-title');
-        if (zSearch) {
-          zSearch.textContent = isHe
-            ? '1. בחירת מצב תאריכים, חברת תעופה ויעד'
-            : '1. Select Date Mode, Airline & Destination';
-        }
-        const zProfile = document.getElementById('zone-profile-title');
-        if (zProfile) {
-          zProfile.textContent = isHe
-            ? '2. פרופיל משפחה, גילאי ומסגרות ילדים ונקודות מועדונים'
-            : '2. Family Profile, Children Frameworks & Loyalty Wallets';
-        }
-        const zCalendar = document.getElementById('zone-calendar-title');
-        if (zCalendar) {
-          zCalendar.textContent = isHe
-            ? 'לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)'
-            : 'MoE Multi-Child Vacation Calendar (Optional View)';
-        }
-        const zResults = document.getElementById('zone-results-title');
-        if (zResults) {
-          zResults.textContent = isHe
-            ? '3. תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס'
-            : '3. Search Results, Ranked Vacation Proposals & Bonus Fulfillment';
-        }
-        setCalendarVisibility(state.isCalendarVisible, false);
-        renderProfileControls();
-        renderCalendarTable();
-        renderProposals();
+        applyLocaleStrings();
       });
     }
 
@@ -1156,16 +1398,35 @@
           }
         });
         recalculateHouseholdPointsFromWallets();
-        state.profile = await apiSend('PUT', '/api/v1/profile', state.profile);
-        renderProfileControls();
-        await runVacationSearch();
+        state.validationErrorHe = null;
+        state.validationErrorEn = null;
+        try {
+          state.profile = await apiSend('PUT', '/api/v1/profile', state.profile);
+          renderProfileControls();
+          await runVacationSearch();
+        } catch (err) {
+          const detail = extractApiErrorDetail(err);
+          const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
+          const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
+          state.proposals = [];
+          state.lastComparison = null;
+          state.selectedProposalIds = new Set();
+          state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18) ומספר המבוגרים (1–6) תקינים.${detailSuffixHe}`;
+          state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative points.${detailSuffixEn}`;
+          renderComparisonBanner();
+          renderProposals();
+        }
       });
     }
 
     const btnAddChild = document.getElementById('btn-add-child');
     if (btnAddChild) {
-      btnAddChild.addEventListener('click', () => {
+      btnAddChild.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
         if (!state.profile) return;
+        const detailsEl = btnAddChild.closest('details');
+        if (detailsEl) detailsEl.open = true;
         const nextIdx = state.profile.children.length + 1;
         const defaultAge = 7;
         state.profile.children.push({
@@ -1185,14 +1446,18 @@
 
     const btnAddWallet = document.getElementById('btn-add-wallet');
     if (btnAddWallet) {
-      btnAddWallet.addEventListener('click', () => {
+      btnAddWallet.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
         if (!state.profile) return;
+        const detailsEl = btnAddWallet.closest('details');
+        if (detailsEl) detailsEl.open = true;
         const nextIdx = (state.profile.passenger_loyalty_wallets || []).length + 1;
         const adultNum = Math.max(1, ((nextIdx - 1) % Math.max(1, state.profile.adults_count || 2)) + 1);
         state.profile.passenger_loyalty_wallets.push({
           id: `wallet-custom-${Date.now()}`,
           passenger_id: `ADULT_${adultNum}`,
-          passenger_name: `הורה ${adultNum}`,
+          passenger_name: state.locale === 'he' ? `הורה ${adultNum}` : `Parent ${adultNum}`,
           program_code: 'ELAL_MATMID',
           available_points: 45000,
           can_pool_with_family: true,
@@ -1219,8 +1484,10 @@
         }
       } else if (target.hasAttribute('data-wallet-name')) {
         const idx = Number(target.getAttribute('data-wallet-name'));
-        if (state.profile.passenger_loyalty_wallets[idx]) {
-          state.profile.passenger_loyalty_wallets[idx].passenger_name = target.value;
+        const w = state.profile.passenger_loyalty_wallets[idx];
+        if (w) {
+          userEditedWalletKeys.add(getWalletKey(w, idx));
+          w.passenger_name = target.value;
         }
       }
     });
@@ -1244,8 +1511,10 @@
         state.profile.children[idx].framework_type = val === '' ? null : val;
       } else if (target.hasAttribute('data-wallet-name')) {
         const idx = Number(target.getAttribute('data-wallet-name'));
-        if (state.profile.passenger_loyalty_wallets[idx]) {
-          state.profile.passenger_loyalty_wallets[idx].passenger_name = target.value;
+        const w = state.profile.passenger_loyalty_wallets[idx];
+        if (w) {
+          userEditedWalletKeys.add(getWalletKey(w, idx));
+          w.passenger_name = target.value;
           renderProfileControls();
         }
       } else if (target.hasAttribute('data-wallet-prog')) {
@@ -1265,7 +1534,14 @@
 
     document.body.addEventListener('click', (ev) => {
       const target = ev.target;
-      if (!target || !state.profile) return;
+      if (!target) return;
+      const toggleFeedBtn = target.closest('[data-toggle-all-proposals]');
+      if (toggleFeedBtn) {
+        state.showAllProposals = !state.showAllProposals;
+        renderProposals();
+        return;
+      }
+      if (!state.profile) return;
       const removeChildBtn = target.closest('[data-remove-child]');
       if (removeChildBtn) {
         const idx = Number(removeChildBtn.getAttribute('data-remove-child'));
@@ -1285,25 +1561,33 @@
     const btnSyncMoe = document.getElementById('btn-sync-moe-year');
     if (btnSyncMoe) {
       btnSyncMoe.addEventListener('click', async () => {
-        const sy = (document.getElementById('select-school-year') || {}).value || '2027-2028';
-        await apiSend('POST', `/api/v1/moe-calendar/sync/${sy}`, { force_remote_check: false });
-        state.calendarData = await apiGet(`/api/v1/moe-calendar/${sy}`);
-        renderCalendarTable();
+        try {
+          const sy = (document.getElementById('select-school-year') || {}).value || '2027-2028';
+          await apiSend('POST', `/api/v1/moe-calendar/sync/${sy}`, { force_remote_check: false });
+          state.calendarData = await apiGet(`/api/v1/moe-calendar/${sy}`);
+          renderCalendarTable();
+        } catch (err) {
+          console.error('MoE calendar sync failed:', err);
+        }
       });
     }
 
     const btnSyncElal = document.getElementById('btn-sync-elal');
     if (btnSyncElal) {
       btnSyncElal.addEventListener('click', async () => {
-        const destVal = (document.getElementById('select-destination') || {}).value || 'ROM';
-        await apiSend('POST', '/api/v1/elal-bonus/sync', {
-          destinations: [destVal],
-          start_date: '2027-04-10',
-          end_date: '2027-04-28',
-          origin: 'TLV',
-          force_refresh: true
-        });
-        await runVacationSearch();
+        try {
+          const destVal = (document.getElementById('select-destination') || {}).value || 'ROM';
+          await apiSend('POST', '/api/v1/elal-bonus/sync', {
+            destinations: [destVal],
+            start_date: '2027-04-10',
+            end_date: '2027-04-28',
+            origin: 'TLV',
+            force_refresh: true
+          });
+          await runVacationSearch();
+        } catch (err) {
+          console.error('EL AL sync failed:', err);
+        }
       });
     }
 
@@ -1312,16 +1596,11 @@
       btnCompare.addEventListener('click', async () => {
         const ids = Array.from(state.selectedProposalIds);
         if (ids.length === 0) return;
-        const cmp = await apiSend('POST', '/api/v1/vacations/compare', { proposal_ids: ids });
-        const banner = document.getElementById('comparison-banner-container');
-        if (banner) {
-          banner.style.display = 'block';
-          banner.innerHTML = `
-            <div class="proposal-card" style="border-inline-start-color: #10b981; background: #ecfdf5;">
-              <strong>⚖️ תוצאת השוואת חלופות:</strong>
-              <p style="margin: 4px 0 0 0; font-size: 0.88rem;">${cmp.summary_he || ''}</p>
-            </div>
-          `;
+        try {
+          state.lastComparison = await apiSend('POST', '/api/v1/vacations/compare', { proposal_ids: ids });
+          renderComparisonBanner();
+        } catch (err) {
+          console.error('Comparison failed:', err);
         }
       });
     }

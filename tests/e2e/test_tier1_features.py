@@ -3454,19 +3454,66 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
     def test_f31_2_responsive_css_mobile_360_430_and_desktop_1280_breakpoints_and_logical_rtl(
         self,
     ) -> None:
+        import re
+
         css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
         self.assertIn("@media", css)
         self.assertIn("sticky", css)
         self.assertTrue("inset-inline" in css or "margin-inline" in css or "padding-inline" in css)
-        # Verify single-column sequential desktop workspace layout rules & absence of mobile constraints
-        self.assertIn("grid-template-columns: minmax(0, 1fr)", css)
-        self.assertIn("max-width: 1200px", css)
         self.assertNotIn("padding-block: 18px 88px", css)
         self.assertNotIn("scroll-snap-type: x mandatory", css)
         self.assertRegex(css, r"\.mobile-bottom-nav\s*\{[^}]*display:\s*none\s*!important")
         self.assertRegex(css, r"\.mode-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)")
         self.assertRegex(css, r"\.form-grid-2\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)")
         self.assertRegex(css, r"\.form-grid-3\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)")
+
+        # Verify the workspace shell layout that is really rendered: one column on mobile/tablet (360..1179px)
+        # and control rail + deal stream side by side from 1180px (1280x800, 1440x900, wide desktop).
+        # The shell is styled by ONE selector (`.dashboard-shell`) with mobile-first `@media (min-width: Npx)`
+        # overrides only, so applying its declarations in source order is exactly what a browser computes.
+        clean_css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        self.assertNotRegex(clean_css, r"@media[^{]*max-width")
+        all_selectors = [s.strip() for group in re.findall(r"([^{}]+)\{[^{}]*\}", clean_css) for s in group.split(",")]
+        self.assertEqual({s for s in all_selectors if "dashboard-shell" in s}, {".dashboard-shell"})
+        block_pattern = re.compile(r"@media([^{]*)\{((?:[^{}]*\{[^{}]*\})*)[^{}]*\}|([^{}@]+)\{([^{}]*)\}")
+
+        def shell_style_at(vp_width: int) -> dict[str, str]:
+            style: dict[str, str] = {}
+            for block in block_pattern.finditer(clean_css):
+                if block.group(1) is not None:
+                    min_width = re.search(r"min-width:\s*(\d+)px", block.group(1))
+                    if min_width is None or vp_width < int(min_width.group(1)):
+                        continue
+                    rules = re.findall(r"([^{}]+)\{([^{}]*)\}", block.group(2))
+                else:
+                    rules = [(block.group(3), block.group(4))]
+                for selector_text, declarations in rules:
+                    if ".dashboard-shell" not in [s.strip() for s in selector_text.split(",")]:
+                        continue
+                    for declaration in declarations.split(";"):
+                        if ":" in declaration:
+                            prop, value = declaration.split(":", 1)
+                            style[prop.strip()] = value.strip()
+            return style
+
+        for vp_width in (360, 430, 768, 1024, 1179):
+            narrow = shell_style_at(vp_width)
+            self.assertEqual(narrow.get("display"), "grid")
+            self.assertEqual(
+                narrow.get("grid-template-columns"), "minmax(0, 1fr)", f"single column expected at {vp_width}px"
+            )
+        for vp_width, expected_tracks in (
+            (1180, "424px minmax(0, 1fr)"),
+            (1280, "428px minmax(0, 1fr)"),
+            (1440, "472px minmax(0, 1fr)"),
+            (1920, "472px minmax(0, 1fr)"),
+        ):
+            wide = shell_style_at(vp_width)
+            self.assertEqual(wide.get("display"), "grid")
+            self.assertEqual(
+                wide.get("grid-template-columns"), expected_tracks, f"two columns expected at {vp_width}px"
+            )
+            self.assertEqual(wide.get("max-width"), "1640px")
 
     def test_f31_3_frontend_app_js_and_domain_ts_cover_all_modes_frameworks_and_clubs(
         self,
