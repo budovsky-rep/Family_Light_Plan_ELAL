@@ -2037,6 +2037,219 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         finally:
             guard_router.repository.close()
 
+    def test_sharded_5day_windows_sold_out_reconciliation_and_sync_token_auth(
+        self,
+    ) -> None:
+        """27. Verify:
+        (a) Uniform 5-day sharding (`build_sharded_rolling_windows`) partitions 350 days into 5 drift-free daily shards of 5 windows each.
+        (b) Batch-scoped `reconcile_slices` removes sold-out (`0` seat) flights and updates reduced seat counts (`2+` -> `1`) while leaving unscanned destinations/cabins untouched.
+        (c) `ELAL_SYNC_API_TOKEN` enforces `401` on unauthorized sync attempts and accepts valid `Bearer` tokens.
+        """
+        from datetime import timedelta
+        import os
+        import tempfile
+        from backend.app.main import VacationPlannerTestClient
+        from scripts.sync_elal_to_server import (
+            _save_shard_state,
+            build_sharded_rolling_windows,
+            build_single_target_date_window,
+            resolve_sharded_plan,
+        )
+
+        # (a) Persistent resume state continues cleanly from where it stopped across outages,
+        # never skipping intermediate shards even if the machine was off for 5+ days.
+        tmp_state_dir = tempfile.mkdtemp(prefix="fvp_shard_state_")
+        try:
+            st_path = Path(tmp_state_dir) / "shard_state.json"
+            day0 = date(2026, 11, 23)
+            w0, idx0, tot0, anc0 = resolve_sharded_plan(st_path, today_override=day0)
+            self.assertEqual((idx0, tot0, anc0, len(w0)), (0, 5, day0, 5))
+            _save_shard_state(st_path, anc0, tot0, idx0)
+
+            # Machine offline for 5 days (now day0 + 5 days): must resume at shard 1 (NOT repeat shard 0!),
+            # preserving cycle anchor so windows 6..10 are covered without gaps.
+            day5 = day0 + timedelta(days=5)
+            w1, idx1, tot1, anc1 = resolve_sharded_plan(st_path, today_override=day5)
+            self.assertEqual((idx1, tot1, anc1, len(w1)), (1, 5, day0, 5))
+            self.assertEqual(w1[0]["local_start"], (day0 + timedelta(days=5 * 14)).isoformat())
+
+            # Complete shards 1, 2, 3, 4; verify wrap-around back to shard 0 advances cycle_anchor to today!
+            for s_idx in (1, 2, 3, 4):
+                _save_shard_state(st_path, anc1, 5, s_idx)
+            day10 = day0 + timedelta(days=10)
+            w_wrap, idx_wrap, _, anc_wrap = resolve_sharded_plan(st_path, today_override=day10)
+            self.assertEqual((idx_wrap, anc_wrap, len(w_wrap)), (0, day10, 5))
+        finally:
+            import shutil
+            shutil.rmtree(tmp_state_dir, ignore_errors=True)
+
+        single_w = build_single_target_date_window("2027-04-18")
+        self.assertEqual(len(single_w), 1)
+        self.assertEqual(single_w[0]["local_start"], "2027-04-18")
+        self.assertEqual(single_w[0]["local_end"], "2027-05-02")
+
+        # (b) & (c) Sold-out reconciliation + optional Bearer token auth
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        old_tok = os.environ.get("ELAL_SYNC_API_TOKEN")
+        tmp_dir = tempfile.mkdtemp(prefix="fvp_reconcile_test_")
+        try:
+            os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
+            os.environ.pop("ELAL_SYNC_API_TOKEN", None)
+            db_p = os.path.join(tmp_dir, "reconcile.sqlite")
+            client = VacationPlannerTestClient(db_path=db_p)
+
+            # Initial sync: FCO (2027-05-10 E=2, A=1; 2027-05-17 E=2) + ATH (2027-05-10 E=2)
+            init_resp = client.post(
+                "/api/v1/elal-bonus/sync",
+                json={
+                    "origin": "TLV",
+                    "destinations": ["FCO", "ATH"],
+                    "start_date": "2027-05-09",
+                    "end_date": "2027-05-20",
+                    "rbd_payload": [
+                        {
+                            "destination_iata": "FCO",
+                            "direction": "OUTBOUND",
+                            "flight_number": "LY381",
+                            "flight_date": "2027-05-10",
+                            "economy_seats": "2+",
+                            "premium_seats": 1,
+                        },
+                        {
+                            "destination_iata": "FCO",
+                            "direction": "INBOUND",
+                            "flight_number": "LY384",
+                            "flight_date": "2027-05-17",
+                            "economy_seats": "2+",
+                        },
+                        {
+                            "destination_iata": "ATH",
+                            "direction": "OUTBOUND",
+                            "flight_number": "LY541",
+                            "flight_date": "2027-05-10",
+                            "economy_seats": "2+",
+                        },
+                    ],
+                },
+            )
+            self.assertEqual(init_resp.status_code, 200)
+
+            # Verify search finds FCO round-trip before booking/sell-out
+            s_before = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-05-10",
+                    "specific_return_date": "2027-05-17",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["FCO"],
+                },
+            ).json()
+            self.assertGreater(s_before["count"], 0)
+
+            # Now user books LY384 (2027-05-17 sold out to 0!) and LY381 Economy drops from 2+ to 1 seat,
+            # while ONLY Economy ("E") on FCO is re-scanned (Premium "A" on LY381 and ATH must remain intact!)
+            rec_resp = client.post(
+                "/api/v1/elal-bonus/sync",
+                json={
+                    "origin": "TLV",
+                    "destinations": ["FCO"],
+                    "start_date": "2027-05-09",
+                    "end_date": "2027-05-20",
+                    "reconcile_slices": [
+                        {
+                            "destinations": ["FCO"],
+                            "start_date": "2027-05-09",
+                            "end_date": "2027-05-20",
+                            "cabins": ["E"],
+                        }
+                    ],
+                    "rbd_payload": [
+                        {
+                            "destination_iata": "FCO",
+                            "direction": "OUTBOUND",
+                            "flight_number": "LY381",
+                            "flight_date": "2027-05-10",
+                            "economy_seats": 1,
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(rec_resp.status_code, 200)
+            self.assertEqual(rec_resp.json()["records_reconciled"], 2)
+
+            # Sold-out LY384 inbound is completely removed -> FCO round-trip proposal disappears!
+            s_after = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-05-10",
+                    "specific_return_date": "2027-05-17",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["FCO"],
+                },
+            ).json()
+            self.assertEqual(s_after["count"], 0)
+
+            # Un-scanned cabin ("A" on LY381 = 1 seat) and un-scanned destination (ATH = 2 seats) remain intact,
+            # and LY381 Economy dropped cleanly from 2 to 1!
+            cached_fco = client.router.repository.get_cached_elal_bonus(
+                destinations=["FCO"],
+                start_date=date(2027, 5, 9),
+                end_date=date(2027, 5, 20),
+            )
+            self.assertEqual(len(cached_fco), 1)
+            self.assertEqual(cached_fco[0].flight_number, "LY381")
+            self.assertEqual(cached_fco[0].economy_award_seats, 1)
+            self.assertEqual(cached_fco[0].premium_award_seats, 1)
+
+            cached_ath = client.router.repository.get_cached_elal_bonus(
+                destinations=["ATH"],
+                start_date=date(2027, 5, 9),
+                end_date=date(2027, 5, 20),
+            )
+            self.assertEqual(len(cached_ath), 1)
+            self.assertEqual(cached_ath[0].economy_award_seats, 2)
+
+            # (c) Enable ELAL_SYNC_API_TOKEN and verify 401 vs 200
+            os.environ["ELAL_SYNC_API_TOKEN"] = "secret-sync-token-123"
+            st_401, _, _ = client.router.dispatch(
+                "POST",
+                "/api/v1/elal-bonus/sync",
+                json_body={"destinations": ["FCO"]},
+                request_headers={},
+            )
+            self.assertEqual(st_401, 401)
+            st_200, _, _ = client.router.dispatch(
+                "POST",
+                "/api/v1/elal-bonus/sync",
+                json_body={
+                    "destinations": ["FCO"],
+                    "reconcile_slices": [
+                        {
+                            "destinations": ["FCO"],
+                            "start_date": "2027-05-09",
+                            "end_date": "2027-05-20",
+                            "cabins": ["E", "A"],
+                        }
+                    ],
+                },
+                request_headers={"authorization": "Bearer secret-sync-token-123"},
+            )
+            self.assertEqual(st_200, 200)
+            client.router.repository.close()
+        finally:
+            if old_live is None:
+                os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            else:
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_live
+            if old_tok is None:
+                os.environ.pop("ELAL_SYNC_API_TOKEN", None)
+            else:
+                os.environ["ELAL_SYNC_API_TOKEN"] = old_tok
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

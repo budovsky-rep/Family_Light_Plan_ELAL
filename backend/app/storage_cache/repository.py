@@ -692,6 +692,144 @@ class SQLiteRepository:
                 )
         return len(parsed)
 
+    def reconcile_live_bonus_slices(
+        self,
+        slices: list[dict[str, Any]],
+    ) -> int:
+        """Zero out or delete stale `#live` bonus rows within verified scanned slices before re-importing.
+
+        Each slice in `slices` contains:
+        - `destinations`: list of 3-letter airport IATA codes actually scanned in this batch
+        - `start_date`: `date` or `'YYYY-MM-DD'` inclusive start of scanned window
+        - `end_date`: `date` or `'YYYY-MM-DD'` inclusive end of scanned window
+        - `cabins`: list of queried RBD cabin buckets (`'E'`, `'A'`, `'I'`)
+        """
+        if not slices:
+            return 0
+
+        reconciled_total = 0
+        with self.connection() as conn:
+            for sl in slices:
+                dests = [
+                    str(d).strip().upper()
+                    for d in (sl.get("destinations") or [])
+                    if str(d).strip()
+                ]
+                if not dests:
+                    continue
+                s_raw = sl.get("start_date")
+                e_raw = sl.get("end_date")
+                start_iso = (
+                    s_raw.isoformat()
+                    if isinstance(s_raw, date)
+                    else str(s_raw)[:10]
+                )
+                end_iso = (
+                    e_raw.isoformat()
+                    if isinstance(e_raw, date)
+                    else str(e_raw)[:10]
+                )
+                cabins = {
+                    str(c).strip().upper()
+                    for c in (sl.get("cabins") or ["E", "A"])
+                    if str(c).strip()
+                }
+                if not cabins:
+                    continue
+
+                placeholders = ",".join("?" for _ in dests)
+                params: list[Any] = [start_iso, end_iso, *dests, *dests]
+                rows = conn.execute(
+                    f"""
+                    SELECT id,
+                           economy_award_seats, economy_seats_is_two_plus,
+                           premium_award_seats, premium_seats_is_two_plus,
+                           business_award_seats, business_seats_is_two_plus
+                    FROM elal_bonus_availability
+                    WHERE source_url LIKE '%#live%'
+                      AND flight_date >= ?
+                      AND flight_date <= ?
+                      AND (
+                          (direction = 'OUTBOUND' AND destination_iata IN ({placeholders}))
+                          OR (direction = 'INBOUND' AND origin_iata IN ({placeholders}))
+                      )
+                    """,
+                    params,
+                ).fetchall()
+
+                if not rows:
+                    continue
+
+                delete_ids: list[str] = []
+                updates: list[tuple[int, int, int, int, int, int, str]] = []
+                touched_ids: list[str] = []
+
+                for r in rows:
+                    rid = str(r["id"])
+                    e_seats = 0 if "E" in cabins else int(r["economy_award_seats"] or 0)
+                    e_two = 0 if "E" in cabins else int(r["economy_seats_is_two_plus"] or 0)
+                    p_seats = 0 if "A" in cabins else int(r["premium_award_seats"] or 0)
+                    p_two = 0 if "A" in cabins else int(r["premium_seats_is_two_plus"] or 0)
+                    b_seats = 0 if "I" in cabins else int(r["business_award_seats"] or 0)
+                    b_two = 0 if "I" in cabins else int(r["business_seats_is_two_plus"] or 0)
+
+                    touched_ids.append(rid)
+                    if e_seats <= 0 and p_seats <= 0 and b_seats <= 0:
+                        delete_ids.append(rid)
+                    else:
+                        updates.append((e_seats, e_two, p_seats, p_two, b_seats, b_two, rid))
+
+                # Remove any cached itineraries/proposals referencing modified/sold-out bonus rows
+                for chunk_start in range(0, len(touched_ids), 400):
+                    id_chunk = touched_ids[chunk_start : chunk_start + 400]
+                    id_ph = ",".join("?" for _ in id_chunk)
+                    conn.execute(
+                        f"""
+                        DELETE FROM vacation_option_proposals
+                        WHERE itinerary_id IN (
+                            SELECT id FROM flight_itineraries
+                            WHERE outbound_bonus_id IN ({id_ph})
+                               OR inbound_bonus_id IN ({id_ph})
+                        )
+                        """,
+                        [*id_chunk, *id_chunk],
+                    )
+                    conn.execute(
+                        f"""
+                        DELETE FROM flight_itineraries
+                        WHERE outbound_bonus_id IN ({id_ph})
+                           OR inbound_bonus_id IN ({id_ph})
+                        """,
+                        [*id_chunk, *id_chunk],
+                    )
+
+                for upd in updates:
+                    conn.execute(
+                        """
+                        UPDATE elal_bonus_availability
+                        SET economy_award_seats = ?,
+                            economy_seats_is_two_plus = ?,
+                            premium_award_seats = ?,
+                            premium_seats_is_two_plus = ?,
+                            business_award_seats = ?,
+                            business_seats_is_two_plus = ?
+                        WHERE id = ?
+                        """,
+                        upd,
+                    )
+
+                for chunk_start in range(0, len(delete_ids), 400):
+                    del_chunk = delete_ids[chunk_start : chunk_start + 400]
+                    del_ph = ",".join("?" for _ in del_chunk)
+                    conn.execute(
+                        f"DELETE FROM elal_bonus_availability WHERE id IN ({del_ph})",
+                        del_chunk,
+                    )
+
+                reconciled_total += len(touched_ids)
+
+        return reconciled_total
+
     def get_commercial_flights(
         self,
         origin: str,

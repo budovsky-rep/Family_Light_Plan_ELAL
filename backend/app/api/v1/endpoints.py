@@ -21,8 +21,10 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+import hmac
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -213,6 +215,64 @@ def _validate_rbd_payload_strict(raw_payload: Any) -> None:
             raise ValueError(
                 f"rbd_payload[{idx}] must contain 'AccumulatedOutput' or flight date fields"
             )
+
+
+def _validate_reconcile_slices_strict(
+    raw_slices: Any,
+    expand_metro_fn: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_slices, list):
+        raise ValueError("reconcile_slices must be a list of slice objects")
+    if len(raw_slices) > 200:
+        raise ValueError("reconcile_slices exceeds maximum list length (200)")
+    allowed_cabins = {"E", "A", "I"}
+    validated: list[dict[str, Any]] = []
+    for idx, sl in enumerate(raw_slices):
+        if not isinstance(sl, dict):
+            raise ValueError(f"reconcile_slices[{idx}] must be an object")
+        dest_codes = _validate_destination_codes_strict(
+            sl.get("destinations"),
+            f"reconcile_slices[{idx}].destinations",
+            allow_csv_str=True,
+        )
+        expanded_dests = expand_metro_fn(dest_codes)
+        s_date = _parse_iso_date_strict(
+            sl.get("start_date"), f"reconcile_slices[{idx}].start_date"
+        )
+        e_date = _parse_iso_date_strict(
+            sl.get("end_date"), f"reconcile_slices[{idx}].end_date"
+        )
+        if e_date < s_date:
+            raise ValueError(
+                f"reconcile_slices[{idx}].end_date ({e_date}) must be >= start_date ({s_date})"
+            )
+        raw_cabins = sl.get("cabins", ["E", "A"])
+        if not isinstance(raw_cabins, list) or not raw_cabins or len(raw_cabins) > 10:
+            raise ValueError(
+                f"reconcile_slices[{idx}].cabins must be a non-empty list of cabin codes"
+            )
+        cabins: list[str] = []
+        for c_item in raw_cabins:
+            if not isinstance(c_item, str):
+                raise ValueError(
+                    f"reconcile_slices[{idx}].cabins items must be strings"
+                )
+            cu = c_item.strip().upper()
+            if cu not in allowed_cabins:
+                raise ValueError(
+                    f"Invalid cabin code in reconcile_slices[{idx}].cabins: {c_item!r}"
+                )
+            if cu not in cabins:
+                cabins.append(cu)
+        validated.append(
+            {
+                "destinations": expanded_dests,
+                "start_date": s_date,
+                "end_date": e_date,
+                "cabins": cabins,
+            }
+        )
+    return validated
 
 
 def _parse_strict_float(
@@ -1028,6 +1088,7 @@ class VacationPlannerAPIRouter:
         raw_path: str,
         query_params: Optional[dict[str, str]] = None,
         json_body: Optional[dict[str, Any]] = None,
+        request_headers: Optional[dict[str, str]] = None,
     ) -> tuple[int, dict[str, str], str]:
         """Dispatch an API request and return `(status_code, headers, body_text)`."""
         parsed = urllib.parse.urlsplit(raw_path)
@@ -1200,6 +1261,27 @@ class VacationPlannerAPIRouter:
                 if not isinstance(json_body, dict):
                     raise ValueError("Request body must be a JSON object")
                 body = dict(json_body)
+
+                required_token = os.environ.get("ELAL_SYNC_API_TOKEN", "").strip()
+                if required_token:
+                    hdrs = {
+                        str(k).lower(): str(v)
+                        for k, v in (request_headers or {}).items()
+                    }
+                    auth_val = hdrs.get("authorization", "").strip()
+                    provided_token = ""
+                    if auth_val.lower().startswith("bearer "):
+                        provided_token = auth_val[7:].strip()
+                    elif isinstance(body.get("sync_token"), str):
+                        provided_token = body["sync_token"].strip()
+                    if not provided_token or not hmac.compare_digest(
+                        provided_token, required_token
+                    ):
+                        return (
+                            401,
+                            json_headers,
+                            json.dumps({"error": "Unauthorized sync token"}),
+                        )
                 destinations: Optional[list[str]] = None
                 if "destinations" in body:
                     destinations = _validate_destination_codes_strict(
@@ -1256,6 +1338,19 @@ class VacationPlannerAPIRouter:
 
                 expanded = self.elal_adapter.expand_metro_iatas(destinations)
 
+                reconciled_cnt = 0
+                has_reconcile_slices = (
+                    "reconcile_slices" in body and body["reconcile_slices"] is not None
+                )
+                if has_reconcile_slices:
+                    validated_slices = _validate_reconcile_slices_strict(
+                        body["reconcile_slices"],
+                        self.elal_adapter.expand_metro_iatas,
+                    )
+                    reconciled_cnt = self.repository.reconcile_live_bonus_slices(
+                        validated_slices
+                    )
+
                 # If caller provided an external `rbd_payload` (e.g. from browser/partner sync), validate & import it directly
                 if "rbd_payload" in body and body["rbd_payload"] is not None:
                     _validate_rbd_payload_strict(body["rbd_payload"])
@@ -1275,8 +1370,27 @@ class VacationPlannerAPIRouter:
                         "start_date": start_d.isoformat(),
                         "end_date": end_d.isoformat(),
                         "records_synced": len(imported_rows),
+                        "records_reconciled": reconciled_cnt,
                         "live_fetch_status": "IMPORTED_LIVE_PAYLOAD" if imported_rows else "NO_FLIGHTS_FETCHED",
                         "availability": [r.to_dict() for r in imported_rows],
+                    }
+                    return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
+
+                if has_reconcile_slices:
+                    resp_payload = {
+                        "status": "ok",
+                        "origin": origin,
+                        "requested_destination": destinations[0]
+                        if len(destinations) == 1
+                        else ",".join(destinations),
+                        "requested_destinations": destinations,
+                        "expanded_destinations": expanded,
+                        "start_date": start_d.isoformat(),
+                        "end_date": end_d.isoformat(),
+                        "records_synced": 0,
+                        "records_reconciled": reconciled_cnt,
+                        "live_fetch_status": "RECONCILED_EMPTY_SLICE",
+                        "availability": [],
                     }
                     return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
 

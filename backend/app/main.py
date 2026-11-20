@@ -210,7 +210,9 @@ def create_http_server(
             self.send_header(
                 "Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS"
             )
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header(
+                "Access-Control-Allow-Headers", "Content-Type, Authorization"
+            )
             self.send_header("Content-Length", str(len(payload_bytes)))
             self.end_headers()
             self.wfile.write(payload_bytes)
@@ -228,12 +230,17 @@ def create_http_server(
                 return {}
             return json.loads(raw)
 
+        def _normalized_headers(self) -> dict[str, str]:
+            return {str(k).lower(): str(v) for k, v in self.headers.items()}
+
         def do_OPTIONS(self) -> None:  # noqa: N802
             self._send_response(204, {}, b"")
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path.startswith("/api/"):
-                status, headers, body = router.dispatch("GET", self.path)
+                status, headers, body = router.dispatch(
+                    "GET", self.path, request_headers=self._normalized_headers()
+                )
             else:
                 status, headers, body = serve_static_asset(self.path)
             self._send_response(status, headers, body)
@@ -249,7 +256,10 @@ def create_http_server(
                 )
                 return
             status, headers, body = router.dispatch(
-                "POST", self.path, json_body=json_body
+                "POST",
+                self.path,
+                json_body=json_body,
+                request_headers=self._normalized_headers(),
             )
             self._send_response(status, headers, body)
 
@@ -264,7 +274,10 @@ def create_http_server(
                 )
                 return
             status, headers, body = router.dispatch(
-                "PUT", self.path, json_body=json_body
+                "PUT",
+                self.path,
+                json_body=json_body,
+                request_headers=self._normalized_headers(),
             )
             self._send_response(status, headers, body)
 

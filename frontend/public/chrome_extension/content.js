@@ -43,89 +43,47 @@
     { name: "Premium", rbd: "A" }
   ];
 
-  // 16×14-day Israeli Holiday & MoE School Vacation windows (endDate - startDate == 14 days)
-  const YEARLY_HOLIDAY_WINDOWS = [
-    {
-      label: "חנוכה 2026 (א')",
-      startIso: "2026-12-01T21:00:00.000Z",
-      endIso: "2026-12-15T21:00:00.000Z"
-    },
-    {
-      label: "חנוכה 2026 (ב')",
-      startIso: "2026-12-06T21:00:00.000Z",
-      endIso: "2026-12-20T21:00:00.000Z"
-    },
-    {
-      label: "פורים 2027",
-      startIso: "2027-03-16T21:00:00.000Z",
-      endIso: "2027-03-30T21:00:00.000Z"
-    },
-    {
-      label: "פסח 2027 (לפני ליל הסדר וניצנים)",
-      startIso: "2027-04-07T21:00:00.000Z",
-      endIso: "2027-04-21T21:00:00.000Z"
-    },
-    {
-      label: "פסח 2027 (חול המועד וחג שני)",
-      startIso: "2027-04-19T21:00:00.000Z",
-      endIso: "2027-05-03T21:00:00.000Z"
-    },
-    {
-      label: "יום העצמאות 2027",
-      startIso: "2027-05-05T21:00:00.000Z",
-      endIso: "2027-05-19T21:00:00.000Z"
-    },
-    {
-      label: "שבועות 2027",
-      startIso: "2027-06-04T21:00:00.000Z",
-      endIso: "2027-06-18T21:00:00.000Z"
-    },
-    {
-      label: "סוף יוני 2027 (חטיבות ותיכונים)",
-      startIso: "2027-06-18T21:00:00.000Z",
-      endIso: "2027-07-02T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — יולי 2027 (א')",
-      startIso: "2027-07-02T21:00:00.000Z",
-      endIso: "2027-07-16T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — יולי 2027 (ב')",
-      startIso: "2027-07-16T21:00:00.000Z",
-      endIso: "2027-07-30T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — אוגוסט 2027 (א')",
-      startIso: "2027-07-30T21:00:00.000Z",
-      endIso: "2027-08-13T21:00:00.000Z"
-    },
-    {
-      label: "החופש הגדול — אוגוסט 2027 (ב')",
-      startIso: "2027-08-13T21:00:00.000Z",
-      endIso: "2027-08-27T21:00:00.000Z"
-    },
-    {
-      label: "סוף אוגוסט 2027",
-      startIso: "2027-08-20T21:00:00.000Z",
-      endIso: "2027-09-03T21:00:00.000Z"
-    },
-    {
-      label: "ראש השנה ויום כיפור 2027",
-      startIso: "2027-09-26T21:00:00.000Z",
-      endIso: "2027-10-10T21:00:00.000Z"
-    },
-    {
-      label: "סוכות 2027 (א')",
-      startIso: "2027-10-08T21:00:00.000Z",
-      endIso: "2027-10-22T21:00:00.000Z"
-    },
-    {
-      label: "סוכות 2027 (ב')",
-      startIso: "2027-10-15T21:00:00.000Z",
-      endIso: "2027-10-29T21:00:00.000Z"
+  // Contiguous 14-day rolling full-year windows anchored to uniform 5-day cycle
+  const SHARD_COUNT = 5;
+  function buildCycleAnchoredWindows(daysAhead) {
+    const horizon = Math.max(14, Math.min(364, Number(daysAhead) || 350));
+    const numWindows = Math.floor((horizon + 13) / 14);
+    const now = new Date();
+    const dayMs = 86400000;
+    const todayUtcDays = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / dayMs);
+    const cycleAnchorDays = Math.floor(todayUtcDays / SHARD_COUNT) * SHARD_COUNT;
+    const anchorUtcMs = cycleAnchorDays * dayMs;
+    const minStartUtcMs = (todayUtcDays - 1) * dayMs;
+    const fmtDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const out = [];
+    for (let idx = 0; idx < numWindows; idx++) {
+      let startUtcMs = anchorUtcMs - dayMs + 14 * idx * dayMs;
+      let endUtcMs = startUtcMs + 14 * dayMs;
+      if (endUtcMs <= minStartUtcMs) continue;
+      if (startUtcMs < minStartUtcMs) {
+        startUtcMs = minStartUtcMs;
+        endUtcMs = startUtcMs + 14 * dayMs;
+      }
+      const localStart = fmtDay(startUtcMs + dayMs);
+      const localEnd = fmtDay(endUtcMs + dayMs);
+      out.push({
+        label: `חלון ${idx + 1}/${numWindows} (${localStart}..${localEnd})`,
+        startIso: `${fmtDay(startUtcMs)}T21:00:00.000Z`,
+        endIso: `${fmtDay(endUtcMs)}T21:00:00.000Z`,
+        localStart: localStart,
+        localEnd: localEnd
+      });
     }
-  ];
+    return { windows: out, autoShardIdx: todayUtcDays % SHARD_COUNT };
+  }
+
+  function selectShardWindows(shardChoice) {
+    const { windows, autoShardIdx } = buildCycleAnchoredWindows(350);
+    const idx = shardChoice === "auto" ? autoShardIdx : Math.max(0, Math.min(SHARD_COUNT - 1, Number(shardChoice) || 0));
+    const startPos = Math.floor((idx * windows.length) / SHARD_COUNT);
+    const endPos = Math.floor(((idx + 1) * windows.length) / SHARD_COUNT);
+    return { selected: windows.slice(startPos, endPos), resolvedIdx: idx };
+  }
 
   const isIsolatedExtensionWorld =
     typeof chrome !== "undefined" &&
@@ -426,9 +384,11 @@
     return extracted;
   }
 
-  function sendRowsToServerPromise(rows) {
+  function sendRowsToServerPromise(rows, reconcileSlices) {
     return new Promise((resolve) => {
-      if (!rows || rows.length === 0) {
+      const hasRows = Array.isArray(rows) && rows.length > 0;
+      const hasSlices = Array.isArray(reconcileSlices) && reconcileSlices.length > 0;
+      if (!hasRows && !hasSlices) {
         resolve({ ok: true, records_synced: 0, destinations: [] });
         return;
       }
@@ -436,7 +396,8 @@
         {
           action: "SYNC_ELAL_ROWS",
           serverUrl: "https://family-trip-planner.duckdns.org",
-          rows: rows
+          rows: hasRows ? rows : [],
+          reconcileSlices: hasSlices ? reconcileSlices : []
         },
         (resp) => {
           resolve(resp || { ok: false, error: "No response from extension worker" });
@@ -515,15 +476,16 @@
   async function runAutoPilot() {
     const statusEl = document.getElementById("fvp-sync-status");
     const btnEl = document.getElementById("fvp-sync-btn");
+    const shardSelectEl = document.getElementById("fvp-shard-select");
 
     if (autoPilotRunning) {
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
+        btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
-        statusEl.textContent = `⏸️ הסריקה נעצרה. סה"כ סונכרנו ${totalSyncedCount} טיסות חגים לשרת.`;
+        statusEl.textContent = `⏸️ הסריקה נעצרה. סה"כ סונכרנו ${totalSyncedCount} טיסות לשרת.`;
       }
       return;
     }
@@ -531,9 +493,12 @@
     try {
       autoPilotRunning = true;
       if (btnEl) {
-        btnEl.textContent = "⏹️ עצור סריקה אוטומטית (Auto-Pilot פעיל)";
+        btnEl.textContent = "⏹️ עצור סנכרון בטוח";
         btnEl.style.background = "#ef4444";
       }
+
+      const shardChoice = shardSelectEl ? shardSelectEl.value : "auto";
+      const { selected: activeWindows, resolvedIdx } = selectShardWindows(shardChoice);
 
       const pageOptionCodes = new Set();
       document.querySelectorAll("select option").forEach((opt) => {
@@ -550,17 +515,18 @@
         destBatches.push(targetIatas.slice(i, i + 25));
       }
       const allCollectedRows = [];
+      let abortedOnThrottle = false;
 
-      for (let wIdx = 0; wIdx < YEARLY_HOLIDAY_WINDOWS.length && autoPilotRunning; wIdx++) {
-        const win = YEARLY_HOLIDAY_WINDOWS[wIdx];
+      for (let wIdx = 0; wIdx < activeWindows.length && autoPilotRunning && !abortedOnThrottle; wIdx++) {
+        const win = activeWindows[wIdx];
         const windowRows = [];
+        const windowSlices = [];
 
         for (const cabinObj of TARGET_CABINS) {
-          if (!autoPilotRunning) break;
+          if (!autoPilotRunning || abortedOnThrottle) break;
 
           if (statusEl) {
-            const rangeNote = `${win.startIso.slice(0, 10)}..${win.endIso.slice(0, 10)}`;
-            statusEl.textContent = `⚡ חלון [${wIdx + 1}/${YEARLY_HOLIDAY_WINDOWS.length}] ${win.label} (${rangeNote}) | ${cabinObj.name} (${cabinObj.rbd}) | ${targetIatas.length} יעדים...`;
+            statusEl.textContent = `🛡️ מנה ${resolvedIdx + 1}/5 · חלון [${wIdx + 1}/${activeWindows.length}] (${win.localStart}..${win.localEnd}) | ${cabinObj.name} (${cabinObj.rbd})...`;
           }
 
           for (const batchDests of destBatches) {
@@ -573,17 +539,34 @@
               segments
             );
 
-            if (batchRes && batchRes.okOut && Array.isArray(batchRes.rows) && batchRes.rows.length > 0) {
+            if (!batchRes || !batchRes.okOut) {
+              abortedOnThrottle = true;
+              if (statusEl) {
+                statusEl.textContent = `⚠️ עצירה בטוחה מיידית (שגיאת שרת/קצב ${batchRes ? batchRes.reason : ""}) כדי למנוע חסימה. מה שכבר נסרק נשמר!`;
+              }
+              break;
+            }
+
+            windowSlices.push({
+              destinations: batchDests,
+              start_date: win.localStart,
+              end_date: win.localEnd,
+              cabins: [cabinObj.rbd]
+            });
+
+            if (Array.isArray(batchRes.rows) && batchRes.rows.length > 0) {
               windowRows.push(...batchRes.rows);
               allCollectedRows.push(...batchRes.rows);
             }
 
-            await sleep(250);
+            // Polite human-like spacing (2.8s - 4.2s) to avoid triggering Reblaze rate limits
+            const politeMs = 2800 + Math.floor(Math.random() * 1400);
+            await sleep(politeMs);
           }
         }
 
-        if (windowRows.length > 0 && autoPilotRunning) {
-          const syncResp = await sendRowsToServerPromise(windowRows);
+        if ((windowRows.length > 0 || windowSlices.length > 0) && autoPilotRunning) {
+          const syncResp = await sendRowsToServerPromise(windowRows, windowSlices);
           if (syncResp && syncResp.ok) {
             totalSyncedCount += Number(syncResp.records_synced || windowRows.length);
           }
@@ -592,16 +575,16 @@
 
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
+        btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
         btnEl.style.background = "#10b981";
       }
-      if (statusEl) {
-        statusEl.textContent = `🎉 סריקת ${targetIatas.length} היעדים הושלמה! סה"כ סונכרנו ${totalSyncedCount} רשומות זמינות אמיתיות (${allCollectedRows.length} מופעים) לשרת.`;
+      if (statusEl && !abortedOnThrottle) {
+        statusEl.textContent = `🎉 מנה ${resolvedIdx + 1}/5 הושלמה בבטחה! סונכרנו ${totalSyncedCount} טיסות (כולל ניקוי כרטיסים שאזלו) לשרת.`;
       }
     } catch (err) {
       autoPilotRunning = false;
       if (btnEl) {
-        btnEl.textContent = "🤖 הפעל סריקת חגים מהירה (Economy + Premium)";
+        btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
         btnEl.style.background = "#10b981";
       }
       if (statusEl) {
@@ -630,21 +613,29 @@
       "display: flex",
       "flex-direction: column",
       "gap: 8px",
-      "min-width: 300px",
-      "max-width: 380px",
+      "min-width: 310px",
+      "max-width: 390px",
       "border: 1px solid rgba(56,189,248,0.4)"
     ].join(";");
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>✈️ סנכרון חגים מהיר (Economy + Premium) v2.0</strong>
-        <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">50 מקטעים במקביל</span>
+        <strong>🛡️ סנכרון אל על בטוח (מחזור 5 ימים)</strong>
+        <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">20 בקשות רגועות</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
-        מוכן לסריקה מהירה (~20 שניות) של חגי ישראל (Economy ו-Premium) ב-25 יעדי אל על אל השרת.
+        סורק רק חמישית מהשנה בכל הרצה בקצב איטי ובטוח (או מסנכרן אוטומטית כל חיפוש שתבצע בעצמך בטבלה).
       </div>
+      <select id="fvp-shard-select" style="background:#1e293b;color:#f8fafc;border:1px solid #334155;border-radius:8px;padding:6px 8px;font-size:12px;">
+        <option value="auto">🔄 אוטומטי — המנה היומית להיום (מומלץ)</option>
+        <option value="0">📅 חלק 1 מתוך 5 (שבועות 1–5)</option>
+        <option value="1">📅 חלק 2 מתוך 5 (שבועות 6–10)</option>
+        <option value="2">📅 חלק 3 מתוך 5 (שבועות 11–15)</option>
+        <option value="3">📅 חלק 4 מתוך 5 (שבועות 16–20)</option>
+        <option value="4">📅 חלק 5 מתוך 5 (שבועות 21–25)</option>
+      </select>
       <button id="fvp-sync-btn" type="button" style="background:#10b981;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:12.5px;">
-        🤖 הפעל סריקת חגים מהירה (Economy + Premium)
+        🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)
       </button>
     `;
     document.body.appendChild(box);
