@@ -28,6 +28,7 @@ from pathlib import Path
 import random
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -499,6 +500,53 @@ def _find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _build_https_ssl_context() -> ssl.SSLContext:
+    """Build a verifying TLS context that handles macOS Python.framework missing OpenSSL cert bundles."""
+    ctx = ssl.create_default_context()
+    verify_paths = ssl.get_default_verify_paths()
+    has_default_ca = bool(
+        (verify_paths.cafile and Path(verify_paths.cafile).exists())
+        or (verify_paths.capath and Path(verify_paths.capath).exists())
+        or os.environ.get("SSL_CERT_FILE")
+        or os.environ.get("SSL_CERT_DIR")
+    )
+    if has_default_ca:
+        return ctx
+
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        ca_bundle = certifi.where()
+        if ca_bundle and Path(ca_bundle).exists():
+            return ssl.create_default_context(cafile=ca_bundle)
+    except Exception:
+        pass
+
+    for candidate in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"):
+        if Path(candidate).exists():
+            return ssl.create_default_context(cafile=candidate)
+
+    if sys.platform == "darwin":
+        try:
+            pem_out = subprocess.check_output(
+                [
+                    "/usr/bin/security",
+                    "find-certificate",
+                    "-a",
+                    "-p",
+                    "/System/Library/Keychains/SystemRootCertificates.keychain",
+                ],
+                text=True,
+                timeout=10,
+            )
+            if "BEGIN CERTIFICATE" in pem_out:
+                return ssl.create_default_context(cadata=pem_out)
+        except Exception:
+            pass
+
+    return ctx
+
+
 def _normalize_time_field(raw_time: Any, dep_date_iso: str) -> str:
     if not raw_time:
         return ""
@@ -619,6 +667,7 @@ def push_records_to_server(
     start_str = start_d.isoformat() if isinstance(start_d, date) else str(start_d)
     end_str = end_d.isoformat() if isinstance(end_d, date) else str(end_d)
     resolved_token = (sync_token or os.environ.get("ELAL_SYNC_API_TOKEN") or "").strip()
+    ssl_ctx = _build_https_ssl_context() if endpoint.lower().startswith("https://") else None
 
     def _post_chunk(chunk_payload: Any, include_reconcile: bool = False) -> int:
         body: dict[str, Any] = {
@@ -642,7 +691,7 @@ def push_records_to_server(
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_seconds, context=ssl_ctx) as resp:
             res_json = json.loads(resp.read().decode("utf-8"))
             return int(res_json.get("records_synced", 0))
 
@@ -1258,6 +1307,20 @@ def run_sync_with_system_chrome(
         out_p.write_text(json.dumps(consolidated, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"Saved normalized AccumulatedOutput snapshot to {out_p}")
 
+    # Always keep a local recovery backup so fetched flights are never lost if upload hits a network/TLS error
+    backup_snap_path = (
+        Path(profile_dir or DEFAULT_SYNC_PROFILE_DIR).expanduser().resolve()
+        / "last_fetched_snapshot.json"
+    )
+    if raw_rec_cnt > 0:
+        try:
+            backup_snap_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_snap_path.write_text(
+                json.dumps(consolidated, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
     result_counts = {"raw_records": raw_rec_cnt, "local_synced": 0, "remote_synced": 0}
     if raw_rec_cnt == 0 and not reconcile_slices:
         print("No slices completed; keeping resume cursor unchanged.")
@@ -1281,15 +1344,25 @@ def run_sync_with_system_chrome(
         )
 
     if not skip_remote and server_url:
-        remote_cnt = push_records_to_server(
-            server_url,
-            dests,
-            min_d,
-            max_d,
-            consolidated,
-            reconcile_slices=reconcile_slices,
-            sync_token=sync_token,
-        )
+        try:
+            remote_cnt = push_records_to_server(
+                server_url,
+                dests,
+                min_d,
+                max_d,
+                consolidated,
+                reconcile_slices=reconcile_slices,
+                sync_token=sync_token,
+            )
+        except Exception as exc:
+            if raw_rec_cnt > 0 and backup_snap_path.exists():
+                print(
+                    f"\nRemote upload failed ({exc}). Your {raw_rec_cnt} fetched flight records were saved safely!\n"
+                    f"Retry uploading without touching elal.com by running:\n"
+                    f"  python3 sync_elal_to_server.py --no-local --from-file {backup_snap_path}",
+                    file=sys.stderr,
+                )
+            raise
         result_counts["remote_synced"] = remote_cnt
         print(
             f"Synced {remote_cnt} merged #live flight rows (reconciled {len(reconcile_slices)} slice(s)) "
