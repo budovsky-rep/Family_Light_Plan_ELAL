@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import math
 import re
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -69,7 +71,7 @@ from backend.app.storage_cache.seed_data import (
     DESTINATION_CATALOG,
     YOM_KIPPUR_CLOSED_DATES,
     _make_bonus_row,
-    build_default_family_profile,
+    build_clean_guest_profile,
     is_shabbat_blocked_for_elal,
 )
 from backend.app.vacation_optimizer.maximizer_engine import (
@@ -1866,6 +1868,82 @@ class BonusVacationPlannerService:
         self.last_expanded_destinations: list[str] = []
         self.last_weather_fallback_message_he: Optional[str] = None
         self.last_weather_fallback_message_en: Optional[str] = None
+        # Bounded 1-hour TTL cache for ephemeral guest / unsaved-session proposals (zero SQLite writes)
+        self._ephemeral_proposals: dict[
+            str, tuple[VacationOptionProposal, Optional[str], float]
+        ] = {}
+        self._ephemeral_lock = threading.RLock()
+
+    def _prune_ephemeral_proposals(self, now_ts: Optional[float] = None) -> None:
+        now_val = time.time() if now_ts is None else now_ts
+        with self._ephemeral_lock:
+            expired_ids = [
+                pid
+                for pid, (_prop, _uid, exp_ts) in self._ephemeral_proposals.items()
+                if exp_ts <= now_val
+            ]
+            for pid in expired_ids:
+                self._ephemeral_proposals.pop(pid, None)
+            while len(self._ephemeral_proposals) > 2048:
+                oldest_key = next(iter(self._ephemeral_proposals))
+                self._ephemeral_proposals.pop(oldest_key, None)
+
+    def _store_ephemeral_proposals(
+        self,
+        proposals: list[VacationOptionProposal],
+        owner_user_id: Optional[str] = None,
+        ttl_seconds: int = 3600,
+    ) -> None:
+        now_val = time.time()
+        exp_ts = now_val + float(max(60, ttl_seconds))
+        with self._ephemeral_lock:
+            self._prune_ephemeral_proposals(now_val)
+            for prop in proposals:
+                self._ephemeral_proposals[prop.id] = (prop, owner_user_id, exp_ts)
+
+    def evict_ephemeral_proposals_for_user(self, user_id: str) -> None:
+        if not user_id:
+            return
+        with self._ephemeral_lock:
+            to_remove = [
+                pid
+                for pid, (_prop, uid, _exp) in self._ephemeral_proposals.items()
+                if uid == user_id
+            ]
+            for pid in to_remove:
+                self._ephemeral_proposals.pop(pid, None)
+
+    def resolve_proposal_for_requester(
+        self,
+        proposal_id: str,
+        requester_user_id: Optional[str] = None,
+        enforce_owner: bool = False,
+    ) -> Optional[VacationOptionProposal]:
+        """Resolve a proposal from in-memory ephemeral cache or SQLite with strict owner scoping."""
+        with self._ephemeral_lock:
+            self._prune_ephemeral_proposals()
+            ephemeral_entry = self._ephemeral_proposals.get(proposal_id)
+        if ephemeral_entry is not None:
+            prop, owner_uid, _exp = ephemeral_entry
+            if not enforce_owner:
+                return prop
+            if owner_uid is None:
+                return prop if requester_user_id is None else None
+            return prop if requester_user_id == owner_uid else None
+
+        loaded = self.repository.get_proposal_by_id(proposal_id)
+        if loaded is None:
+            return None
+        if not enforce_owner:
+            return loaded
+
+        owner_info = self.repository.get_proposal_owner_info(proposal_id)
+        if owner_info is None or owner_info.get("is_legacy_quarantined"):
+            return None
+        db_uid = owner_info.get("user_id")
+        if not db_uid or not requester_user_id or str(db_uid) != str(requester_user_id):
+            return None
+        return loaded
 
     def _compute_fbvs_bonus(
         self,
@@ -2365,6 +2443,9 @@ class BonusVacationPlannerService:
         self,
         query_data: dict[str, Any] | FlightSearchQuery,
         profile: Optional[FamilyProfile | dict[str, Any]] = None,
+        *,
+        persist_results: bool = True,
+        owner_user_id: Optional[str] = None,
     ) -> list[VacationOptionProposal]:
         """Execute end-to-end vacation search across Date Modes 1/2/3 and Airline Modes 1/2."""
         matmid_override: Optional[int] = None
@@ -2447,7 +2528,7 @@ class BonusVacationPlannerService:
             active_profile = (
                 self.repository.get_profile(query.family_profile_id)
                 or self.repository.get_profile()
-                or build_default_family_profile()
+                or build_clean_guest_profile()
             )
 
         if matmid_override is not None:
@@ -2459,9 +2540,17 @@ class BonusVacationPlannerService:
                 }
             )
 
-        query.family_profile_id = active_profile.id
-        if self.repository.get_profile(active_profile.id) is None:
-            self.repository.save_profile(active_profile)
+        if persist_results:
+            existing_db_prof = (
+                self.repository.get_profile(active_profile.id)
+                if active_profile.id
+                else None
+            )
+            query.family_profile_id = (
+                existing_db_prof.id if existing_db_prof is not None else None  # type: ignore[assignment]
+            )
+        else:
+            query.family_profile_id = None  # type: ignore[assignment]
 
         expanded_destinations = self.elal_adapter.expand_metro_iatas(query.destination_iatas)
         self.last_expanded_destinations = list(expanded_destinations)
@@ -2480,7 +2569,8 @@ class BonusVacationPlannerService:
             expanded_destinations=expanded_destinations,
         )
         if not prelim_windows:
-            self.repository.save_search_query(query)
+            if persist_results:
+                self.repository.save_search_query(query)
             return []
 
         # When ANYWHERE (45 destinations) is requested:
@@ -2543,7 +2633,8 @@ class BonusVacationPlannerService:
             expanded_destinations=active_destinations,
         )
         if not candidate_windows:
-            self.repository.save_search_query(query)
+            if persist_results:
+                self.repository.save_search_query(query)
             return []
 
         airline_mode = (
@@ -2813,7 +2904,8 @@ class BonusVacationPlannerService:
                         )
 
         if not raw_proposals:
-            self.repository.save_search_query(query)
+            if persist_results:
+                self.repository.save_search_query(query)
             return []
 
         # Finalize FBVS_cash across commercial cash proposals in the batch and compute CTOS
@@ -2971,8 +3063,19 @@ class BonusVacationPlannerService:
         selected_proposals.sort(key=_proposal_sort_key, reverse=True)
         selected_proposals = selected_proposals[:36]
 
-        saved_proposals = self.repository.save_search_results(query, selected_proposals)
-        return saved_proposals
+        if persist_results:
+            saved_proposals = self.repository.save_search_results(query, selected_proposals)
+            if owner_user_id is not None:
+                self._store_ephemeral_proposals(saved_proposals, owner_user_id=owner_user_id)
+            return saved_proposals
+
+        for prop in selected_proposals:
+            prop.search_query_id = query.id
+            if prop.itinerary is not None:
+                prop.itinerary.search_query_id = query.id
+                prop.itinerary_id = prop.itinerary.id
+        self._store_ephemeral_proposals(selected_proposals, owner_user_id=owner_user_id)
+        return selected_proposals
 
     def _make_proposal_from_itinerary(
         self,
@@ -3047,6 +3150,9 @@ class BonusVacationPlannerService:
     def compare_proposals(
         self,
         proposal_ids: list[str | VacationOptionProposal | dict[str, Any]],
+        *,
+        requester_user_id: Optional[str] = None,
+        enforce_owner: bool = False,
     ) -> dict[str, Any]:
         """Build a side-by-side `VacationComparisonMatrix` for 1..N proposals (`F28`)."""
         if not proposal_ids:
@@ -3059,11 +3165,19 @@ class BonusVacationPlannerService:
             elif isinstance(item, dict):
                 proposals.append(VacationOptionProposal.from_dict(item))
             else:
-                loaded = self.repository.get_proposal_by_id(str(item))
+                loaded = self.resolve_proposal_for_requester(
+                    str(item),
+                    requester_user_id=requester_user_id,
+                    enforce_owner=enforce_owner,
+                )
                 if loaded is not None:
                     proposals.append(loaded)
+                elif enforce_owner:
+                    raise LookupError(f"Proposal not found or unauthorized: {item!r}")
 
         if not proposals:
+            if enforce_owner:
+                raise LookupError("No matching accessible proposals found.")
             raise ValueError(f"No matching proposals found for IDs: {proposal_ids!r}")
 
         best_by_ctos = max(
@@ -3246,7 +3360,11 @@ class BonusVacationPlannerService:
         return matrix.to_dict()
 
     def export_proposal_ics(
-        self, proposal_id: str | VacationOptionProposal | dict[str, Any]
+        self,
+        proposal_id: str | VacationOptionProposal | dict[str, Any],
+        *,
+        requester_user_id: Optional[str] = None,
+        enforce_owner: bool = False,
     ) -> str:
         """Export a `VacationOptionProposal` as an RFC 5545 iCalendar (`.ics`) document (`F28`)."""
         if isinstance(proposal_id, VacationOptionProposal):
@@ -3254,7 +3372,11 @@ class BonusVacationPlannerService:
         elif isinstance(proposal_id, dict):
             prop = VacationOptionProposal.from_dict(proposal_id)
         else:
-            loaded = self.repository.get_proposal_by_id(str(proposal_id))
+            loaded = self.resolve_proposal_for_requester(
+                str(proposal_id),
+                requester_user_id=requester_user_id,
+                enforce_owner=enforce_owner,
+            )
             if loaded is None:
                 raise ValueError(f"VacationOptionProposal not found: {proposal_id!r}")
             prop = loaded

@@ -1,9 +1,53 @@
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+-- 0a. Users: Verified Gmail / Google OIDC accounts & opt-in future notification readiness
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,                          -- UUID v4 internal user_id
+    google_sub TEXT NOT NULL UNIQUE,              -- Immutable Google OIDC 'sub' claim
+    email TEXT NOT NULL UNIQUE,                   -- Normalized lowercase verified Gmail/Google address
+    email_verified INTEGER NOT NULL DEFAULT 1 CHECK (email_verified IN (0, 1)),
+    display_name TEXT NOT NULL DEFAULT '',
+    notification_email TEXT NOT NULL,             -- Locked to verified email for future notifications
+    notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (notifications_enabled IN (0, 1)),
+    notification_preferences_json TEXT NOT NULL DEFAULT '{"award_seat_alerts":false,"holiday_reminders":false,"preferred_locale":"he"}',
+    notification_consent_updated_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- 0b. AuthSessions: Revocable server-side sessions storing SHA-256 token digest only
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id TEXT PRIMARY KEY,                          -- UUID v4
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_sha256 TEXT NOT NULL UNIQUE,            -- SHA-256 hex digest of raw cookie token (raw token never stored)
+    csrf_token TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+
+-- 0c. OAuthLoginStates: Single-use 10-minute PKCE (S256) + Login-CSRF cookie binding
+CREATE TABLE IF NOT EXISTS oauth_login_states (
+    state_sha256 TEXT PRIMARY KEY,
+    code_verifier TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    browser_binding_sha256 TEXT NOT NULL,
+    return_to TEXT NOT NULL DEFAULT '/',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
+);
+
 -- 1. FamilyProfile: Stores household configuration, parent PTO rules, and default household Matmid summary
 CREATE TABLE IF NOT EXISTS family_profiles (
-    id TEXT PRIMARY KEY,                          -- UUID v4
+    id TEXT PRIMARY KEY,                          -- UUID v4 or user-profile-<user_id>
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    is_legacy_quarantined INTEGER NOT NULL DEFAULT 0 CHECK (is_legacy_quarantined IN (0, 1)),
     profile_name TEXT NOT NULL DEFAULT 'המשפחה שלי',
     adults_count INTEGER NOT NULL DEFAULT 2 CHECK (adults_count BETWEEN 1 AND 6),
     workweek_type TEXT NOT NULL DEFAULT 'SUN_THU' CHECK (workweek_type IN ('SUN_THU', 'SUN_FRI')),
@@ -20,13 +64,14 @@ CREATE TABLE IF NOT EXISTS family_profiles (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_family_profiles_user_id ON family_profiles(user_id) WHERE user_id IS NOT NULL;
 
 -- 2. PassengerLoyaltyWallet: Per-passenger available points across multiple frequent flyer clubs & credit card programs
 CREATE TABLE IF NOT EXISTS passenger_loyalty_wallets (
     id TEXT PRIMARY KEY,                          -- UUID v4
     family_profile_id TEXT NOT NULL REFERENCES family_profiles(id) ON DELETE CASCADE,
     passenger_id TEXT NOT NULL,                   -- e.g. 'ADULT_1', 'ADULT_2', 'CHILD_1', or 'FAMILY_POOL'
-    passenger_name TEXT NOT NULL,                 -- e.g. 'יוני (הורה 1)', 'הורה 2', 'נועה'
+    passenger_name TEXT NOT NULL,                 -- e.g. 'הורה 1', 'הורה 2', 'ילד/ה 1'
     program_code TEXT NOT NULL CHECK (program_code IN (
         'ELAL_MATMID',                            -- מועדון הנוסע המתמיד אל על
         'BRITISH_AVIOS',                          -- British Airways / Qatar / Finnair Avios (oneworld)
@@ -128,7 +173,7 @@ CREATE INDEX IF NOT EXISTS idx_moe_vacation_year_framework ON moe_vacation_windo
 -- 5. FlightSearchQuery: Captures user search execution across Date Mode (1/2/3) and Airline Mode (1/2)
 CREATE TABLE IF NOT EXISTS flight_search_queries (
     id TEXT PRIMARY KEY,                          -- UUID v4
-    family_profile_id TEXT NOT NULL REFERENCES family_profiles(id) ON DELETE CASCADE,
+    family_profile_id TEXT REFERENCES family_profiles(id) ON DELETE CASCADE,
     date_selection_mode TEXT NOT NULL CHECK (date_selection_mode IN (
         'SPECIFIC_DATES',                         -- R2 Mode 1: Specific / Flexible Dates
         'MOE_VACATION_MAXIMIZATION',              -- R2 Mode 2: Around Children's MoE Vacations (Full School-Year Optimizer)

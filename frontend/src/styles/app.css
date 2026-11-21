@@ -496,6 +496,7 @@ input[type="date"] {
 /* Workspace Zone Cards */
 .zone-card {
   min-width: 0;
+  scroll-margin-block-start: 70px;
   background: var(--surface-boarding);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -1788,6 +1789,229 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   font-size: var(--fs-label);
   line-height: 1.4;
   color: #78350F;
+}
+
+/* Gmail Sign-In, Private Account Strip & Clean Guest State Controls */
+.btn-header-auth {
+  min-height: var(--control-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-block: 4px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.14);
+  color: #FFFFFF;
+  font-family: var(--font-body);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.btn-header-auth:hover {
+  background: rgba(255, 255, 255, 0.24);
+  border-color: #93C5FD;
+}
+
+.btn-header-signout {
+  background: rgba(12, 122, 96, 0.34);
+  border-color: var(--pine-border);
+}
+
+.profile-auth-card {
+  background: var(--azure-tint);
+  border: 1px solid var(--azure-border);
+  border-inline-start: 3px solid var(--azure-elal);
+  border-radius: var(--radius-md);
+  padding-block: 9px;
+  padding-inline: 11px;
+  margin-block-end: 8px;
+}
+
+.profile-auth-card-signed-in {
+  background: var(--pine-tint);
+  border-color: var(--pine-border);
+  border-inline-start-color: var(--pine-bridge);
+}
+
+.auth-panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.auth-panel-copy {
+  margin: 0;
+  font-size: var(--fs-label);
+  line-height: 1.42;
+  color: var(--ink-secondary);
+  text-align: start;
+}
+
+.btn-google-signin {
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-block: 6px;
+  padding-inline: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-boarding);
+  border: 1px solid var(--border-strong);
+  color: var(--ink-flightdeck);
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(11, 31, 58, 0.06);
+  transition: background-color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.btn-google-signin:hover {
+  background: #F8FAFC;
+  border-color: var(--azure-elal);
+  box-shadow: 0 4px 10px rgba(20, 82, 166, 0.12);
+}
+
+.google-mark-svg {
+  flex-shrink: 0;
+}
+
+.auth-status-note {
+  margin: 0;
+  padding-block: 6px;
+  padding-inline: 9px;
+  border-radius: var(--radius-sm);
+  background: var(--brass-tint);
+  border: 1px solid var(--brass-border);
+  color: #78350F;
+  font-size: var(--fs-label);
+  line-height: 1.4;
+  text-align: start;
+}
+
+.auth-save-feedback {
+  margin: 0;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--pine-bridge);
+  text-align: start;
+}
+
+.auth-user-top-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.auth-user-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.auth-verified-badge {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  color: var(--pine-bridge);
+  white-space: nowrap;
+}
+
+.auth-user-email {
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  font-weight: 700;
+  color: var(--ink-flightdeck);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.auth-user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.auth-delete-confirm-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 7px;
+  padding-inline: 9px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-tint);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+}
+
+.auth-delete-confirm-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-danger-confirm {
+  min-height: var(--control-h);
+  padding-block: 5px;
+  padding-inline: 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--danger-ink);
+  background: var(--danger-ink);
+  color: #FFFFFF;
+  font-family: var(--font-body);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-notif-toggle-label {
+  min-height: var(--control-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-label);
+  line-height: 1.38;
+  color: var(--ink-flightdeck);
+  cursor: pointer;
+  text-align: start;
+}
+
+.auth-notif-toggle-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--pine-bridge);
+  cursor: pointer;
+}
+
+.children-empty-hint {
+  margin: 0;
+  padding-block: 8px;
+  padding-inline: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-boarding);
+  color: var(--ink-secondary);
+  font-size: var(--fs-label);
+  line-height: 1.42;
+  text-align: start;
 }
 
 /* Legacy Mobile Bottom Navigation Bar — Hidden in Layout */

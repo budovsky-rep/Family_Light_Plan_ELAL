@@ -18,6 +18,7 @@ import sys
 from typing import Any, Optional
 
 from backend.app.main import VacationPlannerTestClient, run_server
+from backend.app.storage_cache.seed_data import build_clean_guest_profile
 
 
 _MODE_MAP: dict[str, str] = {
@@ -62,12 +63,17 @@ def build_parser() -> argparse.ArgumentParser:
     # 1. profile
     p_prof = subparsers.add_parser(
         "profile",
-        help="Show family profile, children frameworks, and loyalty wallets",
+        help="Show authenticated family profile (with --session-token) or clean ephemeral guest template",
     )
     p_prof.add_argument(
         "--profile-id",
-        default="default-family-profile",
-        help="Family profile ID",
+        default=None,
+        help="Deprecated/ignored (server enforces session identity)",
+    )
+    p_prof.add_argument(
+        "--session-token",
+        default=None,
+        help="Authenticated session token (or set VACATION_PLANNER_SESSION_TOKEN)",
     )
     p_prof.add_argument(
         "--json", action="store_true", help="Output raw JSON"
@@ -245,10 +251,49 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_KNOWN_CLI_FLAGS: frozenset[str] = frozenset(
+    {
+        "--json",
+        "--help",
+        "-h",
+        "--db-path",
+        "--profile-id",
+        "--session-token",
+    }
+)
+_KNOWN_CLI_FLAG_PREFIXES: tuple[str, ...] = (
+    "--db-path=",
+    "--profile-id=",
+    "--session-token=",
+)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    normalized_argv: list[str] = []
+    idx = 0
+    while idx < len(args_list):
+        arg_item = args_list[idx]
+        if arg_item == "--":
+            normalized_argv.extend(args_list[idx:])
+            break
+        if (
+            arg_item in ("--session-token", "--profile-id")
+            and idx + 1 < len(args_list)
+        ):
+            val = args_list[idx + 1]
+            if val not in _KNOWN_CLI_FLAGS and not val.startswith(
+                _KNOWN_CLI_FLAG_PREFIXES
+            ):
+                normalized_argv.append(f"{arg_item}={val}")
+                idx += 2
+                continue
+        normalized_argv.append(arg_item)
+        idx += 1
+
     try:
-        args = parser.parse_args(argv)
+        args = parser.parse_args(normalized_argv)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 2
 
@@ -256,19 +301,48 @@ def main(argv: Optional[list[str]] = None) -> int:
     client = VacationPlannerTestClient(db_path=db_path)
 
     if args.subcommand == "profile":
-        resp = client.get(
-            "/api/v1/profile", params={"profile_id": args.profile_id}
+        raw_session_tok = (
+            args.session_token
+            if args.session_token is not None
+            else (os.environ.get("VACATION_PLANNER_SESSION_TOKEN") or "")
         )
-        if resp.status_code != 200:
-            print(resp.text, file=sys.stderr)
+        if any(ch in raw_session_tok for ch in (";", "\r", "\n", "\x00")):
+            print(
+                json.dumps({"error": "Invalid characters in session token."}),
+                file=sys.stderr,
+            )
             return 1
-        data = resp.json()
+        session_tok = raw_session_tok.strip()
+        if session_tok:
+            resp = client.get(
+                "/api/v1/profile",
+                headers={
+                    "Cookie": (
+                        f"__Host-fvp_session={session_tok}; fvp_session={session_tok}"
+                    )
+                },
+            )
+            if resp.status_code != 200:
+                print(resp.text, file=sys.stderr)
+                return 1
+            data = resp.json()
+            data["authenticated"] = True
+        else:
+            guest_prof = build_clean_guest_profile()
+            data = guest_prof.to_dict()
+            data["id"] = None
+            data["profile_name"] = ""
+            data["authenticated"] = False
+            data["is_persisted"] = False
+
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=2))
         else:
+            label = data.get("profile_name") or "Guest (ephemeral)"
             print(
-                f"Profile: {data['profile_name']} (id={data['id']}, adults={data['adults_count']}, "
-                f"children={len(data['children'])}, wallets={len(data['passenger_loyalty_wallets'])})"
+                f"Profile: {label} (authenticated={data.get('authenticated', False)}, "
+                f"adults={data['adults_count']}, children={len(data['children'])}, "
+                f"matmid_points={data.get('matmid_points_balance', 0)})"
             )
         return 0
 

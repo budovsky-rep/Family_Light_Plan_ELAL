@@ -48,8 +48,10 @@
       <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar">📅 לוח חופשות</button>
     </nav>
     <div class="header-summary-pills">
-      <span class="pill pill-family" id="header-family-pill" dir="ltr">2 Adults + 3 Children</span>
-      <span class="pill pill-points" id="header-points-pill" dir="ltr">185,000 Matmid pts</span>
+      <span class="pill pill-family" id="header-family-pill" dir="auto"><span class="num">2</span> מבוגרים + <span class="num">0</span> ילדים</span>
+      <span class="pill pill-points" id="header-points-pill" dir="ltr">0 Matmid</span>
+      <button type="button" class="btn-header-auth" id="btn-header-auth" data-he="כניסה" data-en="Sign in">כניסה</button>
+      <button type="button" class="btn-header-auth btn-header-signout" id="btn-header-signout" hidden style="display: none;" data-he="התנתקות" data-en="Sign out">התנתקות</button>
       <button type="button" class="btn-locale-toggle" id="btn-toggle-locale" aria-label="החלף שפה וכיוון טקסט" data-aria-he="החלף שפה וכיוון טקסט" data-aria-en="Toggle language and text direction">
         EN / LTR
       </button>
@@ -284,8 +286,52 @@
             <span class="zone-step-pill" dir="ltr">STEP 02</span>
             <h2 id="zone-profile-title">2. פרופיל משפחה, גילאי ילדים ויתרת מתמיד</h2>
           </div>
-          <button type="button" class="btn-secondary btn-compact-action" id="btn-save-profile" data-he="💾 שמור ועדכן" data-en="💾 Save &amp; Refresh">💾 שמור ועדכן</button>
+          <button type="button" class="btn-secondary btn-compact-action" id="btn-save-profile" data-he="🔒 התחברות לשמירה" data-en="🔒 Sign in to Save">🔒 התחברות לשמירה</button>
         </div>
+
+        <div class="profile-auth-card" id="profile-auth-card">
+          <div id="auth-guest-panel" class="auth-panel-inner">
+            <p class="auth-panel-copy" id="auth-guest-copy" data-he="חיפוש חופשי ללא הרשמה. התחברו עם Gmail כדי לשמור בפרטיות את הרכב המשפחה וגילאי הילדים ולהתכונן להתראות עתידיות." data-en="Search freely without signing in. Sign in with Gmail to privately save your family details &amp; children&#39;s ages and prepare for future alerts.">
+              חיפוש חופשי ללא הרשמה. התחברו עם Gmail כדי לשמור בפרטיות את הרכב המשפחה וגילאי הילדים ולהתכונן להתראות עתידיות.
+            </p>
+            <button type="button" class="btn-google-signin" id="btn-google-signin">
+              <svg class="google-mark-svg" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">
+                <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z" />
+                <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z" />
+                <path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.69 9c0-.6.1-1.18.28-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.05l3.01-2.33Z" />
+                <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z" />
+              </svg>
+              <span id="btn-google-signin-label" data-he="התחברות עם Gmail לשמירת פרופיל" data-en="Sign in with Gmail to Save Profile">התחברות עם Gmail לשמירת פרופיל</span>
+            </button>
+            <p id="auth-status-note" class="auth-status-note" hidden style="display: none;"></p>
+          </div>
+
+          <div id="auth-user-panel" class="auth-panel-inner" hidden style="display: none;">
+            <div class="auth-user-top-row">
+              <div class="auth-user-identity">
+                <span class="auth-verified-badge" id="auth-verified-badge" data-he="🔒 חשבון פרטי:" data-en="🔒 Private account:">🔒 חשבון פרטי:</span>
+                <span id="auth-user-email" class="auth-user-email" dir="ltr"></span>
+              </div>
+              <div class="auth-user-actions">
+                <button type="button" class="btn-secondary btn-compact-action" id="btn-signout" data-he="התנתקות" data-en="Sign out">התנתקות</button>
+                <button type="button" class="btn-secondary btn-remove-inline" id="btn-delete-profile" data-he="מחיקת נתונים" data-en="Delete Data">מחיקת נתונים</button>
+              </div>
+            </div>
+            <div id="auth-delete-confirm-bar" class="auth-delete-confirm-bar" hidden style="display: none;">
+              <span id="auth-delete-confirm-text" data-he="למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?" data-en="Permanently delete your saved family data?">למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?</span>
+              <div class="auth-delete-confirm-btns">
+                <button type="button" class="btn-danger-confirm" id="btn-confirm-delete-profile" data-he="כן, מחק" data-en="Yes, delete">כן, מחק</button>
+                <button type="button" class="btn-secondary btn-compact-action" id="btn-cancel-delete-profile" data-he="ביטול" data-en="Cancel">ביטול</button>
+              </div>
+            </div>
+            <label class="auth-notif-toggle-label" for="input-notifications-opt-in">
+              <input type="checkbox" id="input-notifications-opt-in" />
+              <span id="auth-notif-label-text" data-he="🔔 הכן את החשבון להתראות עתידיות במייל על מושבי בונוס (בקרוב)" data-en="🔔 Prepare account for future email alerts on award seats (coming soon)">🔔 הכן את החשבון להתראות עתידיות במייל על מושבי בונוס (בקרוב)</span>
+            </label>
+            <p id="auth-save-feedback" class="auth-save-feedback" hidden style="display: none;"></p>
+          </div>
+        </div>
+
         <p id="mode1-optional-framework-hint" class="profile-helper-banner" data-he="💡 מסגרת לימודים לכל ילד היא אופציונלית (Optional) בתאריכים ידניים, ומתאימה אוטומטית את ימי החופש בחיפוש לפי חג." data-en="💡 Child educational framework is Optional in Manual Dates mode, and automatically aligns school breaks in Holiday mode.">
           💡 מסגרת לימודים לכל ילד היא <strong>אופציונלית (Optional)</strong> בתאריכים ידניים, ומתאימה אוטומטית את ימי החופש בחיפוש לפי חג.
         </p>
@@ -301,7 +347,7 @@
           </div>
           <div class="form-field">
             <label for="prof-matmid-points" data-he="יתרת מתמיד:" data-en="Matmid Balance:">יתרת מתמיד:</label>
-            <input type="number" id="prof-matmid-points" min="0" step="1000" value="185000" dir="ltr" />
+            <input type="number" id="prof-matmid-points" min="0" step="1000" value="0" dir="ltr" />
           </div>
         </div>
 

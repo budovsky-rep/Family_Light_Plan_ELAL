@@ -45,9 +45,94 @@ from backend.app.schemas.domain import (
     LoyaltyProgramCode,
     PassengerLoyaltyWallet,
 )
+from backend.app.auth_service import build_unsigned_or_hs256_jwt_for_test, sha256_hex
 from backend.app.storage_cache.repository import SQLiteRepository
-from backend.app.storage_cache.seed_data import is_shabbat_blocked_for_elal
+from backend.app.storage_cache.seed_data import (
+    build_default_family_profile,
+    is_shabbat_blocked_for_elal,
+)
 from backend.app.vacation_optimizer.maximizer_engine import VacationMaximizerEngine
+
+
+def _make_mock_token_exchanger(email: str = "family@gmail.com", name: str = "Test Family"):
+    """Create a hermetic OIDC token_exchanger closure that extracts nonce from oauth_login_states."""
+
+    def _attach_and_login(router, user_email: str = email, display_name: str = name) -> tuple[str, str]:
+        import json as _json
+        import time as _time
+        import urllib.parse as _up
+
+        captured_nonce: list[str] = []
+        orig_create_state = router.repository.create_oauth_login_state
+
+        def _spy_create_state(*args, **kwargs):
+            if "nonce" in kwargs:
+                captured_nonce.append(str(kwargs["nonce"]))
+            elif len(args) >= 3:
+                captured_nonce.append(str(args[2]))
+            return orig_create_state(*args, **kwargs)
+
+        def _exchanger(_code: str, _verifier: str, _redir: str, client_id: str, _secret: str):
+            now_ep = int(_time.time())
+            nonce_val = captured_nonce[-1] if captured_nonce else ""
+            jwt_tok = build_unsigned_or_hs256_jwt_for_test(
+                {
+                    "iss": "https://accounts.google.com",
+                    "aud": client_id,
+                    "sub": f"sub-{sha256_hex(user_email)[:20]}",
+                    "email": user_email,
+                    "email_verified": True,
+                    "name": display_name,
+                    "nonce": nonce_val,
+                    "iat": now_ep,
+                    "exp": now_ep + 3600,
+                }
+            )
+            return {"id_token": jwt_tok, "access_token": "ephemeral"}
+
+        router.auth_service.token_exchanger = _exchanger
+        old_cid = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+        old_sec = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+        router.repository.create_oauth_login_state = _spy_create_state  # type: ignore[method-assign]
+        try:
+            os.environ["GOOGLE_OAUTH_CLIENT_ID"] = "m2-test-client.apps.googleusercontent.com"
+            os.environ["GOOGLE_OAUTH_CLIENT_SECRET"] = "m2-test-secret"
+            st, hdrs, _ = router.dispatch("GET", "/api/v1/auth/google/login")
+            assert st == 302, f"Expected 302 login redirect, got {st}"
+            loc = hdrs["Location"]
+            state_param = dict(_up.parse_qsl(_up.urlsplit(loc).query))["state"]
+            bind_cookie = ""
+            for sc in hdrs.get("Set-Cookie", []):
+                if sc.startswith("fvp_oauth_bind="):
+                    bind_cookie = sc.split(";", 1)[0]
+            cb_st, cb_hdrs, _ = router.dispatch(
+                "GET",
+                f"/api/v1/auth/google/callback?code=valid-auth-code&state={_up.quote(state_param)}",
+                request_headers={"cookie": bind_cookie},
+            )
+            assert cb_st == 302, f"Expected 302 callback redirect, got {cb_st}"
+            sess_cookie = ""
+            for sc in cb_hdrs.get("Set-Cookie", []):
+                if "fvp_session=" in sc and "Max-Age=0" not in sc:
+                    sess_cookie = sc.split(";", 1)[0]
+            s_st, _, s_body = router.dispatch(
+                "GET", "/api/v1/auth/session", request_headers={"cookie": sess_cookie}
+            )
+            assert s_st == 200
+            csrf_tok = _json.loads(s_body)["csrf_token"]
+            return sess_cookie, csrf_tok
+        finally:
+            router.repository.create_oauth_login_state = orig_create_state  # type: ignore[method-assign]
+            if old_cid is None:
+                os.environ.pop("GOOGLE_OAUTH_CLIENT_ID", None)
+            else:
+                os.environ["GOOGLE_OAUTH_CLIENT_ID"] = old_cid
+            if old_sec is None:
+                os.environ.pop("GOOGLE_OAUTH_CLIENT_SECRET", None)
+            else:
+                os.environ["GOOGLE_OAUTH_CLIENT_SECRET"] = old_sec
+
+    return _attach_and_login
 
 
 class TestM2ProvidersAndSynthesizer(unittest.TestCase):
@@ -56,6 +141,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.repo = SQLiteRepository(":memory:", auto_seed=True)
+        cls.repo.save_profile(build_default_family_profile())
         cls.calendar_service = MoECalendarService(cls.repo)
         cls.maximizer = VacationMaximizerEngine(cls.calendar_service)
         cls.elal_adapter = ElAlRbdDataClientAdapter(cls.repo)
@@ -69,6 +155,22 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         cls.default_profile = cls.repo.get_profile("default-family-profile")
         assert cls.default_profile is not None
+
+    def _authenticate_client(
+        self,
+        client: Any,
+        email: str = "family@gmail.com",
+        seed_default_household: bool = True,
+    ) -> tuple[str, str]:
+        login_fn = _make_mock_token_exchanger(email=email)
+        sess_cookie, csrf_tok = login_fn(client.router, user_email=email)
+        cookie_name, cookie_val = sess_cookie.split("=", 1)
+        client.cookies[cookie_name] = cookie_val
+        client.default_headers["X-CSRF-Token"] = csrf_tok
+        if seed_default_household:
+            r = client.put("/api/v1/profile", json=build_default_family_profile().to_dict())
+            self.assertEqual(r.status_code, 200, r.text)
+        return sess_cookie, csrf_tok
 
     def test_rbd_01_metro_iata_expansion_and_validation_f19(self) -> None:
         """1. Verify `F19` & `TEST-RBD-01` metro-to-airport IATA expansion and invalid code rejection."""
@@ -1376,7 +1478,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         iso_repo = SQLiteRepository(":memory:", auto_seed=True)
         iso_cal = MoECalendarService(iso_repo)
         iso_max = VacationMaximizerEngine(iso_cal)
-        prof = iso_repo.get_profile()
+        prof = self.default_profile
 
         # 1. At 2026-11-19: Hanukkah is 2026 (7d); Spring/Summer are 2027; Autumn holidays rolled over to 2027
         up_nov26 = iso_cal.get_upcoming_holidays_for_rolling_year(
@@ -1609,7 +1711,10 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r3_api.db")
-            # Confirm seeded DB starts with 6 legacy wallets totaling 185k Matmid
+            # Unauthenticated profile access is strictly rejected (401)
+            self.assertEqual(client.get("/api/v1/profile").status_code, 401)
+            # Authenticate a Gmail user and save a 5-pax household with 6 legacy wallets totaling 185k Matmid
+            self._authenticate_client(client, email="r3.pool@gmail.com", seed_default_household=True)
             prof_init = client.get("/api/v1/profile").json()
             self.assertEqual(len(prof_init["passenger_loyalty_wallets"]), 6)
 
@@ -1761,7 +1866,11 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         self.assertEqual(bad_2024.status_code, 422)
 
+        # Unauthenticated PUT /api/v1/profile is rejected with 401
+        self.assertEqual(client.put("/api/v1/profile", json={"adults_count": 2}).status_code, 401)
+
         # Zero-point COMMERCIAL_CASH_ONLY fallback with an age-1 INFANT_LAP child -> rbd_code == "INF"
+        self._authenticate_client(client, email="infant.test@gmail.com", seed_default_household=False)
         prof_inf = client.get("/api/v1/profile").json()
         prof_inf["children"] = [
             {
@@ -1802,84 +1911,94 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(inf_rows[0]["taxes_usd"], 0.0)
 
         # Live ThreadingHTTPServer malformed JSON boundary sweep -> 422 without socket drop
-        srv = create_http_server("127.0.0.1", 0, db_path=":memory:")
-        port = srv.server_address[1]
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        base_spec = {
-            "date_selection_mode": "SPECIFIC_DATES",
-            "specific_departure_date": "2027-05-10",
-            "specific_return_date": "2027-05-18",
-        }
-        base_prof = {
-            "id": "default-family-profile",
-            "adults_count": 2,
-            "children": [],
-            "passenger_loyalty_wallets": [],
-        }
-        malformed_cases: list[tuple[str, str, object]] = [
-            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": None}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": True}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": []}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": "inf"}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "min_trip_nights": None}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "max_trip_nights": None}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "max_bridge_days_shift": None}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "direct_target_year": None}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "direct_target_year": True}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": None}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": True}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": []}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": {}}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "inf"}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "-inf"}),
-            ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "nan"}),
-            ("POST", "/api/v1/vacations/search", []),
-            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": True}),
-            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": None}),
-            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": []}),
-            ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": "inf"}),
-            ("PUT", "/api/v1/profile", {**base_prof, "adults_count": None}),
-            ("PUT", "/api/v1/profile", {**base_prof, "adults_count": True}),
-            ("PUT", "/api/v1/profile", {**base_prof, "annual_pto_days_budget": "nan"}),
-            ("PUT", "/api/v1/profile", []),
-        ]
-        try:
-            for method, path_url, payload_obj in malformed_cases:
-                req = urllib.request.Request(
-                    f"http://127.0.0.1:{port}{path_url}",
-                    data=json.dumps(payload_obj).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method=method,
-                )
-                err_body = ""
-                try:
-                    with urllib.request.urlopen(req, timeout=5.0) as resp_ok:
-                        code = resp_ok.status
-                        err_body = resp_ok.read().decode("utf-8")
-                except urllib.error.HTTPError as http_err:
-                    code = http_err.code
-                    err_body = http_err.read().decode("utf-8")
-                self.assertEqual(
-                    code,
-                    422,
-                    f"Expected 422 for {method} {path_url} {payload_obj!r}, got {code}: {err_body}",
-                )
-                parsed_err = json.loads(err_body)
-                self.assertIn("error", parsed_err)
-
-            # Confirm live server remains healthy afterward
-            ok_req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/v1/vacations/search",
-                data=json.dumps({**base_spec, "destination_iatas": ["ATH"]}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
+        with tempfile.TemporaryDirectory() as srv_tmp:
+            srv_db = Path(srv_tmp) / "live_malformed.db"
+            setup_client = VacationPlannerTestClient(db_path=srv_db)
+            srv_cookie, srv_csrf = self._authenticate_client(
+                setup_client, email="fuzzer1@gmail.com", seed_default_household=True
             )
-            with urllib.request.urlopen(ok_req, timeout=5.0) as ok_resp:
-                self.assertEqual(ok_resp.status, 200)
-        finally:
-            srv.shutdown()
-            srv.server_close()
-            client.router.repository.close()
+            srv = create_http_server("127.0.0.1", 0, db_path=srv_db)
+            port = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            base_spec = {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-05-10",
+                "specific_return_date": "2027-05-18",
+            }
+            base_prof = {
+                "id": "default-family-profile",
+                "adults_count": 2,
+                "children": [],
+                "passenger_loyalty_wallets": [],
+            }
+            malformed_cases: list[tuple[str, str, object]] = [
+                ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": None}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": True}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": []}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "flex_days_plus_minus": "inf"}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "min_trip_nights": None}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "max_trip_nights": None}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "max_bridge_days_shift": None}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "direct_target_year": None}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "direct_target_year": True}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": None}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": True}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": []}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": {}}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "inf"}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "-inf"}),
+                ("POST", "/api/v1/vacations/search", {**base_spec, "matmid_points_balance": "nan"}),
+                ("POST", "/api/v1/vacations/search", []),
+                ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": True}),
+                ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": None}),
+                ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": []}),
+                ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": "inf"}),
+                ("PUT", "/api/v1/profile", {**base_prof, "adults_count": None}),
+                ("PUT", "/api/v1/profile", {**base_prof, "adults_count": True}),
+                ("PUT", "/api/v1/profile", {**base_prof, "annual_pto_days_budget": "nan"}),
+                ("PUT", "/api/v1/profile", []),
+            ]
+            try:
+                for method, path_url, payload_obj in malformed_cases:
+                    req_hdrs = {"Content-Type": "application/json"}
+                    if path_url.startswith("/api/v1/profile"):
+                        req_hdrs["Cookie"] = srv_cookie
+                        req_hdrs["X-CSRF-Token"] = srv_csrf
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{port}{path_url}",
+                        data=json.dumps(payload_obj).encode("utf-8"),
+                        headers=req_hdrs,
+                        method=method,
+                    )
+                    err_body = ""
+                    try:
+                        with urllib.request.urlopen(req, timeout=5.0) as resp_ok:
+                            code = resp_ok.status
+                            err_body = resp_ok.read().decode("utf-8")
+                    except urllib.error.HTTPError as http_err:
+                        code = http_err.code
+                        err_body = http_err.read().decode("utf-8")
+                    self.assertEqual(
+                        code,
+                        422,
+                        f"Expected 422 for {method} {path_url} {payload_obj!r}, got {code}: {err_body}",
+                    )
+                    parsed_err = json.loads(err_body)
+                    self.assertIn("error", parsed_err)
+
+                # Confirm live server remains healthy afterward
+                ok_req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/v1/vacations/search",
+                    data=json.dumps({**base_spec, "destination_iatas": ["ATH"]}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(ok_req, timeout=5.0) as ok_resp:
+                    self.assertEqual(ok_resp.status, 200)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+                client.router.repository.close()
 
     def test_holistic_live_http_schema_validation_sqlite_error_guard_and_profile_preservation(
         self,
@@ -1900,124 +2019,142 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         import http.client
         import json
         import threading
-        from backend.app.main import create_http_server
+        from backend.app.main import VacationPlannerTestClient, create_http_server
 
-        srv = create_http_server("127.0.0.1", 0, db_path=":memory:")
-        port = srv.server_address[1]
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        with tempfile.TemporaryDirectory() as hol_tmp:
+            hol_db = Path(hol_tmp) / "holistic_fuzzer.db"
+            auth_setup = VacationPlannerTestClient(db_path=hol_db)
+            hol_cookie, hol_csrf = self._authenticate_client(
+                auth_setup, email="holistic.fuzzer@gmail.com", seed_default_household=True
+            )
+            srv = create_http_server("127.0.0.1", 0, db_path=hol_db)
+            port = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-        def raw_req(method: str, path_url: str, body_bytes: bytes) -> tuple[int | str, str]:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+            def raw_req(
+                method: str, path_url: str, body_bytes: bytes, with_auth: bool = True
+            ) -> tuple[int | str, str]:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+                try:
+                    req_hdrs = {"Content-Type": "application/json"}
+                    if with_auth and path_url.startswith("/api/v1/profile"):
+                        req_hdrs["Cookie"] = hol_cookie
+                        req_hdrs["X-CSRF-Token"] = hol_csrf
+                    conn.request(
+                        method,
+                        path_url,
+                        body=body_bytes,
+                        headers=req_hdrs,
+                    )
+                    resp = conn.getresponse()
+                    return resp.status, resp.read().decode("utf-8", "replace")
+                except Exception as exc:  # pragma: no cover - surfaces thread crashes
+                    return f"CRASH:{type(exc).__name__}", str(exc)
+                finally:
+                    conn.close()
+
+            base_spec = {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-05-10",
+                "specific_return_date": "2027-05-18",
+            }
+            base_prof = {
+                "id": "default-family-profile",
+                "adults_count": 2,
+                "children": [],
+                "passenger_loyalty_wallets": [],
+            }
+
             try:
-                conn.request(
-                    method,
-                    path_url,
-                    body=body_bytes,
-                    headers={"Content-Type": "application/json"},
-                )
-                resp = conn.getresponse()
-                return resp.status, resp.read().decode("utf-8", "replace")
-            except Exception as exc:  # pragma: no cover - surfaces thread crashes
-                return f"CRASH:{type(exc).__name__}", str(exc)
-            finally:
-                conn.close()
+                # Verify unauthenticated GET / PUT /api/v1/profile returns 401
+                unauth_get_code, _ = raw_req("GET", "/api/v1/profile", b"", with_auth=False)
+                unauth_put_code, _ = raw_req("PUT", "/api/v1/profile", b"{}", with_auth=False)
+                self.assertEqual(unauth_get_code, 401)
+                self.assertEqual(unauth_put_code, 401)
 
-        base_spec = {
-            "date_selection_mode": "SPECIFIC_DATES",
-            "specific_departure_date": "2027-05-10",
-            "specific_return_date": "2027-05-18",
-        }
-        base_prof = {
-            "id": "default-family-profile",
-            "adults_count": 2,
-            "children": [],
-            "passenger_loyalty_wallets": [],
-        }
+                # Capture initial saved user household profile before adversarial PUTs
+                prof_before_code, prof_before_raw = raw_req("GET", "/api/v1/profile", b"")
+                self.assertEqual(prof_before_code, 200)
+                prof_before = json.loads(prof_before_raw)
+                self.assertGreater(len(prof_before["children"]), 0)
+                self.assertEqual(prof_before["matmid_points_balance"], 185000)
 
-        try:
-            # Capture initial seeded household profile before adversarial PUTs
-            prof_before_code, prof_before_raw = raw_req("GET", "/api/v1/profile", b"")
-            self.assertEqual(prof_before_code, 200)
-            prof_before = json.loads(prof_before_raw)
-            self.assertGreater(len(prof_before["children"]), 0)
-            self.assertEqual(prof_before["matmid_points_balance"], 185000)
+                # Exact 16 Challenger Iteration 2 live-HTTP fuzzer cases + extended holistic matrix
+                cases: list[tuple[str, str, bytes]] = [
+                    # 1-16: Exact Challenger Iteration 2 §5 reproducer cases
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "school_year": []}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "created_at": [1]}).encode()),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "created_at": [1]}).encode()),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "pool_group_id": []}]}).encode()),
+                    ("PUT", "/api/v1/profile", b"null"),
+                    ("POST", "/api/v1/vacations/search", b"null"),
+                    ("POST", "/api/v1/elal-bonus/sync", b"null"),
+                    ("POST", "/api/v1/elal-bonus/sync", b"[]"),
+                    ("POST", "/api/v1/elal-bonus/sync", b"123"),
+                    ("POST", "/api/v1/elal-bonus/sync", b"true"),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": []}).encode()),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": 12345}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "enabled_loyalty_programs": [None, {}]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "preferred_cabins": [None, {}]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "matmid_points_balance": 10**100}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "origin_iata": 123}).encode()),
+                    # Extended holistic coverage across all routes & fields
+                    ("PUT", "/api/v1/profile", b"NaN"),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "updated_at": [1]}).encode()),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "matmid_points_balance": 10**100}).encode()),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "has_flycard": 2}).encode()),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "children": [{"child_age_years": 6, "birth_date": []}]}).encode()),
+                    ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "points_balance": 10**100}]}).encode()),
+                    ("POST", "/api/v1/moe-calendar/sync/2026-2027", b"null"),
+                    ("POST", "/api/v1/moe-calendar/sync/2026-2027", json.dumps({"force_remote_check": "yes"}).encode()),
+                    ("POST", "/api/v1/vacations/compare", b"null"),
+                    ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": [None]}).encode()),
+                    ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": ["   "]}).encode()),
+                    ("POST", "/api/v1/elal-bonus/sync", b"NaN"),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": [None, 123, {}]}).encode()),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": False}).encode()),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "origin": 123}).encode()),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "force_refresh": "yes"}).encode()),
+                    ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "months_ahead": 99}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": []}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": [123]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "target_holiday_codes": [None]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "include_sundor_flights": "yes"}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "family_profile_id": [1, 2]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "id": {"bad": 1}}).encode()),
+                ]
 
-            # Exact 16 Challenger Iteration 2 live-HTTP fuzzer cases + extended holistic matrix
-            cases: list[tuple[str, str, bytes]] = [
-                # 1-16: Exact Challenger Iteration 2 §5 reproducer cases
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "school_year": []}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "created_at": [1]}).encode()),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "created_at": [1]}).encode()),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "pool_group_id": []}]}).encode()),
-                ("PUT", "/api/v1/profile", b"null"),
-                ("POST", "/api/v1/vacations/search", b"null"),
-                ("POST", "/api/v1/elal-bonus/sync", b"null"),
-                ("POST", "/api/v1/elal-bonus/sync", b"[]"),
-                ("POST", "/api/v1/elal-bonus/sync", b"123"),
-                ("POST", "/api/v1/elal-bonus/sync", b"true"),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": []}).encode()),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": 12345}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "enabled_loyalty_programs": [None, {}]}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "preferred_cabins": [None, {}]}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "matmid_points_balance": 10**100}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "origin_iata": 123}).encode()),
-                # Extended holistic coverage across all routes & fields
-                ("PUT", "/api/v1/profile", b"NaN"),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "updated_at": [1]}).encode()),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "matmid_points_balance": 10**100}).encode()),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "has_flycard": 2}).encode()),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "children": [{"child_age_years": 6, "birth_date": []}]}).encode()),
-                ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "points_balance": 10**100}]}).encode()),
-                ("POST", "/api/v1/moe-calendar/sync/2026-2027", b"null"),
-                ("POST", "/api/v1/moe-calendar/sync/2026-2027", json.dumps({"force_remote_check": "yes"}).encode()),
-                ("POST", "/api/v1/vacations/compare", b"null"),
-                ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": [None]}).encode()),
-                ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": ["   "]}).encode()),
-                ("POST", "/api/v1/elal-bonus/sync", b"NaN"),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": [None, 123, {}]}).encode()),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": False}).encode()),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "origin": 123}).encode()),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "force_refresh": "yes"}).encode()),
-                ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "months_ahead": 99}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": []}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": [123]}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "target_holiday_codes": [None]}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "include_sundor_flights": "yes"}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "family_profile_id": [1, 2]}).encode()),
-                ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "id": {"bad": 1}}).encode()),
-            ]
+                for method, path_url, body_bytes in cases:
+                    status, resp_text = raw_req(method, path_url, body_bytes)
+                    self.assertEqual(
+                        status,
+                        422,
+                        f"Expected HTTP 422 for {method} {path_url} {body_bytes[:80]!r}, got {status}: {resp_text}",
+                    )
+                    err_obj = json.loads(resp_text)
+                    self.assertIn("error", err_obj)
 
-            for method, path_url, body_bytes in cases:
-                status, resp_text = raw_req(method, path_url, body_bytes)
+                # Verify saved profile was NOT wiped by PUT b"null" or any invalid PUT
+                prof_after_code, prof_after_raw = raw_req("GET", "/api/v1/profile", b"")
+                self.assertEqual(prof_after_code, 200)
+                prof_after = json.loads(prof_after_raw)
+                self.assertEqual(len(prof_after["children"]), len(prof_before["children"]))
                 self.assertEqual(
-                    status,
-                    422,
-                    f"Expected HTTP 422 for {method} {path_url} {body_bytes[:80]!r}, got {status}: {resp_text}",
+                    prof_after["matmid_points_balance"],
+                    prof_before["matmid_points_balance"],
                 )
-                err_obj = json.loads(resp_text)
-                self.assertIn("error", err_obj)
+                self.assertEqual(prof_after["adults_count"], prof_before["adults_count"])
 
-            # Verify saved profile was NOT wiped by PUT b"null" or any invalid PUT
-            prof_after_code, prof_after_raw = raw_req("GET", "/api/v1/profile", b"")
-            self.assertEqual(prof_after_code, 200)
-            prof_after = json.loads(prof_after_raw)
-            self.assertEqual(len(prof_after["children"]), len(prof_before["children"]))
-            self.assertEqual(
-                prof_after["matmid_points_balance"],
-                prof_before["matmid_points_balance"],
-            )
-            self.assertEqual(prof_after["adults_count"], prof_before["adults_count"])
-
-            # Verify empty HTTP body b"" on POST /api/v1/elal-bonus/sync and GET->PUT profile round-trip still return 200
-            empty_sync_code, _ = raw_req("POST", "/api/v1/elal-bonus/sync", b"")
-            self.assertEqual(empty_sync_code, 200)
-            roundtrip_code, _ = raw_req(
-                "PUT", "/api/v1/profile", json.dumps(prof_after).encode("utf-8")
-            )
-            self.assertEqual(roundtrip_code, 200)
-        finally:
-            srv.shutdown()
-            srv.server_close()
+                # Verify empty HTTP body b"" on POST /api/v1/elal-bonus/sync and GET->PUT profile round-trip still return 200
+                empty_sync_code, _ = raw_req("POST", "/api/v1/elal-bonus/sync", b"")
+                self.assertEqual(empty_sync_code, 200)
+                roundtrip_code, _ = raw_req(
+                    "PUT", "/api/v1/profile", json.dumps(prof_after).encode("utf-8")
+                )
+                self.assertEqual(roundtrip_code, 200)
+            finally:
+                srv.shutdown()
+                srv.server_close()
 
         # Verify router-level base sqlite3.Error guard catches ProgrammingError/InterfaceError as clean HTTP 422
         import sqlite3
@@ -2026,12 +2163,23 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
 
         guard_router = VacationPlannerAPIRouter(db_path=":memory:")
         try:
+            guard_login = _make_mock_token_exchanger("guard@gmail.com")
+            g_cookie, g_csrf = guard_login(guard_router, user_email="guard@gmail.com")
+            put_st, _, _ = guard_router.dispatch(
+                "PUT",
+                "/api/v1/profile",
+                json_body={"adults_count": 2},
+                request_headers={"cookie": g_cookie, "x-csrf-token": g_csrf},
+            )
+            self.assertEqual(put_st, 200)
             with patch.object(
                 guard_router.repository,
                 "get_profile",
                 side_effect=sqlite3.ProgrammingError("Simulated parameter binding error"),
             ):
-                g_status, _, g_body = guard_router.dispatch("GET", "/api/v1/profile")
+                g_status, _, g_body = guard_router.dispatch(
+                    "GET", "/api/v1/profile", request_headers={"cookie": g_cookie}
+                )
                 self.assertEqual(g_status, 422)
                 self.assertIn("Simulated parameter binding error", json.loads(g_body)["error"])
         finally:

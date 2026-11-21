@@ -31,6 +31,13 @@ import sqlite3
 from typing import Any, Optional
 import urllib.parse
 
+from backend.app.auth_service import (
+    AuthError,
+    GoogleOAuthService,
+    TokenExchangerFn,
+    redact_pii,
+    sha256_hex,
+)
 from backend.app.calendar_engine.moe_calendar_service import (
     MoECalendarAutoUpdaterService,
     MoECalendarService,
@@ -66,7 +73,10 @@ from backend.app.schemas.domain import (
     WORKWEEK_TYPES,
 )
 from backend.app.storage_cache.repository import SQLiteRepository
-from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
+from backend.app.storage_cache.seed_data import (
+    DESTINATION_CATALOG,
+    build_clean_guest_profile,
+)
 from backend.app.vacation_optimizer.maximizer_engine import (
     VacationMaximizerEngine,
     resolve_holiday_direct_intent_school_year,
@@ -396,12 +406,19 @@ def _validate_profile_payload_strict(payload: dict[str, Any]) -> None:
 
     for str_key, max_l in (
         ("id", 128),
+        ("profile_id", 128),
+        ("user_id", 128),
+        ("email", 256),
         ("profile_name", 256),
         ("created_at", 128),
         ("updated_at", 128),
     ):
         if str_key in payload:
             _validate_optional_str(payload[str_key], str_key, max_len=max_l)
+
+    if "notifications_enabled" in payload and payload["notifications_enabled"] is not None:
+        if not isinstance(payload["notifications_enabled"], bool):
+            raise ValueError("notifications_enabled must be a boolean")
 
     if "has_flycard" in payload:
         if not isinstance(payload["has_flycard"], bool):
@@ -1063,12 +1080,49 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
         )
         payload["min_weather_suitability_score"] = min_wss_val
 
+    if "inline_profile" in payload and payload["inline_profile"] is not None:
+        if not isinstance(payload["inline_profile"], dict):
+            raise ValueError("inline_profile must be a JSON object")
+        inline_copy = dict(payload["inline_profile"])
+        _validate_profile_payload_strict(inline_copy)
+        payload["inline_profile"] = inline_copy
+
+    inline_top_keys = (
+        "adults_count",
+        "workweek_type",
+        "erev_chag_pto_weight",
+        "chol_hamoed_pto_weight",
+        "annual_pto_budget",
+        "annual_pto_days_budget",
+        "max_pto_per_trip",
+        "has_flycard",
+        "flycard_tier",
+        "flycard_companion_vouchers",
+        "children",
+    )
+    top_prof_subset = {
+        k: payload[k]
+        for k in inline_top_keys
+        if k in payload and payload[k] is not None
+    }
+    if top_prof_subset:
+        _validate_profile_payload_strict(top_prof_subset)
+        for k, v in top_prof_subset.items():
+            payload[k] = v
+
 
 class VacationPlannerAPIRouter:
     """Dependency-injected REST API v1 dispatcher."""
 
-    def __init__(self, db_path: Optional[str | Path] = None) -> None:
+    def __init__(
+        self,
+        db_path: Optional[str | Path] = None,
+        token_exchanger: Optional[TokenExchangerFn] = None,
+    ) -> None:
         self.repository = SQLiteRepository(db_path=db_path, auto_seed=True)
+        self.auth_service = GoogleOAuthService(
+            self.repository, token_exchanger=token_exchanger
+        )
         self.calendar_service = MoECalendarService(self.repository)
         self.auto_updater = MoECalendarAutoUpdaterService(self.repository)
         self.maximizer_engine = VacationMaximizerEngine(self.calendar_service)
@@ -1082,6 +1136,105 @@ class VacationPlannerAPIRouter:
             self.commercial_adapter,
         )
 
+    def _build_effective_request_profile(
+        self,
+        session: Optional[dict[str, Any]],
+        body: Optional[dict[str, Any]] = None,
+        frameworks_csv: Optional[str] = None,
+    ) -> tuple[FamilyProfile, bool]:
+        """Construct the active household profile for search/calendar strictly from verified session or clean guest defaults."""
+        if session is not None:
+            saved_prof = self.repository.get_profile_for_user(session["user_id"])
+            has_persisted = saved_prof is not None
+            base_prof = (
+                saved_prof if saved_prof is not None else build_clean_guest_profile()
+            )
+            if not has_persisted:
+                base_prof.id = f"user-profile-{session['user_id']}"
+        else:
+            has_persisted = False
+            base_prof = build_clean_guest_profile()
+
+        prof_dict = base_prof.to_dict()
+        override_keys = (
+            "adults_count",
+            "workweek_type",
+            "erev_chag_pto_weight",
+            "chol_hamoed_pto_weight",
+            "annual_pto_budget",
+            "max_pto_per_trip",
+            "has_flycard",
+            "flycard_tier",
+            "flycard_companion_vouchers",
+            "children",
+        )
+        explicit_matmid: Optional[int] = None
+
+        if isinstance(body, dict):
+            inline_prof = body.get("inline_profile")
+            if isinstance(inline_prof, dict):
+                for k in override_keys:
+                    if k in inline_prof and inline_prof[k] is not None:
+                        prof_dict[k] = inline_prof[k]
+                if (
+                    "matmid_points_balance" in inline_prof
+                    and inline_prof["matmid_points_balance"] is not None
+                    and inline_prof["matmid_points_balance"] != ""
+                ):
+                    explicit_matmid = int(inline_prof["matmid_points_balance"])
+
+            for k in override_keys:
+                if k in body and body[k] is not None:
+                    prof_dict[k] = body[k]
+            if (
+                "matmid_points_balance" in body
+                and body["matmid_points_balance"] is not None
+                and body["matmid_points_balance"] != ""
+            ):
+                explicit_matmid = int(body["matmid_points_balance"])
+
+        if explicit_matmid is not None:
+            prof_dict["matmid_points_balance"] = explicit_matmid
+            prof_dict["passenger_loyalty_wallets"] = []
+
+        if frameworks_csv is not None and frameworks_csv.strip():
+            _validate_optional_str(frameworks_csv, "frameworks", max_len=1024)
+            fw_tokens = [
+                tok.strip().upper()
+                for tok in frameworks_csv.split(",")
+                if tok.strip()
+            ]
+            for fw_tok in fw_tokens:
+                if fw_tok not in _VALID_FRAMEWORKS:
+                    raise ValueError(
+                        f"Invalid framework code in frameworks parameter: {fw_tok!r}"
+                    )
+            if fw_tokens:
+                prof_dict["children"] = [
+                    {
+                        "id": f"ephemeral-fw-{idx}",
+                        "child_name": "ילד/ה",
+                        "child_age_years": 6,
+                        "framework_type": fw_code,
+                    }
+                    for idx, fw_code in enumerate(fw_tokens, start=1)
+                ]
+
+        # Sanitize inline children in memory (never expose/persist unnecessary PII)
+        sanitized_children: list[dict[str, Any]] = []
+        for idx, ch in enumerate(prof_dict.get("children") or [], start=1):
+            c_dict = ch if isinstance(ch, dict) else ch.to_dict()
+            c_copy = dict(c_dict)
+            c_copy["id"] = f"{base_prof.id}:ephemeral-child:{idx}"
+            c_copy["family_profile_id"] = base_prof.id
+            if not c_copy.get("child_name") or not str(c_copy["child_name"]).strip():
+                c_copy["child_name"] = "ילד/ה"
+            sanitized_children.append(c_copy)
+        prof_dict["children"] = sanitized_children
+        prof_dict["id"] = base_prof.id
+
+        return FamilyProfile.from_dict(prof_dict), has_persisted
+
     def dispatch(
         self,
         method: str,
@@ -1089,7 +1242,7 @@ class VacationPlannerAPIRouter:
         query_params: Optional[dict[str, str]] = None,
         json_body: Optional[dict[str, Any]] = None,
         request_headers: Optional[dict[str, str]] = None,
-    ) -> tuple[int, dict[str, str], str]:
+    ) -> tuple[int, dict[str, Any], str]:
         """Dispatch an API request and return `(status_code, headers, body_text)`."""
         parsed = urllib.parse.urlsplit(raw_path)
         path = parsed.path.rstrip("/") or "/"
@@ -1101,7 +1254,27 @@ class VacationPlannerAPIRouter:
                 q_params[str(k)] = str(v)
 
         method_u = method.upper()
-        json_headers = {"Content-Type": "application/json; charset=utf-8"}
+        is_private_route = (
+            path.startswith("/api/v1/auth")
+            or path.startswith("/api/v1/profile")
+            or path == "/api/v1/moe-calendar/upcoming"
+            or (
+                method_u == "GET"
+                and path.startswith("/api/v1/moe-calendar/")
+            )
+            or path in ("/api/v1/vacations/search", "/api/v1/vacations/compare")
+            or (
+                path.startswith("/api/v1/vacations/")
+                and path.endswith("/export.ics")
+            )
+        )
+        json_headers: dict[str, Any] = {"Content-Type": "application/json; charset=utf-8"}
+        private_json_headers: dict[str, Any] = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store, private",
+            "Vary": "Cookie",
+        }
+        active_err_headers = private_json_headers if is_private_route else json_headers
 
         try:
             # 1. GET /api/v1/health
@@ -1113,40 +1286,226 @@ class VacationPlannerAPIRouter:
                     "version": "1.0.0",
                     "sqlite_version": sqlite3.sqlite_version,
                     "wal_mode": bool(health.get("wal_mode", True)),
-                    "tables_count": int(health.get("tables_count", 8)),
+                    "tables_count": int(health.get("tables_count", 11)),
                     "db_path": str(self.repository.db_path),
                 }
                 return 200, json_headers, json.dumps(payload, ensure_ascii=False)
 
-            # 2. GET /api/v1/profile
-            if method_u == "GET" and path == "/api/v1/profile":
-                profile_id = q_params.get("profile_id", "default-family-profile")
-                _validate_optional_str(profile_id, "profile_id", max_len=128)
-                profile = self.repository.get_profile(profile_id or "default-family-profile")
-                if profile is None:
-                    return (
-                        404,
-                        json_headers,
-                        json.dumps({"error": f"Profile {profile_id!r} not found"}),
-                    )
+            # 1b. Auth & Session Endpoints (/api/v1/auth/*)
+            if method_u == "GET" and path == "/api/v1/auth/session":
+                session = self.auth_service.resolve_session(request_headers)
+                oauth_cfg = self.auth_service.is_oauth_configured()
+                test_mode = self.auth_service.is_test_mode_allowed(request_headers)
+                if session is None:
+                    sess_payload = {
+                        "authenticated": False,
+                        "oauth_configured": oauth_cfg,
+                        "test_mode": test_mode,
+                        "csrf_token": None,
+                        "user": None,
+                    }
+                else:
+                    sess_payload = {
+                        "authenticated": True,
+                        "oauth_configured": oauth_cfg,
+                        "test_mode": test_mode,
+                        "csrf_token": session["csrf_token"],
+                        "user": session["user"],
+                    }
                 return (
                     200,
-                    json_headers,
-                    json.dumps(profile.to_dict(), ensure_ascii=False),
+                    private_json_headers,
+                    json.dumps(sess_payload, ensure_ascii=False),
                 )
 
-            # 3. PUT /api/v1/profile
+            if method_u == "GET" and path == "/api/v1/auth/google/login":
+                return self.auth_service.start_login(
+                    request_headers=request_headers, query_params=q_params
+                )
+
+            if method_u == "GET" and path == "/api/v1/auth/google/callback":
+                return self.auth_service.handle_callback(
+                    request_headers=request_headers, query_params=q_params
+                )
+
+            if method_u == "GET" and path == "/api/v1/auth/test-oauth-authorize":
+                return self.auth_service.handle_test_oauth_authorize(
+                    request_headers=request_headers, query_params=q_params
+                )
+
+            if method_u == "POST" and path == "/api/v1/auth/test-login":
+                return self.auth_service.handle_test_login_direct(
+                    json_body=json_body, request_headers=request_headers
+                )
+
+            if method_u == "POST" and path == "/api/v1/auth/logout":
+                session = self.auth_service.require_session(request_headers)
+                self.auth_service.verify_csrf(session, request_headers)
+                raw_tok = self.auth_service.extract_raw_session_token(request_headers)
+                if raw_tok:
+                    self.repository.revoke_session_by_token_hash(sha256_hex(raw_tok))
+                self.planner_service.evict_ephemeral_proposals_for_user(
+                    session["user_id"]
+                )
+                is_https = self.auth_service.is_https_request(request_headers)
+                logout_headers: dict[str, Any] = {
+                    **private_json_headers,
+                    "Set-Cookie": self.auth_service.build_clear_session_cookies(is_https),
+                }
+                return (
+                    200,
+                    logout_headers,
+                    json.dumps({"status": "logged_out", "authenticated": False}),
+                )
+
+            if method_u == "PUT" and path == "/api/v1/auth/notifications":
+                session = self.auth_service.require_session(request_headers)
+                self.auth_service.verify_csrf(session, request_headers)
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                body = dict(json_body)
+                if "notifications_enabled" not in body or not isinstance(
+                    body["notifications_enabled"], bool
+                ):
+                    raise ValueError("notifications_enabled boolean is required")
+                if "notification_email" in body and body["notification_email"] is not None:
+                    req_email = str(body["notification_email"]).strip().lower()
+                    if req_email != str(session["user"]["email"]).strip().lower():
+                        raise AuthError(
+                            403,
+                            "notification_email must match the verified Gmail account address.",
+                        )
+                prefs = body.get("notification_preferences")
+                if prefs is not None:
+                    if not isinstance(prefs, dict):
+                        raise ValueError("notification_preferences must be an object")
+                    for bool_p in ("award_seat_alerts", "holiday_reminders"):
+                        if bool_p in prefs and not isinstance(prefs[bool_p], bool):
+                            raise ValueError(f"{bool_p} must be a boolean")
+                    if "preferred_locale" in prefs and prefs["preferred_locale"] not in (
+                        "he",
+                        "en",
+                    ):
+                        raise ValueError("preferred_locale must be 'he' or 'en'")
+                updated_user = self.repository.update_user_notifications(
+                    user_id=session["user_id"],
+                    notifications_enabled=body["notifications_enabled"],
+                    preferences=prefs,
+                )
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps({"status": "ok", "user": updated_user}, ensure_ascii=False),
+                )
+
+            if method_u == "DELETE" and path == "/api/v1/auth/account":
+                session = self.auth_service.require_session(request_headers)
+                self.auth_service.verify_csrf(session, request_headers)
+                self.planner_service.evict_ephemeral_proposals_for_user(
+                    session["user_id"]
+                )
+                self.repository.delete_user_account(session["user_id"])
+                is_https = self.auth_service.is_https_request(request_headers)
+                del_acct_headers: dict[str, Any] = {
+                    **private_json_headers,
+                    "Set-Cookie": self.auth_service.build_clear_session_cookies(is_https),
+                }
+                return (
+                    200,
+                    del_acct_headers,
+                    json.dumps({"status": "account_deleted", "authenticated": False}),
+                )
+
+            # 2. GET /api/v1/profile (Strictly authenticated user's own profile; ignores ?profile_id / ?user_id / ?email)
+            if method_u == "GET" and path == "/api/v1/profile":
+                session = self.auth_service.require_session(request_headers)
+                saved_prof = self.repository.get_profile_for_user(session["user_id"])
+                if saved_prof is not None:
+                    prof_out = saved_prof.to_dict()
+                    prof_out["is_persisted"] = True
+                else:
+                    starter = build_clean_guest_profile()
+                    starter.id = f"user-profile-{session['user_id']}"
+                    starter.profile_name = ""
+                    prof_out = starter.to_dict()
+                    prof_out["is_persisted"] = False
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(prof_out, ensure_ascii=False),
+                )
+
+            # 3. PUT /api/v1/profile (Strictly authenticated + CSRF; ignores client id/profile_id/user_id/email)
             if method_u == "PUT" and path == "/api/v1/profile":
+                session = self.auth_service.require_session(request_headers)
+                self.auth_service.verify_csrf(session, request_headers)
                 if not isinstance(json_body, dict):
                     raise ValueError("Request body must be a JSON object")
                 body = dict(json_body)
                 _validate_profile_payload_strict(body)
-                profile = FamilyProfile.from_dict(body)
-                saved = self.repository.save_profile(profile)
+                notif_opt_in = (
+                    body.pop("notifications_enabled")
+                    if "notifications_enabled" in body
+                    else None
+                )
+                for untrusted_key in ("id", "profile_id", "user_id", "email"):
+                    body.pop(untrusted_key, None)
+
+                # Minimize children PII: default generic child_name, default birth_date to None
+                if "children" in body and isinstance(body["children"], list):
+                    clean_children: list[dict[str, Any]] = []
+                    for ch_idx, ch_raw in enumerate(body["children"], start=1):
+                        ch_copy = dict(ch_raw)
+                        ch_copy["id"] = f"user-profile-{session['user_id']}:child:{ch_idx}"
+                        ch_copy["family_profile_id"] = f"user-profile-{session['user_id']}"
+                        raw_cname = str(
+                            ch_copy.get("child_name") or ch_copy.get("child_name_he") or ""
+                        ).strip()
+                        ch_copy["child_name"] = raw_cname if raw_cname else "ילד/ה"
+                        if not ch_copy.get("birth_date"):
+                            ch_copy["birth_date"] = None
+                        clean_children.append(ch_copy)
+                    body["children"] = clean_children
+
+                if "passenger_loyalty_wallets" in body and isinstance(
+                    body["passenger_loyalty_wallets"], list
+                ):
+                    clean_wallets: list[dict[str, Any]] = []
+                    for w_idx, w_raw in enumerate(
+                        body["passenger_loyalty_wallets"], start=1
+                    ):
+                        w_copy = dict(w_raw)
+                        w_copy["id"] = f"user-profile-{session['user_id']}:wallet:{w_idx}"
+                        w_copy["family_profile_id"] = f"user-profile-{session['user_id']}"
+                        clean_wallets.append(w_copy)
+                    body["passenger_loyalty_wallets"] = clean_wallets
+
+                saved = self.repository.save_profile_for_user(session["user_id"], body)
+                if isinstance(notif_opt_in, bool):
+                    self.repository.update_user_notifications(
+                        user_id=session["user_id"],
+                        notifications_enabled=notif_opt_in,
+                    )
+                saved_out = saved.to_dict()
+                saved_out["is_persisted"] = True
                 return (
                     200,
-                    json_headers,
-                    json.dumps(saved.to_dict(), ensure_ascii=False),
+                    private_json_headers,
+                    json.dumps(saved_out, ensure_ascii=False),
+                )
+
+            # 3b. DELETE /api/v1/profile (Strictly authenticated + CSRF; deletes only session user's profile)
+            if method_u == "DELETE" and path == "/api/v1/profile":
+                session = self.auth_service.require_session(request_headers)
+                self.auth_service.verify_csrf(session, request_headers)
+                self.planner_service.evict_ephemeral_proposals_for_user(
+                    session["user_id"]
+                )
+                deleted = self.repository.delete_profile_for_user(session["user_id"])
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps({"status": "deleted", "deleted": deleted}),
                 )
 
             # 4. POST /api/v1/moe-calendar/sync/{school_year}
@@ -1175,11 +1534,12 @@ class VacationPlannerAPIRouter:
 
             # 4b. GET /api/v1/moe-calendar/upcoming
             if method_u == "GET" and path == "/api/v1/moe-calendar/upcoming":
-                profile_id = q_params.get("profile_id", "default-family-profile")
-                _validate_optional_str(profile_id, "profile_id", max_len=128)
-                profile = (
-                    self.repository.get_profile(profile_id or "default-family-profile")
-                    or FamilyProfile()
+                if "profile_id" in q_params:
+                    _validate_optional_str(q_params["profile_id"], "profile_id", max_len=128)
+                session = self.auth_service.resolve_session(request_headers)
+                profile, _ = self._build_effective_request_profile(
+                    session=session,
+                    frameworks_csv=q_params.get("frameworks"),
                 )
                 as_of_raw = q_params.get("as_of")
                 ref_d = (
@@ -1202,7 +1562,7 @@ class VacationPlannerAPIRouter:
                 }
                 return (
                     200,
-                    json_headers,
+                    private_json_headers,
                     json.dumps(upcoming_payload, ensure_ascii=False),
                 )
 
@@ -1210,11 +1570,12 @@ class VacationPlannerAPIRouter:
             if method_u == "GET" and path.startswith("/api/v1/moe-calendar/"):
                 school_year_raw = path[len("/api/v1/moe-calendar/") :]
                 norm_year = _validate_school_year_strict(school_year_raw)
-                profile_id = q_params.get("profile_id", "default-family-profile")
-                _validate_optional_str(profile_id, "profile_id", max_len=128)
-                profile = (
-                    self.repository.get_profile(profile_id or "default-family-profile")
-                    or FamilyProfile()
+                if "profile_id" in q_params:
+                    _validate_optional_str(q_params["profile_id"], "profile_id", max_len=128)
+                session = self.auth_service.resolve_session(request_headers)
+                profile, _ = self._build_effective_request_profile(
+                    session=session,
+                    frameworks_csv=q_params.get("frameworks"),
                 )
                 windows = self.calendar_service.get_calendar_windows(norm_year)
                 meta = self.calendar_service.get_calendar_metadata(norm_year)
@@ -1252,7 +1613,7 @@ class VacationPlannerAPIRouter:
                 }
                 return (
                     200,
-                    json_headers,
+                    private_json_headers,
                     json.dumps(timeline_payload, ensure_ascii=False),
                 )
 
@@ -1275,7 +1636,7 @@ class VacationPlannerAPIRouter:
                     elif isinstance(body.get("sync_token"), str):
                         provided_token = body["sync_token"].strip()
                     if not provided_token or not hmac.compare_digest(
-                        provided_token, required_token
+                        provided_token.encode("utf-8"), required_token.encode("utf-8")
                     ):
                         return (
                             401,
@@ -1500,33 +1861,26 @@ class VacationPlannerAPIRouter:
                             resolved_ty,
                         )
 
+                # Ignore client-supplied profile_id / family_profile_id to enforce strict per-user isolation
+                body.pop("profile_id", None)
+                body.pop("family_profile_id", None)
                 query = FlightSearchQuery.from_dict(body)
                 if resolved_ty is not None:
                     setattr(query, "_resolved_target_year", resolved_ty)
-                profile_id = str(body.get("profile_id") or "default-family-profile")
-                profile = self.repository.get_profile(profile_id)
-                if (
-                    "matmid_points_balance" in body
-                    and body["matmid_points_balance"] is not None
-                    and body["matmid_points_balance"] != ""
-                ):
-                    base_prof = (
-                        profile
-                        or self.repository.get_profile()
-                        or FamilyProfile()
-                    )
-                    profile = FamilyProfile.from_dict(
-                        {
-                            **base_prof.to_dict(),
-                            "matmid_points_balance": int(body["matmid_points_balance"]),
-                            "passenger_loyalty_wallets": [],
-                        }
-                    )
+
+                session = self.auth_service.resolve_session(request_headers)
+                profile, has_persisted_profile = self._build_effective_request_profile(
+                    session=session,
+                    body=body,
+                )
                 expanded_dests = self.elal_adapter.expand_metro_iatas(
                     query.destination_iatas
                 )
                 proposals = self.planner_service.search_vacations(
-                    query_data=query, profile=profile
+                    query_data=query,
+                    profile=profile,
+                    persist_results=has_persisted_profile,
+                    owner_user_id=session["user_id"] if session else None,
                 )
                 live_mode = (
                     self.repository.is_live_fetch_mode()
@@ -1563,7 +1917,11 @@ class VacationPlannerAPIRouter:
                     "weather_fallback_message_he": weather_fallback_he,
                     "proposals": [p.to_dict() for p in proposals],
                 }
-                return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(resp_payload, ensure_ascii=False),
+                )
 
             # 8b. GET /api/v1/destinations/weather
             if method_u == "GET" and path == "/api/v1/destinations/weather":
@@ -1685,13 +2043,25 @@ class VacationPlannerAPIRouter:
                         non_empty=True,
                     )
                     clean_pids.append(pid.strip())
-                matrix = self.planner_service.compare_proposals(clean_pids)
+                session = self.auth_service.resolve_session(request_headers)
+                try:
+                    matrix = self.planner_service.compare_proposals(
+                        clean_pids,
+                        requester_user_id=session["user_id"] if session else None,
+                        enforce_owner=True,
+                    )
+                except LookupError as exc:
+                    return (
+                        404,
+                        private_json_headers,
+                        json.dumps({"error": redact_pii(str(exc))}, ensure_ascii=False),
+                    )
                 matrix_dict = (
                     matrix.to_dict() if hasattr(matrix, "to_dict") else dict(matrix)
                 )
                 return (
                     200,
-                    json_headers,
+                    private_json_headers,
                     json.dumps(matrix_dict, ensure_ascii=False),
                 )
 
@@ -1712,29 +2082,42 @@ class VacationPlannerAPIRouter:
                 ):
                     return (
                         400,
-                        json_headers,
+                        private_json_headers,
                         json.dumps({"error": "Invalid or missing proposal_id"}),
                     )
+                session = self.auth_service.resolve_session(request_headers)
                 try:
-                    ics_text = self.planner_service.export_proposal_ics(middle)
-                except (KeyError, ValueError) as exc:
+                    ics_text = self.planner_service.export_proposal_ics(
+                        middle,
+                        requester_user_id=session["user_id"] if session else None,
+                        enforce_owner=True,
+                    )
+                except (LookupError, KeyError, ValueError) as exc:
                     return (
                         404,
-                        json_headers,
-                        json.dumps({"error": str(exc)}, ensure_ascii=False),
+                        private_json_headers,
+                        json.dumps({"error": redact_pii(str(exc))}, ensure_ascii=False),
                     )
                 ics_headers = {
                     "Content-Type": "text/calendar; charset=utf-8",
                     "Content-Disposition": f'attachment; filename="vacation-{middle}.ics"',
+                    "Cache-Control": "no-store, private",
+                    "Vary": "Cookie",
                 }
                 return 200, ics_headers, ics_text
 
             return (
                 404,
-                json_headers,
+                active_err_headers,
                 json.dumps({"error": f"Unknown API endpoint: {method_u} {path}"}),
             )
 
+        except AuthError as auth_exc:
+            return (
+                auth_exc.status_code,
+                private_json_headers,
+                json.dumps({"error": auth_exc.safe_message}, ensure_ascii=False),
+            )
         except (
             ValueError,
             TypeError,
@@ -1744,6 +2127,6 @@ class VacationPlannerAPIRouter:
         ) as exc:
             return (
                 422,
-                json_headers,
-                json.dumps({"error": str(exc)}, ensure_ascii=False),
+                active_err_headers,
+                json.dumps({"error": redact_pii(str(exc))}, ensure_ascii=False),
             )

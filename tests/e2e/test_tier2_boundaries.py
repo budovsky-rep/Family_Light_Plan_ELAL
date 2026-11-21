@@ -49,6 +49,7 @@ class Tier2BoundaryTestBase(unittest.TestCase):
 
     _shared_tmpdir: Optional[tempfile.TemporaryDirectory[str]] = None
     shared_db_path: Path
+    shared_http_db_path: Path
     shared_repo: SQLiteRepository
     _shared_client: Any = None
 
@@ -56,15 +57,30 @@ class Tier2BoundaryTestBase(unittest.TestCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         if Tier2BoundaryTestBase._shared_tmpdir is None:
+            from backend.app.storage_cache.seed_data import build_default_family_profile
+
             Tier2BoundaryTestBase._shared_tmpdir = tempfile.TemporaryDirectory(
                 prefix="fvp_t2_shared_"
             )
             Tier2BoundaryTestBase.shared_db_path = (
                 Path(Tier2BoundaryTestBase._shared_tmpdir.name) / "shared_t2.db"
             )
+            Tier2BoundaryTestBase.shared_http_db_path = (
+                Path(Tier2BoundaryTestBase._shared_tmpdir.name) / "shared_t2_http.db"
+            )
             Tier2BoundaryTestBase.shared_repo = SQLiteRepository(
                 db_path=Tier2BoundaryTestBase.shared_db_path, auto_seed=True
             )
+            if not SQLiteRepository.is_live_fetch_mode():
+                Tier2BoundaryTestBase.shared_repo.save_profile(
+                    build_default_family_profile()
+                )
+                _orig_get_prof = Tier2BoundaryTestBase.shared_repo.get_profile
+                Tier2BoundaryTestBase.shared_repo.get_profile = (  # type: ignore[method-assign]
+                    lambda profile_id=None: _orig_get_prof(
+                        profile_id or "default-family-profile"
+                    )
+                )
 
     @property
     def shared_client(self) -> Any:
@@ -72,9 +88,60 @@ class Tier2BoundaryTestBase(unittest.TestCase):
             from backend.app.main import VacationPlannerTestClient
 
             Tier2BoundaryTestBase._shared_client = VacationPlannerTestClient(
-                db_path=str(self.shared_db_path)
+                db_path=str(self.shared_http_db_path)
             )
         return Tier2BoundaryTestBase._shared_client
+
+    def authenticate_test_client(
+        self, client: Any, email: str = "t2_user@gmail.com"
+    ) -> dict[str, Any]:
+        import time as _time
+        import urllib.parse as _uparse
+        from backend.app.auth_service import (
+            build_unsigned_or_hs256_jwt_for_test,
+            pkce_s256_challenge,
+        )
+
+        auth_svc = client.router.auth_service
+        auth_svc.client_id = "t2-client.apps.googleusercontent.com"
+        auth_svc.client_secret = "t2-client-secret"
+        auth_svc.redirect_uri = (
+            "https://family-trip-planner.duckdns.org/api/v1/auth/google/callback"
+        )
+        login_resp = client.get("/api/v1/auth/google/login")
+        self.assertEqual(login_resp.status_code, 302)
+        q = _uparse.parse_qs(_uparse.urlsplit(login_resp.headers["Location"]).query)
+        state, nonce, challenge = q["state"][0], q["nonce"][0], q["code_challenge"][0]
+
+        def _exchange(
+            code: str, code_verifier: str, redirect_uri: str, cid: str, csec: str
+        ) -> dict[str, Any]:
+            self.assertEqual(pkce_s256_challenge(code_verifier), challenge)
+            now_ts = int(_time.time())
+            return {
+                "id_token": build_unsigned_or_hs256_jwt_for_test(
+                    {
+                        "iss": "https://accounts.google.com",
+                        "aud": cid,
+                        "sub": f"sub-{email}",
+                        "email": email,
+                        "email_verified": True,
+                        "nonce": nonce,
+                        "iat": now_ts - 5,
+                        "exp": now_ts + 3600,
+                    }
+                ),
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            }
+
+        auth_svc.token_exchanger = _exchange
+        cb = client.get(f"/api/v1/auth/google/callback?code=t2-code&state={state}")
+        self.assertEqual(cb.status_code, 302)
+        sess = client.get("/api/v1/auth/session").json()
+        client.default_headers["X-CSRF-Token"] = str(sess["csrf_token"])
+        client.default_headers["Origin"] = "http://127.0.0.1:8000"
+        return sess
 
     def get_client(self, db_path: Optional[str | Path] = None) -> Any:
         from backend.app.main import VacationPlannerTestClient
@@ -2627,7 +2694,18 @@ class TestTier2F29RestApiNegativeAndBoundaries(Tier2BoundaryTestBase):
     def test_f29_01_put_profile_invalid_payloads_return_400_or_422_without_corrupting_db(self) -> None:
         _, db_path = self.create_temp_repo(auto_seed=True)
         client = self.get_client(db_path)
+        # Unauthenticated PUT/GET must return 401
+        self.assertEqual(client.get("/api/v1/profile").status_code, 401)
+        self.assertEqual(client.put("/api/v1/profile", json={"adults_count": 2}).status_code, 401)
+
+        # Authenticate a Gmail user session and save an initial valid profile (adults_count=3)
+        self.authenticate_test_client(client, email="f29_boundary@gmail.com")
+        seed_prof = client.get("/api/v1/profile").json()
+        seed_prof["adults_count"] = 3
+        self.assertEqual(client.put("/api/v1/profile", json=seed_prof).status_code, 200)
         orig = client.get("/api/v1/profile").json()
+        self.assertEqual(orig["adults_count"], 3)
+
         bad_payloads = [
             {**orig, "adults_count": 0},
             {**orig, "adults_count": 9},
@@ -2639,7 +2717,7 @@ class TestTier2F29RestApiNegativeAndBoundaries(Tier2BoundaryTestBase):
             r = client.put("/api/v1/profile", json=bp)
             self.assertIn(r.status_code, (400, 422))
         after = client.get("/api/v1/profile").json()
-        self.assertEqual(after["adults_count"], orig["adults_count"])
+        self.assertEqual(after["adults_count"], 3)
 
     def test_f29_02_moe_calendar_get_and_sync_invalid_school_year_return_400_or_422(self) -> None:
         client = self.get_client()

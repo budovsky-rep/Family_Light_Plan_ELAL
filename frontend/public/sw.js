@@ -3,7 +3,7 @@
  * Caches core application shell assets for offline resilience and fast mobile startup.
  */
 
-const CACHE_NAME = 'family-vacation-planner-v2';
+const CACHE_NAME = 'family-vacation-planner-v3';
 const STATIC_ASSETS = [
   '/',
   '/manifest.webmanifest',
@@ -34,7 +34,8 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  if (request.method !== 'GET') {
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.pathname.startsWith('/api/')) {
     return;
   }
   event.respondWith(

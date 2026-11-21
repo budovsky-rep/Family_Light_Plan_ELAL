@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -264,10 +265,15 @@ class Tier1BaseTestCase(unittest.TestCase):
     def get_repo(self) -> Any:
         if Tier1BaseTestCase._shared_repo is None:
             from backend.app.storage_cache.repository import SQLiteRepository
+            from backend.app.storage_cache.seed_data import build_default_family_profile
 
             Tier1BaseTestCase._shared_repo = SQLiteRepository(
                 db_path=self.shared_db_path, auto_seed=True
             )
+            if not SQLiteRepository.is_live_fetch_mode():
+                Tier1BaseTestCase._shared_repo.save_profile(
+                    build_default_family_profile()
+                )
         return Tier1BaseTestCase._shared_repo
 
     def get_calendar_service(self, repo: Any = None) -> Any:
@@ -364,22 +370,98 @@ class Tier1BaseTestCase(unittest.TestCase):
         if db_path is not None:
             return VacationPlannerTestClient(db_path=str(db_path))
         if Tier1BaseTestCase._shared_client is None:
-            self.get_repo()
+            assert Tier1BaseTestCase._shared_tmpdir is not None
+            shared_http_db = (
+                Path(Tier1BaseTestCase._shared_tmpdir.name) / "tier1_shared_http.db"
+            )
             Tier1BaseTestCase._shared_client = VacationPlannerTestClient(
-                db_path=str(self.shared_db_path)
+                db_path=str(shared_http_db)
             )
         return Tier1BaseTestCase._shared_client
+
+    def authenticate_test_client(
+        self,
+        client: Any,
+        email: str = "family@gmail.com",
+        sub: Optional[str] = None,
+        profile: Any = None,
+    ) -> dict[str, Any]:
+        """Complete real server-side Google OAuth 2.0 + PKCE login on `client` via injected token exchanger."""
+        from backend.app.auth_service import (
+            build_unsigned_or_hs256_jwt_for_test,
+            pkce_s256_challenge,
+        )
+
+        auth_svc = client.router.auth_service
+        auth_svc.client_id = "e2e-client.apps.googleusercontent.com"
+        auth_svc.client_secret = "e2e-client-secret"
+        auth_svc.redirect_uri = (
+            "https://family-trip-planner.duckdns.org/api/v1/auth/google/callback"
+        )
+
+        login_resp = client.get("/api/v1/auth/google/login")
+        self.assertEqual(login_resp.status_code, 302)
+        loc = login_resp.headers["Location"]
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(loc).query)
+        state = q["state"][0]
+        nonce = q["nonce"][0]
+        challenge = q["code_challenge"][0]
+
+        def _exchange(
+            code: str, code_verifier: str, redirect_uri: str, cid: str, csec: str
+        ) -> dict[str, Any]:
+            self.assertEqual(pkce_s256_challenge(code_verifier), challenge)
+            now_ts = int(time.time())
+            id_tok = build_unsigned_or_hs256_jwt_for_test(
+                {
+                    "iss": "https://accounts.google.com",
+                    "aud": cid,
+                    "sub": sub or f"google-sub-{email}",
+                    "email": email,
+                    "email_verified": True,
+                    "name": email.split("@")[0].title(),
+                    "nonce": nonce,
+                    "iat": now_ts - 5,
+                    "exp": now_ts + 3600,
+                }
+            )
+            return {"id_token": id_tok, "token_type": "Bearer", "expires_in": 3600}
+
+        auth_svc.token_exchanger = _exchange
+        cb_resp = client.get(
+            f"/api/v1/auth/google/callback?code=e2e-auth-code&state={state}"
+        )
+        self.assertEqual(cb_resp.status_code, 302)
+
+        sess_resp = client.get("/api/v1/auth/session")
+        self.assertEqual(sess_resp.status_code, 200)
+        sess_json = sess_resp.json()
+        self.assertTrue(sess_json.get("authenticated"))
+        csrf_token = str(sess_json["csrf_token"])
+        client.default_headers["X-CSRF-Token"] = csrf_token
+        client.default_headers["Origin"] = "http://127.0.0.1:8000"
+
+        if profile is not None:
+            payload = (
+                profile.to_dict() if hasattr(profile, "to_dict") else dict(profile)
+            )
+            put_resp = client.put("/api/v1/profile", json=payload)
+            self.assertEqual(put_resp.status_code, 200, put_resp.text)
+        return sess_json
 
     def make_isolated_env(
         self, auto_seed: bool = True
     ) -> tuple[Path, Any]:
         """Create an isolated temporary SQLite database and SQLiteRepository."""
         from backend.app.storage_cache.repository import SQLiteRepository
+        from backend.app.storage_cache.seed_data import build_default_family_profile
 
         tmpdir = tempfile.TemporaryDirectory(prefix="tier1_iso_")
         self.addCleanup(tmpdir.cleanup)
         db_path = Path(tmpdir.name) / "isolated.db"
         repo = SQLiteRepository(db_path=db_path, auto_seed=auto_seed)
+        if auto_seed and not SQLiteRepository.is_live_fetch_mode():
+            repo.save_profile(build_default_family_profile())
         return db_path, repo
 
     def get_default_profile(self, db_path: Optional[str | Path] = None) -> FamilyProfile:
@@ -449,6 +531,9 @@ class TestTier1F01FamilyProfiles(Tier1BaseTestCase):
                 ).fetchall()
             }
             expected_tables = {
+                "users",
+                "auth_sessions",
+                "oauth_login_states",
                 "family_profiles",
                 "passenger_loyalty_wallets",
                 "child_frameworks",
@@ -3169,15 +3254,26 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         h_json = h_resp.json()
         self.assertEqual(h_json["status"], "ok")
         self.assertTrue(bool(h_json["wal_mode"]))
-        self.assertEqual(h_json["tables_count"], 8)
+        self.assertEqual(h_json["tables_count"], 11)
 
+        # Unauthenticated profile access is strictly rejected (401) and never leaks shared profiles
+        unauth_get = client.get("/api/v1/profile")
+        self.assertEqual(unauth_get.status_code, 401)
+        self.assertNotIn("בודובסקי", unauth_get.text)
+        unauth_put = client.put("/api/v1/profile", json={"adults_count": 2})
+        self.assertEqual(unauth_put.status_code, 401)
+
+        # Authenticated Gmail user gets clean starter profile and can persist updates
+        self.authenticate_test_client(client, email="f29_user@gmail.com")
         g_resp = client.get("/api/v1/profile")
         self.assertEqual(g_resp.status_code, 200)
         prof_data = g_resp.json()
         prof_data["annual_pto_budget"] = 18.0
+        prof_data["matmid_points_balance"] = 95000
         p_resp = client.put("/api/v1/profile", json=prof_data)
         self.assertEqual(p_resp.status_code, 200)
         self.assertAlmostEqual(p_resp.json()["annual_pto_budget"], 18.0)
+        self.assertEqual(p_resp.json()["matmid_points_balance"], 95000)
 
     def test_f29_2_moe_calendar_get_and_sync_post_endpoints(self) -> None:
         db_path, _repo = self.make_isolated_env(auto_seed=True)
@@ -3356,12 +3452,47 @@ class TestTier1F30CliCompanion(Tier1BaseTestCase):
         )
 
     def test_f30_1_cli_profile_json_subcommand(self) -> None:
-        res = self._run_cli("profile", "--json")
+        from backend.app.auth_service import sha256_hex
+        from backend.app.storage_cache.seed_data import build_default_family_profile
+
+        db_path, repo = self.make_isolated_env(auto_seed=True)
+        res = self._run_cli("profile", "--json", db_path=db_path)
         self.assertEqual(res.returncode, 0, res.stderr)
         data = json.loads(res.stdout)
-        self.assertEqual(data["id"], "default-family-profile")
+        self.assertFalse(data.get("authenticated", True))
+        self.assertIsNone(data["id"])
         self.assertEqual(data["adults_count"], 2)
-        self.assertEqual(len(data["children"]), 3)
+        self.assertEqual(data["children"], [])
+        self.assertEqual(data["matmid_points_balance"], 0)
+        self.assertNotIn("בודובסקי", res.stdout)
+
+        # Authenticated CLI profile inspection via --session-token
+        user_rec = repo.upsert_google_user(
+            google_sub="cli-sub-f30",
+            email="cli_f30@gmail.com",
+            email_verified=True,
+            display_name="CLI User",
+        )
+        raw_tok = "cli-test-session-token-f30"
+        repo.create_auth_session(
+            user_id=user_rec["id"],
+            token_sha256=sha256_hex(raw_tok),
+            csrf_token="csrf-f30",
+            ttl_seconds=3600,
+        )
+        saved_prof = build_default_family_profile()
+        saved_prof.profile_name = "פרופיל CLI"
+        repo.save_profile_for_user(user_rec["id"], saved_prof)
+
+        auth_res = self._run_cli(
+            "profile", "--session-token", raw_tok, "--json", db_path=db_path
+        )
+        self.assertEqual(auth_res.returncode, 0, auth_res.stderr)
+        auth_data = json.loads(auth_res.stdout)
+        self.assertEqual(auth_data["id"], f"user-profile-{user_rec['id']}")
+        self.assertEqual(auth_data["adults_count"], 2)
+        self.assertEqual(len(auth_data["children"]), 3)
+        self.assertEqual(auth_data["matmid_points_balance"], 185000)
 
     def test_f30_2_cli_calendar_and_sync_json_subcommand(self) -> None:
         db_path, _repo = self.make_isolated_env(auto_seed=True)

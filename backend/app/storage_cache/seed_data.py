@@ -2517,8 +2517,32 @@ def _attach_climate_profiles_to_destination_catalog() -> None:
 _attach_climate_profiles_to_destination_catalog()
 
 
+def build_clean_guest_profile() -> FamilyProfile:
+    """Return a clean, neutral ephemeral household profile for unauthenticated visitors."""
+    prof = FamilyProfile(
+        id="guest-ephemeral",
+        profile_name="",
+        adults_count=2,
+        workweek_type="SUN_THU",
+        erev_chag_pto_weight=0.5,
+        chol_hamoed_pto_weight=0.5,
+        annual_pto_budget=18.0,
+        max_pto_per_trip=5.0,
+        matmid_points_balance=0,
+        has_flycard=False,
+        flycard_tier="NONE",
+        flycard_companion_vouchers=0,
+        point_valuation_usd=0.016,
+        preferred_currency="USD",
+        children=[],
+        passenger_loyalty_wallets=[],
+    )
+    prof.profile_name = ""
+    return prof
+
+
 def build_default_family_profile() -> FamilyProfile:
-    """Return the canonical pre-seeded household profile `משפחת בודובסקי`."""
+    """Return the canonical offline domain test-fixture household profile (never auto-seeded in DB)."""
     children = [
         ChildFramework(
             id="child-noa-1",
@@ -2575,7 +2599,7 @@ def build_default_family_profile() -> FamilyProfile:
             id="wallet-adult1-elal",
             family_profile_id="default-family-profile",
             passenger_id="ADULT_1",
-            passenger_name="יוני (הורה 1)",
+            passenger_name="הורה 1",
             program_code=LoyaltyProgramCode.ELAL_MATMID,
             available_points=115000,
             can_pool_with_family=True,
@@ -2603,7 +2627,7 @@ def build_default_family_profile() -> FamilyProfile:
             id="wallet-adult1-avios",
             family_profile_id="default-family-profile",
             passenger_id="ADULT_1",
-            passenger_name="יוני (הורה 1)",
+            passenger_name="הורה 1",
             program_code=LoyaltyProgramCode.BRITISH_AVIOS,
             available_points=65000,
             can_pool_with_family=True,
@@ -2617,7 +2641,7 @@ def build_default_family_profile() -> FamilyProfile:
             id="wallet-adult1-amex",
             family_profile_id="default-family-profile",
             passenger_id="ADULT_1",
-            passenger_name="יוני (הורה 1)",
+            passenger_name="הורה 1",
             program_code=LoyaltyProgramCode.AMEX_MR_ISRAEL,
             available_points=80000,
             can_pool_with_family=True,

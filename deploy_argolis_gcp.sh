@@ -110,6 +110,8 @@ if [[ "$MODE" == "gce-vm" ]]; then
     sudo mkdir -p /opt/family_vacation_planner
     sudo tar -xzf /tmp/app.tar.gz -C /opt/family_vacation_planner
     sudo mkdir -p /opt/family_vacation_planner/data
+    sudo mkdir -p /etc/family_vacation_planner
+    sudo chmod 700 /etc/family_vacation_planner
     sudo tee /etc/systemd/system/family-vacation-planner.service >/dev/null <<'UNIT'
 [Unit]
 Description=Family Vacation Planner Web & API Server
@@ -122,6 +124,7 @@ Environment=HOST=127.0.0.1
 Environment=PORT=8080
 Environment=ELAL_LIVE_FETCH_ENABLED=1
 Environment=VACATION_PLANNER_DB_PATH=/opt/family_vacation_planner/data/vacation_planner.db
+EnvironmentFile=-/etc/family_vacation_planner/auth.env
 ExecStart=/usr/bin/python3 -m backend.app.main --host 127.0.0.1 --port 8080
 Restart=always
 RestartSec=3

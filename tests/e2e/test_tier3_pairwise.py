@@ -101,10 +101,11 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
             ChildFramework(child_age_years=7, framework_type=None),
         ]
         wallets = [PassengerLoyaltyWallet(passenger_id="ADULT_1", program_code="ELAL_MATMID", available_points=220000, can_pool_with_family=True)]
-        db_path, repo, prof = self.build_profile("pw01", children, wallets, matmid_balance=220000)
+        db_path, _repo, prof = self.build_profile("pw01", children, wallets, matmid_balance=220000)
         client = self.get_client(db_path)
+        self.authenticate_test_client(client, email="pw01@gmail.com", profile=prof)
         resp = client.post("/api/v1/vacations/search", json={
-            "family_profile_id": prof.id, "date_selection_mode": "SPECIFIC_DATES", "airline_selection_mode": "EL_AL_ONLY",
+            "date_selection_mode": "SPECIFIC_DATES", "airline_selection_mode": "EL_AL_ONLY",
             "specific_departure_date": "2026-12-06", "specific_return_date": "2026-12-11", "flex_days_plus_minus": 0, "destination_iatas": ["ATH"],
         })
         self.assertEqual(resp.status_code, 200)

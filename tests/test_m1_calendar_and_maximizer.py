@@ -68,10 +68,11 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
 
     def setUp(self) -> None:
         self.repo = SQLiteRepository(":memory:", auto_seed=True)
+        self.repo.save_profile(build_default_family_profile())
         self.calendar_service = MoECalendarService(self.repo)
         self.auto_updater = MoECalendarAutoUpdaterService(self.repo)
         self.maximizer = VacationMaximizerEngine(self.calendar_service)
-        self.profile = self.repo.get_profile()
+        self.profile = self.repo.get_profile("default-family-profile")
         self.assertIsNotNone(self.profile)
 
     def tearDown(self) -> None:
@@ -132,38 +133,48 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
         self.assertEqual(len(reloaded.passenger_loyalty_wallets), 6)
 
     # ------------------------------------------------------------------
-    # SQLite 8-Table Schema, WAL Mode, Indexes & Constraints (`F01`-`F08`)
+    # SQLite 11-Table Schema, WAL Mode, Indexes & Constraints (`F01`-`F08`, `M5`)
     # ------------------------------------------------------------------
     def test_sqlite_8_tables_4_indexes_and_wal_mode_on_disk(self) -> None:
-        # Ensure configured/default on-disk database is initialized as well
-        disk_repo = SQLiteRepository(auto_seed=True)
-        health = disk_repo.get_health_status()
-        self.assertEqual(health["status"], "ok")
-        self.assertTrue(health["wal_mode"])
-        self.assertEqual(health["journal_mode"], "wal")
-        self.assertEqual(health["tables_count"], 8)
-        self.assertTrue(Path(disk_repo.db_path).exists())
+        # Use an isolated TemporaryDirectory DB so workspace data/vacation_planner.db is never touched
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_db = Path(tmpdir) / "wal_disk_check.db"
+            disk_repo = SQLiteRepository(db_path=temp_db, auto_seed=True)
+            health = disk_repo.get_health_status()
+            self.assertEqual(health["status"], "ok")
+            self.assertTrue(health["wal_mode"])
+            self.assertEqual(health["journal_mode"], "wal")
+            self.assertEqual(health["tables_count"], 11)
+            self.assertTrue(Path(disk_repo.db_path).exists())
 
-        expected_tables = [
-            "child_frameworks",
-            "elal_bonus_availability",
-            "family_profiles",
-            "flight_itineraries",
-            "flight_search_queries",
-            "moe_vacation_windows",
-            "passenger_loyalty_wallets",
-            "vacation_option_proposals",
-        ]
-        self.assertEqual(disk_repo.list_tables(), expected_tables)
+            expected_tables = [
+                "auth_sessions",
+                "child_frameworks",
+                "elal_bonus_availability",
+                "family_profiles",
+                "flight_itineraries",
+                "flight_search_queries",
+                "moe_vacation_windows",
+                "oauth_login_states",
+                "passenger_loyalty_wallets",
+                "users",
+                "vacation_option_proposals",
+            ]
+            self.assertEqual(disk_repo.list_tables(), expected_tables)
 
-        indexes = disk_repo.list_indexes()
-        for expected_idx in (
-            "idx_loyalty_wallets_profile_pax",
-            "idx_moe_vacation_year_framework",
-            "idx_elal_bonus_route_date",
-            "idx_proposals_query_rank",
-        ):
-            self.assertIn(expected_idx, indexes)
+            indexes = disk_repo.list_indexes()
+            for expected_idx in (
+                "idx_users_email",
+                "idx_auth_sessions_user_id",
+                "idx_auth_sessions_expires",
+                "idx_family_profiles_user_id",
+                "idx_loyalty_wallets_profile_pax",
+                "idx_moe_vacation_year_framework",
+                "idx_elal_bonus_route_date",
+                "idx_proposals_query_rank",
+            ):
+                self.assertIn(expected_idx, indexes)
+            disk_repo.close()
 
     def test_sqlite_check_constraints_and_foreign_key_cascade_f01_f08(self) -> None:
         with self.repo.connection() as conn:
@@ -878,7 +889,8 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
                 self.assertEqual(resolve_db_path(), custom_db)
                 env_repo = SQLiteRepository(auto_seed=True)
                 self.assertEqual(env_repo.db_path, custom_db)
-                self.assertEqual(env_repo.get_health_status()["tables_count"], 8)
+                self.assertEqual(env_repo.get_health_status()["tables_count"], 11)
+                env_repo.close()
             finally:
                 if old_env is None:
                     os.environ.pop("VACATION_PLANNER_DB_PATH", None)

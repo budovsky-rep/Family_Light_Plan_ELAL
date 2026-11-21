@@ -118,6 +118,14 @@ def get_settings(config_path: Optional[str | Path] = None) -> dict[str, Any]:
         "SERPAPI_API_KEY": os.environ.get("SERPAPI_API_KEY", ""),
         "DUFFEL_ACCESS_TOKEN": os.environ.get("DUFFEL_ACCESS_TOKEN", ""),
         "VACATION_PLANNER_DB_PATH": os.environ.get("VACATION_PLANNER_DB_PATH", ""),
+        "PUBLIC_BASE_URL": os.environ.get("PUBLIC_BASE_URL", ""),
+        "GOOGLE_OAUTH_CLIENT_ID": os.environ.get("GOOGLE_OAUTH_CLIENT_ID", ""),
+        "GOOGLE_OAUTH_CLIENT_SECRET": os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+        "GOOGLE_OAUTH_REDIRECT_URI": os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", ""),
+        "GOOGLE_OAUTH_ALLOWED_DOMAINS": os.environ.get(
+            "GOOGLE_OAUTH_ALLOWED_DOMAINS", "gmail.com,googlemail.com"
+        ),
+        "SESSION_TTL_SECONDS": os.environ.get("SESSION_TTL_SECONDS", "1209600"),
     }
     return settings
 
@@ -172,6 +180,30 @@ class AppSettings:
     @property
     def daily_state_penalties(self) -> dict[str, float]:
         return dict(self.raw.get("daily_state_penalties", DEFAULT_SETTINGS["daily_state_penalties"]))
+
+    @property
+    def public_base_url(self) -> str:
+        return str(os.environ.get("PUBLIC_BASE_URL") or self.raw.get("env", {}).get("PUBLIC_BASE_URL", "")).strip()
+
+    @property
+    def google_oauth_client_id(self) -> str:
+        return str(os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or self.raw.get("env", {}).get("GOOGLE_OAUTH_CLIENT_ID", "")).strip()
+
+    @property
+    def google_oauth_client_secret(self) -> str:
+        return str(os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET") or self.raw.get("env", {}).get("GOOGLE_OAUTH_CLIENT_SECRET", "")).strip()
+
+    @property
+    def google_oauth_redirect_uri(self) -> str:
+        return str(os.environ.get("GOOGLE_OAUTH_REDIRECT_URI") or self.raw.get("env", {}).get("GOOGLE_OAUTH_REDIRECT_URI", "")).strip()
+
+    @property
+    def session_ttl_seconds(self) -> int:
+        raw_val = os.environ.get("SESSION_TTL_SECONDS") or self.raw.get("env", {}).get("SESSION_TTL_SECONDS", "1209600")
+        try:
+            return max(60, int(str(raw_val).strip()))
+        except ValueError:
+            return 1209600
 
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self.raw)

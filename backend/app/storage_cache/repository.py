@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
+import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -31,7 +33,7 @@ from backend.app.schemas.domain import (
 )
 from backend.app.storage_cache.seed_data import (
     DESTINATION_CATALOG,
-    build_default_family_profile,
+    build_clean_guest_profile,
     build_seeded_elal_bonus_availability,
     generate_commercial_flights_for_route,
     load_bundled_moe_windows,
@@ -98,6 +100,7 @@ class SQLiteRepository:
         self.db_path: str = resolve_db_path(db_path)
         self._is_memory: bool = self.db_path == ":memory:"
         self._memory_conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.RLock()
 
         if not self._is_memory:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +111,7 @@ class SQLiteRepository:
 
     def _configure_connection(self, conn: sqlite3.Connection) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
@@ -125,36 +129,111 @@ class SQLiteRepository:
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         """Yield a configured SQLite connection with WAL and foreign_keys ON."""
-        conn = self._open_raw_connection()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            if not self._is_memory:
-                conn.close()
+        with self._lock:
+            conn = self._open_raw_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                if not self._is_memory:
+                    conn.close()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Return a configured connection (caller manages commit/close if file-backed)."""
-        return self._open_raw_connection()
+        with self._lock:
+            return self._open_raw_connection()
 
     def close(self) -> None:
-        if self._memory_conn is not None:
-            self._memory_conn.close()
-            self._memory_conn = None
+        with self._lock:
+            if self._memory_conn is not None:
+                self._memory_conn.close()
+                self._memory_conn = None
 
-    def init_schema(self) -> None:
-        """Execute the 8-table DDL and 4 index definitions, plus idempotent column migrations."""
+    def _initialize_database(self) -> None:
+        """Execute the 11-table DDL, indexes, and idempotent migrations for existing SQLite DBs."""
         ddl = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
         with self.connection() as conn:
-            conn.executescript(ddl)
-            # Idempotent column migration for existing SQLite DBs while preserving tables_count == 8
-            q_cols = {
+            existing_tables = {
                 str(r["name"])
-                for r in conn.execute("PRAGMA table_info(flight_search_queries)").fetchall()
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
             }
+            if "family_profiles" in existing_tables:
+                fp_cols = {
+                    str(r["name"])
+                    for r in conn.execute("PRAGMA table_info(family_profiles)").fetchall()
+                }
+                if "user_id" not in fp_cols:
+                    conn.execute(
+                        "ALTER TABLE family_profiles ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE"
+                    )
+                if "is_legacy_quarantined" not in fp_cols:
+                    conn.execute(
+                        "ALTER TABLE family_profiles ADD COLUMN is_legacy_quarantined INTEGER NOT NULL DEFAULT 0 CHECK (is_legacy_quarantined IN (0, 1))"
+                    )
+
+            expected_tables = {
+                "users",
+                "auth_sessions",
+                "oauth_login_states",
+                "family_profiles",
+                "passenger_loyalty_wallets",
+                "child_frameworks",
+                "moe_vacation_windows",
+                "flight_search_queries",
+                "elal_bonus_availability",
+                "flight_itineraries",
+                "vacation_option_proposals",
+            }
+            existing_indexes = {
+                str(r["name"])
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+            expected_indexes = {
+                "idx_users_email",
+                "idx_auth_sessions_user_id",
+                "idx_auth_sessions_expires",
+                "idx_family_profiles_user_id",
+            }
+            if not expected_tables.issubset(existing_tables) or not expected_indexes.issubset(
+                existing_indexes
+            ):
+                conn.executescript(ddl)
+
+            # Ensure columns & partial index exist on family_profiles and quarantine pre-existing unowned rows
+            fp_cols_after = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(family_profiles)").fetchall()
+            }
+            if "user_id" not in fp_cols_after:
+                conn.execute(
+                    "ALTER TABLE family_profiles ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE"
+                )
+            if "is_legacy_quarantined" not in fp_cols_after:
+                conn.execute(
+                    "ALTER TABLE family_profiles ADD COLUMN is_legacy_quarantined INTEGER NOT NULL DEFAULT 0 CHECK (is_legacy_quarantined IN (0, 1))"
+                )
+            if "idx_family_profiles_user_id" not in existing_indexes:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_family_profiles_user_id ON family_profiles(user_id) WHERE user_id IS NOT NULL;"
+                )
+            has_unquarantined_unowned = conn.execute(
+                "SELECT 1 FROM family_profiles WHERE user_id IS NULL AND is_legacy_quarantined = 0 LIMIT 1"
+            ).fetchone()
+            if has_unquarantined_unowned is not None:
+                conn.execute(
+                    "UPDATE family_profiles SET is_legacy_quarantined = 1 WHERE user_id IS NULL AND is_legacy_quarantined = 0"
+                )
+
+            # Idempotent column migration for existing SQLite DBs
+            q_info = conn.execute("PRAGMA table_info(flight_search_queries)").fetchall()
+            q_cols = {str(r["name"]) for r in q_info}
             if "preferred_vacation_types_json" not in q_cols:
                 conn.execute(
                     "ALTER TABLE flight_search_queries ADD COLUMN preferred_vacation_types_json TEXT NOT NULL DEFAULT '[]'"
@@ -167,6 +246,88 @@ class SQLiteRepository:
                 conn.execute(
                     "ALTER TABLE flight_search_queries ADD COLUMN min_weather_suitability_score REAL"
                 )
+
+            # Migrate flight_search_queries.family_profile_id to nullable if an existing DB has notnull == 1
+            q_info_refreshed = conn.execute("PRAGMA table_info(flight_search_queries)").fetchall()
+            fp_fk_notnull = any(
+                str(r["name"]) == "family_profile_id" and int(r["notnull"]) == 1
+                for r in q_info_refreshed
+            )
+            if fp_fk_notnull:
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = OFF;")
+                conn.executescript(
+                    """
+                    DROP TABLE IF EXISTS flight_search_queries__m5_mig;
+                    CREATE TABLE flight_search_queries__m5_mig (
+                        id TEXT PRIMARY KEY,
+                        family_profile_id TEXT REFERENCES family_profiles(id) ON DELETE CASCADE,
+                        date_selection_mode TEXT NOT NULL CHECK (date_selection_mode IN (
+                            'SPECIFIC_DATES',
+                            'MOE_VACATION_MAXIMIZATION',
+                            'HOLIDAY_DIRECT_INTENT'
+                        )),
+                        airline_selection_mode TEXT NOT NULL CHECK (airline_selection_mode IN (
+                            'EL_AL_ONLY',
+                            'ALL_AIRLINES'
+                        )),
+                        search_elal_bonus_tickets INTEGER NOT NULL DEFAULT 1 CHECK (search_elal_bonus_tickets IN (0, 1)),
+                        include_sundor_flights INTEGER NOT NULL DEFAULT 1 CHECK (include_sundor_flights IN (0, 1)),
+                        origin_iata TEXT NOT NULL DEFAULT 'TLV',
+                        destination_iatas_json TEXT NOT NULL,
+                        specific_departure_date TEXT,
+                        specific_return_date TEXT,
+                        flex_days_plus_minus INTEGER NOT NULL DEFAULT 0 CHECK (flex_days_plus_minus BETWEEN 0 AND 7),
+                        school_year TEXT,
+                        target_holiday_codes_json TEXT,
+                        direct_holiday_code TEXT,
+                        direct_target_year INTEGER CHECK (direct_target_year IS NULL OR direct_target_year BETWEEN 2025 AND 2035),
+                        min_trip_nights INTEGER NOT NULL DEFAULT 4 CHECK (min_trip_nights >= 1),
+                        max_trip_nights INTEGER NOT NULL DEFAULT 10 CHECK (max_trip_nights >= min_trip_nights),
+                        max_bridge_days_shift INTEGER NOT NULL DEFAULT 3 CHECK (max_bridge_days_shift BETWEEN 0 AND 5),
+                        overlap_policy TEXT NOT NULL DEFAULT 'MAXIMIZE_EFFICIENCY_SCORE' CHECK (overlap_policy IN (
+                            'STRICT_ALL_CHILDREN_OFF',
+                            'CAMP_ADJUSTED_INTERSECTION',
+                            'MAXIMIZE_EFFICIENCY_SCORE'
+                        )),
+                        preferred_cabins_json TEXT NOT NULL DEFAULT '["ECONOMY","PREMIUM","BUSINESS"]',
+                        enabled_loyalty_programs_json TEXT NOT NULL DEFAULT '["ELAL_MATMID"]',
+                        preferred_vacation_types_json TEXT NOT NULL DEFAULT '[]',
+                        weather_filter_mode TEXT NOT NULL DEFAULT 'SOFT_PRIORITIZE' CHECK (weather_filter_mode IN ('SOFT_PRIORITIZE', 'HARD_THRESHOLD')),
+                        min_weather_suitability_score REAL CHECK (min_weather_suitability_score IS NULL OR (min_weather_suitability_score BETWEEN 0.0 AND 100.0)),
+                        allow_hybrid_bonus_cash INTEGER NOT NULL DEFAULT 1 CHECK (allow_hybrid_bonus_cash IN (0, 1)),
+                        direct_flights_only INTEGER NOT NULL DEFAULT 1 CHECK (direct_flights_only IN (0, 1)),
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    INSERT INTO flight_search_queries__m5_mig (
+                        id, family_profile_id, date_selection_mode, airline_selection_mode,
+                        search_elal_bonus_tickets, include_sundor_flights, origin_iata,
+                        destination_iatas_json, specific_departure_date, specific_return_date,
+                        flex_days_plus_minus, school_year, target_holiday_codes_json,
+                        direct_holiday_code, direct_target_year, min_trip_nights,
+                        max_trip_nights, max_bridge_days_shift, overlap_policy,
+                        preferred_cabins_json, enabled_loyalty_programs_json,
+                        preferred_vacation_types_json, weather_filter_mode,
+                        min_weather_suitability_score, allow_hybrid_bonus_cash,
+                        direct_flights_only, created_at
+                    )
+                    SELECT
+                        id, family_profile_id, date_selection_mode, airline_selection_mode,
+                        search_elal_bonus_tickets, include_sundor_flights, origin_iata,
+                        destination_iatas_json, specific_departure_date, specific_return_date,
+                        flex_days_plus_minus, school_year, target_holiday_codes_json,
+                        direct_holiday_code, direct_target_year, min_trip_nights,
+                        max_trip_nights, max_bridge_days_shift, overlap_policy,
+                        preferred_cabins_json, enabled_loyalty_programs_json,
+                        preferred_vacation_types_json, weather_filter_mode,
+                        min_weather_suitability_score, allow_hybrid_bonus_cash,
+                        direct_flights_only, created_at
+                    FROM flight_search_queries;
+                    DROP TABLE flight_search_queries;
+                    ALTER TABLE flight_search_queries__m5_mig RENAME TO flight_search_queries;
+                    """
+                )
+                conn.execute("PRAGMA foreign_keys = ON;")
 
             p_cols = {
                 str(r["name"])
@@ -187,6 +348,10 @@ class SQLiteRepository:
 
             conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute("PRAGMA foreign_keys = ON;")
+
+    def init_schema(self) -> None:
+        """Initialize the 11-table schema and run idempotent migrations."""
+        self._initialize_database()
 
     def list_tables(self) -> list[str]:
         with self.connection() as conn:
@@ -226,18 +391,20 @@ class SQLiteRepository:
         """Return True when running in production live-fetch mode (`ELAL_LIVE_FETCH_ENABLED=1`),
         where synthetic/seeded flight inventory must NEVER be fabricated.
         """
-        return os.environ.get("ELAL_LIVE_FETCH_ENABLED", "0").strip() in ("1", "true", "TRUE")
+        return os.environ.get("ELAL_LIVE_FETCH_ENABLED", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
     def seed_initial_data(self) -> None:
-        """Idempotently seed default profile, MoE calendars, and (only in offline/test mode) El Al award inventory."""
+        """Idempotently seed MoE calendars and (only in offline/test mode) El Al award inventory.
+
+        Never seeds any personal `family_profiles` rows (zero shared profile exposure).
+        """
         live_mode = self.is_live_fetch_mode()
         with self.connection() as conn:
-            prof_row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM family_profiles WHERE id = ?",
-                ("default-family-profile",),
-            ).fetchone()
-            has_default_profile = bool(prof_row and int(prof_row["cnt"]) > 0)
-
             moe_row = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM moe_vacation_windows"
             ).fetchone()
@@ -281,9 +448,6 @@ class SQLiteRepository:
                 ).fetchone()
                 has_bonus_rows = bool(bonus_row and int(bonus_row["cnt"]) > 0)
 
-        if not has_default_profile:
-            self.save_profile(build_default_family_profile())
-
         if not has_moe_windows:
             self.upsert_moe_windows(load_bundled_moe_windows())
 
@@ -293,22 +457,15 @@ class SQLiteRepository:
     def get_profile(
         self, profile_id: Optional[str] = None
     ) -> Optional[FamilyProfile]:
-        """Load a `FamilyProfile` with its `children` and `passenger_loyalty_wallets`."""
+        """Load a non-quarantined `FamilyProfile` by explicit ID (never falls back to arbitrary user rows)."""
+        target_id = profile_id if profile_id is not None else "default-family-profile"
+        if not target_id:
+            return None
         with self.connection() as conn:
-            if profile_id is None:
-                row = conn.execute(
-                    "SELECT * FROM family_profiles WHERE id = ?",
-                    ("default-family-profile",),
-                ).fetchone()
-                if row is None:
-                    row = conn.execute(
-                        "SELECT * FROM family_profiles ORDER BY created_at ASC LIMIT 1"
-                    ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM family_profiles WHERE id = ?", (profile_id,)
-                ).fetchone()
-
+            row = conn.execute(
+                "SELECT * FROM family_profiles WHERE id = ? AND is_legacy_quarantined = 0",
+                (target_id,),
+            ).fetchone()
             if row is None:
                 return None
 
@@ -329,15 +486,65 @@ class SQLiteRepository:
         prof_dict["passenger_loyalty_wallets"] = wallets
         return FamilyProfile.from_dict(prof_dict)
 
+    def get_profile_for_user(self, user_id: str) -> Optional[FamilyProfile]:
+        """Load the non-quarantined `FamilyProfile` owned strictly by `user_id`."""
+        if not user_id or not str(user_id).strip():
+            return None
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM family_profiles WHERE user_id = ? AND is_legacy_quarantined = 0 LIMIT 1",
+                (str(user_id).strip(),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_profile(str(row["id"]))
+
+    def save_profile_for_user(
+        self, user_id: str, profile: FamilyProfile | dict[str, Any]
+    ) -> FamilyProfile:
+        """Atomically save a `FamilyProfile` scoped strictly to `user_id` with namespaced child/wallet PKs."""
+        clean_uid = str(user_id or "").strip()
+        if not clean_uid:
+            raise ValueError("user_id is required to save a user profile")
+        prof_id = f"user-profile-{clean_uid}"
+        if isinstance(profile, FamilyProfile):
+            raw_dict = profile.to_dict()
+        else:
+            raw_dict = dict(profile)
+        raw_dict["id"] = prof_id
+        prof = FamilyProfile.from_dict(raw_dict)
+        prof.id = prof_id
+        for idx, child in enumerate(prof.children, start=1):
+            child.id = f"{prof_id}:child:{idx}"
+            child.family_profile_id = prof_id
+            if not child.child_name or not child.child_name.strip():
+                child.child_name = "ילד/ה"
+        for idx, wallet in enumerate(prof.passenger_loyalty_wallets, start=1):
+            wallet.id = f"{prof_id}:wallet:{idx}"
+            wallet.family_profile_id = prof_id
+        return self._persist_profile_row(prof, user_id=clean_uid, namespace_all=True)
+
     def save_profile(
-        self, profile: FamilyProfile | dict[str, Any]
+        self,
+        profile: FamilyProfile | dict[str, Any],
+        user_id: Optional[str] = None,
     ) -> FamilyProfile:
         """Atomically validate and upsert `family_profiles`, `child_frameworks`, and `passenger_loyalty_wallets`."""
+        if user_id is not None:
+            return self.save_profile_for_user(user_id, profile)
         prof = (
             profile
             if isinstance(profile, FamilyProfile)
             else FamilyProfile.from_dict(profile)
         )
+        return self._persist_profile_row(prof, user_id=None, namespace_all=False)
+
+    def _persist_profile_row(
+        self,
+        prof: FamilyProfile,
+        user_id: Optional[str],
+        namespace_all: bool,
+    ) -> FamilyProfile:
         now = _now_iso()
         prof.updated_at = now
         if not prof.created_at:
@@ -347,14 +554,16 @@ class SQLiteRepository:
             conn.execute(
                 """
                 INSERT INTO family_profiles (
-                    id, profile_name, adults_count, workweek_type,
+                    id, user_id, is_legacy_quarantined, profile_name, adults_count, workweek_type,
                     erev_chag_pto_weight, chol_hamoed_pto_weight,
                     annual_pto_budget, max_pto_per_trip,
                     matmid_points_balance, has_flycard, flycard_tier,
                     flycard_companion_vouchers, point_valuation_usd,
                     preferred_currency, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    user_id = COALESCE(excluded.user_id, family_profiles.user_id),
+                    is_legacy_quarantined = 0,
                     profile_name = excluded.profile_name,
                     adults_count = excluded.adults_count,
                     workweek_type = excluded.workweek_type,
@@ -372,6 +581,7 @@ class SQLiteRepository:
                 """,
                 (
                     prof.id,
+                    user_id,
                     prof.profile_name,
                     prof.adults_count,
                     prof.workweek_type,
@@ -394,7 +604,19 @@ class SQLiteRepository:
                 "DELETE FROM child_frameworks WHERE family_profile_id = ?",
                 (prof.id,),
             )
-            for child in prof.children:
+            seen_child_ids: set[str] = set()
+            for idx, child in enumerate(prof.children, start=1):
+                cid = f"{prof.id}:child:{idx}" if namespace_all else (child.id or f"{prof.id}:child:{idx}")
+                if not namespace_all:
+                    existing_c = conn.execute(
+                        "SELECT family_profile_id FROM child_frameworks WHERE id = ?",
+                        (cid,),
+                    ).fetchone()
+                    if existing_c is not None or cid in seen_child_ids:
+                        cid = f"{prof.id}:child:{idx}"
+                seen_child_ids.add(cid)
+                child.id = cid
+                child.family_profile_id = prof.id
                 child_dict = child.to_dict()
                 conn.execute(
                     """
@@ -407,7 +629,7 @@ class SQLiteRepository:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        child.id,
+                        cid,
                         prof.id,
                         child.child_name,
                         child.child_age_years,
@@ -428,7 +650,19 @@ class SQLiteRepository:
                 "DELETE FROM passenger_loyalty_wallets WHERE family_profile_id = ?",
                 (prof.id,),
             )
-            for wallet in prof.passenger_loyalty_wallets:
+            seen_wallet_ids: set[str] = set()
+            for idx, wallet in enumerate(prof.passenger_loyalty_wallets, start=1):
+                wid = f"{prof.id}:wallet:{idx}" if namespace_all else (wallet.id or f"{prof.id}:wallet:{idx}")
+                if not namespace_all:
+                    existing_w = conn.execute(
+                        "SELECT family_profile_id FROM passenger_loyalty_wallets WHERE id = ?",
+                        (wid,),
+                    ).fetchone()
+                    if existing_w is not None or wid in seen_wallet_ids:
+                        wid = f"{prof.id}:wallet:{idx}"
+                seen_wallet_ids.add(wid)
+                wallet.id = wid
+                wallet.family_profile_id = prof.id
                 wallet_dict = wallet.to_dict()
                 conn.execute(
                     """
@@ -441,7 +675,7 @@ class SQLiteRepository:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        wallet.id,
+                        wid,
                         prof.id,
                         wallet.passenger_id,
                         wallet.passenger_name,
@@ -457,7 +691,11 @@ class SQLiteRepository:
                     ),
                 )
 
-        reloaded = self.get_profile(prof.id)
+        reloaded = (
+            self.get_profile_for_user(user_id)
+            if user_id is not None
+            else self.get_profile(prof.id)
+        )
         if reloaded is None:
             raise RuntimeError(f"Failed to reload saved profile {prof.id}")
         return reloaded
@@ -467,6 +705,17 @@ class SQLiteRepository:
         with self.connection() as conn:
             cur = conn.execute(
                 "DELETE FROM family_profiles WHERE id = ?", (profile_id,)
+            )
+            return cur.rowcount > 0
+
+    def delete_profile_for_user(self, user_id: str) -> bool:
+        """Delete only the family profile owned by `user_id`."""
+        if not user_id or not str(user_id).strip():
+            return False
+        with self.connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM family_profiles WHERE user_id = ?",
+                (str(user_id).strip(),),
             )
             return cur.rowcount > 0
 
@@ -863,131 +1112,153 @@ class SQLiteRepository:
             direct_only=direct_only,
         )
 
-    def save_search_query(
-        self, query: FlightSearchQuery | dict[str, Any]
+    @staticmethod
+    def _write_search_query_on_conn(
+        conn: sqlite3.Connection,
+        query: FlightSearchQuery | dict[str, Any],
     ) -> FlightSearchQuery:
-        """Persist a `FlightSearchQuery` row in `flight_search_queries`."""
+        explicit_null_profile = (
+            isinstance(query, dict)
+            and "family_profile_id" in query
+            and query["family_profile_id"] is None
+        )
         q = (
             query
             if isinstance(query, FlightSearchQuery)
             else FlightSearchQuery.from_dict(query)
         )
+        if explicit_null_profile:
+            q.family_profile_id = None  # type: ignore[assignment]
         qd = q.to_dict()
-        with self.connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO flight_search_queries (
-                    id, family_profile_id, date_selection_mode, airline_selection_mode,
-                    search_elal_bonus_tickets, include_sundor_flights, origin_iata,
-                    destination_iatas_json, specific_departure_date, specific_return_date,
-                    flex_days_plus_minus, school_year, target_holiday_codes_json,
-                    direct_holiday_code, direct_target_year, min_trip_nights,
-                    max_trip_nights, max_bridge_days_shift, overlap_policy,
-                    preferred_cabins_json, enabled_loyalty_programs_json,
-                    preferred_vacation_types_json, weather_filter_mode,
-                    min_weather_suitability_score,
-                    allow_hybrid_bonus_cash, direct_flights_only, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    qd["id"],
-                    qd["family_profile_id"],
-                    qd["date_selection_mode"],
-                    qd["airline_selection_mode"],
-                    1 if q.search_elal_bonus_tickets else 0,
-                    1 if q.include_sundor_flights else 0,
-                    qd["origin_iata"],
-                    qd["destination_iatas_json"],
-                    qd["specific_departure_date"],
-                    qd["specific_return_date"],
-                    q.flex_days_plus_minus,
-                    qd["school_year"],
-                    qd["target_holiday_codes_json"],
-                    qd["direct_holiday_code"],
-                    qd["direct_target_year"],
-                    q.min_trip_nights,
-                    q.max_trip_nights,
-                    q.max_bridge_days_shift,
-                    qd["overlap_policy"],
-                    qd["preferred_cabins_json"],
-                    qd["enabled_loyalty_programs_json"],
-                    qd["preferred_vacation_types_json"],
-                    qd["weather_filter_mode"],
-                    qd["min_weather_suitability_score"],
-                    1 if q.allow_hybrid_bonus_cash else 0,
-                    1 if q.direct_flights_only else 0,
-                    qd["created_at"],
-                ),
-            )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO flight_search_queries (
+                id, family_profile_id, date_selection_mode, airline_selection_mode,
+                search_elal_bonus_tickets, include_sundor_flights, origin_iata,
+                destination_iatas_json, specific_departure_date, specific_return_date,
+                flex_days_plus_minus, school_year, target_holiday_codes_json,
+                direct_holiday_code, direct_target_year, min_trip_nights,
+                max_trip_nights, max_bridge_days_shift, overlap_policy,
+                preferred_cabins_json, enabled_loyalty_programs_json,
+                preferred_vacation_types_json, weather_filter_mode,
+                min_weather_suitability_score,
+                allow_hybrid_bonus_cash, direct_flights_only, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                qd["id"],
+                qd["family_profile_id"],
+                qd["date_selection_mode"],
+                qd["airline_selection_mode"],
+                1 if q.search_elal_bonus_tickets else 0,
+                1 if q.include_sundor_flights else 0,
+                qd["origin_iata"],
+                qd["destination_iatas_json"],
+                qd["specific_departure_date"],
+                qd["specific_return_date"],
+                q.flex_days_plus_minus,
+                qd["school_year"],
+                qd["target_holiday_codes_json"],
+                qd["direct_holiday_code"],
+                qd["direct_target_year"],
+                q.min_trip_nights,
+                q.max_trip_nights,
+                q.max_bridge_days_shift,
+                qd["overlap_policy"],
+                qd["preferred_cabins_json"],
+                qd["enabled_loyalty_programs_json"],
+                qd["preferred_vacation_types_json"],
+                qd["weather_filter_mode"],
+                qd["min_weather_suitability_score"],
+                1 if q.allow_hybrid_bonus_cash else 0,
+                1 if q.direct_flights_only else 0,
+                qd["created_at"],
+            ),
+        )
         return q
 
-    def save_itinerary(
-        self, itinerary: FlightItinerary | dict[str, Any]
+    def save_search_query(
+        self, query: FlightSearchQuery | dict[str, Any]
+    ) -> FlightSearchQuery:
+        """Persist a `FlightSearchQuery` row in `flight_search_queries`."""
+        with self.connection() as conn:
+            return self._write_search_query_on_conn(conn, query)
+
+    @staticmethod
+    def _write_itinerary_on_conn(
+        conn: sqlite3.Connection,
+        itinerary: FlightItinerary | dict[str, Any],
     ) -> FlightItinerary:
-        """Persist a `FlightItinerary` row in `flight_itineraries`."""
         itin = (
             itinerary
             if isinstance(itinerary, FlightItinerary)
             else FlightItinerary.from_dict(itinerary)
         )
         it_dict = itin.to_dict()
-        with self.connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO flight_itineraries (
-                    id, search_query_id, origin_iata, destination_iata, return_origin_iata,
-                    destination_city_he, destination_city_en, departure_date, return_date,
-                    trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
-                    fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                    outbound_bonus_id, inbound_bonus_id, family_ticket_allocation_json,
-                    points_used_by_wallet_json, requires_two_plus_seat_verification,
-                    total_matmid_points, total_taxes_and_fees_usd,
-                    total_supplemental_cash_fares_usd, total_baggage_fees_usd,
-                    total_out_of_pocket_cash_usd, full_cash_benchmark_usd,
-                    net_cash_saved_usd, cents_per_point_value,
-                    rbddataclients_verify_url, booking_deep_link_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    it_dict["id"],
-                    it_dict["search_query_id"],
-                    it_dict["origin_iata"],
-                    it_dict["destination_iata"],
-                    it_dict["return_origin_iata"],
-                    it_dict["destination_city_he"],
-                    it_dict["destination_city_en"],
-                    it_dict["departure_date"],
-                    it_dict["return_date"],
-                    itin.trip_nights,
-                    it_dict["primary_carrier_iata"],
-                    1 if itin.is_elal_flight else 0,
-                    1 if itin.utilizes_elal_bonus else 0,
-                    it_dict["fulfillment_strategy"],
-                    it_dict["outbound_legs_json"],
-                    it_dict["inbound_legs_json"],
-                    it_dict["outbound_bonus_id"],
-                    it_dict["inbound_bonus_id"],
-                    it_dict["family_ticket_allocation_json"],
-                    it_dict["points_used_by_wallet_json"],
-                    1 if itin.requires_two_plus_seat_verification else 0,
-                    itin.total_matmid_points,
-                    itin.total_taxes_and_fees_usd,
-                    itin.total_supplemental_cash_fares_usd,
-                    itin.total_baggage_fees_usd,
-                    itin.total_out_of_pocket_cash_usd,
-                    itin.full_cash_benchmark_usd,
-                    itin.net_cash_saved_usd,
-                    itin.cents_per_point_value,
-                    it_dict["rbddataclients_verify_url"],
-                    it_dict["booking_deep_link_url"],
-                ),
-            )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO flight_itineraries (
+                id, search_query_id, origin_iata, destination_iata, return_origin_iata,
+                destination_city_he, destination_city_en, departure_date, return_date,
+                trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
+                fulfillment_strategy, outbound_legs_json, inbound_legs_json,
+                outbound_bonus_id, inbound_bonus_id, family_ticket_allocation_json,
+                points_used_by_wallet_json, requires_two_plus_seat_verification,
+                total_matmid_points, total_taxes_and_fees_usd,
+                total_supplemental_cash_fares_usd, total_baggage_fees_usd,
+                total_out_of_pocket_cash_usd, full_cash_benchmark_usd,
+                net_cash_saved_usd, cents_per_point_value,
+                rbddataclients_verify_url, booking_deep_link_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                it_dict["id"],
+                it_dict["search_query_id"],
+                it_dict["origin_iata"],
+                it_dict["destination_iata"],
+                it_dict["return_origin_iata"],
+                it_dict["destination_city_he"],
+                it_dict["destination_city_en"],
+                it_dict["departure_date"],
+                it_dict["return_date"],
+                itin.trip_nights,
+                it_dict["primary_carrier_iata"],
+                1 if itin.is_elal_flight else 0,
+                1 if itin.utilizes_elal_bonus else 0,
+                it_dict["fulfillment_strategy"],
+                it_dict["outbound_legs_json"],
+                it_dict["inbound_legs_json"],
+                it_dict["outbound_bonus_id"],
+                it_dict["inbound_bonus_id"],
+                it_dict["family_ticket_allocation_json"],
+                it_dict["points_used_by_wallet_json"],
+                1 if itin.requires_two_plus_seat_verification else 0,
+                itin.total_matmid_points,
+                itin.total_taxes_and_fees_usd,
+                itin.total_supplemental_cash_fares_usd,
+                itin.total_baggage_fees_usd,
+                itin.total_out_of_pocket_cash_usd,
+                itin.full_cash_benchmark_usd,
+                itin.net_cash_saved_usd,
+                itin.cents_per_point_value,
+                it_dict["rbddataclients_verify_url"],
+                it_dict["booking_deep_link_url"],
+            ),
+        )
         return itin
 
-    def save_proposal(
-        self, proposal: VacationOptionProposal | dict[str, Any]
+    def save_itinerary(
+        self, itinerary: FlightItinerary | dict[str, Any]
+    ) -> FlightItinerary:
+        """Persist a `FlightItinerary` row in `flight_itineraries`."""
+        with self.connection() as conn:
+            return self._write_itinerary_on_conn(conn, itinerary)
+
+    def _write_proposal_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        proposal: VacationOptionProposal | dict[str, Any],
     ) -> VacationOptionProposal:
-        """Persist a `VacationOptionProposal` (and its embedded `itinerary` if present)."""
         prop = (
             proposal
             if isinstance(proposal, VacationOptionProposal)
@@ -996,65 +1267,72 @@ class SQLiteRepository:
         if prop.itinerary is not None:
             if not prop.itinerary.search_query_id and prop.search_query_id:
                 prop.itinerary.search_query_id = prop.search_query_id
-            self.save_itinerary(prop.itinerary)
+            self._write_itinerary_on_conn(conn, prop.itinerary)
             prop.itinerary_id = prop.itinerary.id
 
         pd = prop.to_dict()
-        with self.connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO vacation_option_proposals (
-                    id, search_query_id, itinerary_id, associated_holiday_codes_json,
-                    window_set_type, total_vacation_days, parent_pto_days_used,
-                    pto_efficiency_ratio, school_absence_penalty, childcare_coverage_gain,
-                    per_child_impact_json, total_school_days_missed_across_children,
-                    max_single_child_school_days_missed, vacation_utilization_score,
-                    flight_bonus_value_score, weather_suitability_score,
-                    vacation_type_scores_json, weather_metrics_json,
-                    combined_trip_optimization_score,
-                    explanation_summary_he, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    pd["id"],
-                    pd["search_query_id"],
-                    pd["itinerary_id"],
-                    pd["associated_holiday_codes_json"],
-                    pd["window_set_type"],
-                    prop.total_vacation_days,
-                    prop.parent_pto_days_used,
-                    prop.pto_efficiency_ratio,
-                    prop.school_absence_penalty,
-                    prop.childcare_coverage_gain,
-                    pd["per_child_impact_json"],
-                    prop.total_school_days_missed_across_children,
-                    prop.max_single_child_school_days_missed,
-                    prop.vacation_utilization_score,
-                    prop.flight_bonus_value_score,
-                    prop.weather_suitability_score,
-                    pd["vacation_type_scores_json"],
-                    pd["weather_metrics_json"],
-                    prop.combined_trip_optimization_score,
-                    pd["explanation_summary_he"],
-                    pd["created_at"],
-                ),
-            )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO vacation_option_proposals (
+                id, search_query_id, itinerary_id, associated_holiday_codes_json,
+                window_set_type, total_vacation_days, parent_pto_days_used,
+                pto_efficiency_ratio, school_absence_penalty, childcare_coverage_gain,
+                per_child_impact_json, total_school_days_missed_across_children,
+                max_single_child_school_days_missed, vacation_utilization_score,
+                flight_bonus_value_score, weather_suitability_score,
+                vacation_type_scores_json, weather_metrics_json,
+                combined_trip_optimization_score,
+                explanation_summary_he, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pd["id"],
+                pd["search_query_id"],
+                pd["itinerary_id"],
+                pd["associated_holiday_codes_json"],
+                pd["window_set_type"],
+                prop.total_vacation_days,
+                prop.parent_pto_days_used,
+                prop.pto_efficiency_ratio,
+                prop.school_absence_penalty,
+                prop.childcare_coverage_gain,
+                pd["per_child_impact_json"],
+                prop.total_school_days_missed_across_children,
+                prop.max_single_child_school_days_missed,
+                prop.vacation_utilization_score,
+                prop.flight_bonus_value_score,
+                prop.weather_suitability_score,
+                pd["vacation_type_scores_json"],
+                pd["weather_metrics_json"],
+                prop.combined_trip_optimization_score,
+                pd["explanation_summary_he"],
+                pd["created_at"],
+            ),
+        )
         return prop
+
+    def save_proposal(
+        self, proposal: VacationOptionProposal | dict[str, Any]
+    ) -> VacationOptionProposal:
+        """Persist a `VacationOptionProposal` (and its embedded `itinerary` if present)."""
+        with self.connection() as conn:
+            return self._write_proposal_on_conn(conn, proposal)
 
     def save_search_results(
         self,
         query: FlightSearchQuery | dict[str, Any],
         proposals: list[VacationOptionProposal],
     ) -> list[VacationOptionProposal]:
-        """Atomically persist `flight_search_queries`, `flight_itineraries`, and `vacation_option_proposals`."""
-        q = self.save_search_query(query)
-        saved: list[VacationOptionProposal] = []
-        for prop in proposals:
-            prop.search_query_id = q.id
-            if prop.itinerary is not None:
-                prop.itinerary.search_query_id = q.id
-            saved.append(self.save_proposal(prop))
-        return saved
+        """Atomically persist `flight_search_queries`, `flight_itineraries`, and `vacation_option_proposals` in one transaction."""
+        with self.connection() as conn:
+            q = self._write_search_query_on_conn(conn, query)
+            saved: list[VacationOptionProposal] = []
+            for prop in proposals:
+                prop.search_query_id = q.id
+                if prop.itinerary is not None:
+                    prop.itinerary.search_query_id = q.id
+                saved.append(self._write_proposal_on_conn(conn, prop))
+            return saved
 
     def get_proposal_by_id(
         self, proposal_id: str
@@ -1202,3 +1480,339 @@ class SQLiteRepository:
                     p_dict["itinerary"] = FlightItinerary.from_dict(dict(i_row))
                 results.append(VacationOptionProposal.from_dict(p_dict))
         return results
+
+    # ------------------------------------------------------------------
+    # Gmail OIDC Users, Auth Sessions, PKCE Login States & Owner Scoping
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _row_to_user_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        d = dict(row)
+        raw_prefs = d.get("notification_preferences_json") or "{}"
+        try:
+            prefs = json.loads(raw_prefs) if isinstance(raw_prefs, str) else dict(raw_prefs)
+            if not isinstance(prefs, dict):
+                prefs = {}
+        except Exception:
+            prefs = {}
+        email_verified = bool(int(d.get("email_verified", 1)))
+        notif_email = str(d.get("notification_email") or d.get("email") or "")
+        return {
+            "id": str(d["id"]),
+            "google_sub": str(d["google_sub"]),
+            "email": str(d["email"]),
+            "email_verified": email_verified,
+            "display_name": str(d.get("display_name") or ""),
+            "notification_email": notif_email,
+            "notifications_enabled": bool(int(d.get("notifications_enabled", 0))),
+            "notification_preferences": {
+                "award_seat_alerts": bool(prefs.get("award_seat_alerts", False)),
+                "holiday_reminders": bool(prefs.get("holiday_reminders", False)),
+                "preferred_locale": str(prefs.get("preferred_locale") or "he"),
+            },
+            "notification_consent_updated_at": d.get("notification_consent_updated_at"),
+            "notification_channel_ready": bool(email_verified and notif_email),
+            "created_at": str(d.get("created_at") or ""),
+            "updated_at": str(d.get("updated_at") or ""),
+            "last_login_at": str(d.get("last_login_at") or ""),
+        }
+
+    def upsert_google_user(
+        self,
+        google_sub: str,
+        email: str,
+        email_verified: bool = True,
+        display_name: str = "",
+    ) -> dict[str, Any]:
+        """Atomically upsert a verified Google/Gmail user record keyed by immutable `google_sub`."""
+        norm_sub = str(google_sub or "").strip()
+        norm_email = str(email or "").strip().lower()
+        if not norm_sub or not norm_email:
+            raise ValueError("google_sub and email are required")
+        clean_name = str(display_name or "").strip()[:120]
+        now = _now_iso()
+        ev_int = 1 if email_verified else 0
+
+        with self._lock:
+            with self.connection() as conn:
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                conflict_row = conn.execute(
+                    "SELECT id FROM users WHERE email = ? AND google_sub != ?",
+                    (norm_email, norm_sub),
+                ).fetchone()
+                if conflict_row is not None:
+                    raise ValueError("Email already bound to a different Google subject")
+
+                candidate_id = str(uuid.uuid4())
+                conn.execute(
+                    """
+                    INSERT INTO users (
+                        id, google_sub, email, email_verified, display_name,
+                        notification_email, notifications_enabled,
+                        notification_preferences_json, notification_consent_updated_at,
+                        created_at, updated_at, last_login_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)
+                    ON CONFLICT(google_sub) DO UPDATE SET
+                        email = excluded.email,
+                        email_verified = excluded.email_verified,
+                        display_name = CASE
+                            WHEN excluded.display_name != '' THEN excluded.display_name
+                            ELSE users.display_name
+                        END,
+                        notification_email = excluded.notification_email,
+                        updated_at = excluded.updated_at,
+                        last_login_at = excluded.last_login_at
+                    """,
+                    (
+                        candidate_id,
+                        norm_sub,
+                        norm_email,
+                        ev_int,
+                        clean_name,
+                        norm_email,
+                        '{"award_seat_alerts":false,"holiday_reminders":false,"preferred_locale":"he"}',
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM users WHERE google_sub = ?", (norm_sub,)
+                ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to load upserted user")
+        return self._row_to_user_dict(row)
+
+    def get_user_by_id(self, user_id: str) -> Optional[dict[str, Any]]:
+        """Fetch a user record by internal UUID."""
+        if not user_id:
+            return None
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (str(user_id),)).fetchone()
+        return self._row_to_user_dict(row) if row is not None else None
+
+    def update_user_notifications(
+        self,
+        user_id: str,
+        notifications_enabled: bool,
+        preferences: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Update explicit opt-in notification consent and preferences for `user_id`."""
+        now = _now_iso()
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (str(user_id),)).fetchone()
+            if row is None:
+                return None
+            existing_user = self._row_to_user_dict(row)
+            merged_prefs = dict(existing_user["notification_preferences"])
+            if isinstance(preferences, dict):
+                if "award_seat_alerts" in preferences:
+                    merged_prefs["award_seat_alerts"] = bool(preferences["award_seat_alerts"])
+                if "holiday_reminders" in preferences:
+                    merged_prefs["holiday_reminders"] = bool(preferences["holiday_reminders"])
+                if "preferred_locale" in preferences and preferences["preferred_locale"] in ("he", "en"):
+                    merged_prefs["preferred_locale"] = str(preferences["preferred_locale"])
+            elif notifications_enabled:
+                merged_prefs["award_seat_alerts"] = True
+
+            conn.execute(
+                """
+                UPDATE users
+                SET notifications_enabled = ?,
+                    notification_email = email,
+                    notification_preferences_json = ?,
+                    notification_consent_updated_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    1 if notifications_enabled else 0,
+                    json.dumps(merged_prefs, separators=(",", ":")),
+                    now,
+                    now,
+                    str(user_id),
+                ),
+            )
+            updated_row = conn.execute(
+                "SELECT * FROM users WHERE id = ?", (str(user_id),)
+            ).fetchone()
+        return self._row_to_user_dict(updated_row) if updated_row is not None else None
+
+    def delete_user_account(self, user_id: str) -> bool:
+        """Delete a user account (cascading to sessions, family_profiles, children, wallets, queries, proposals)."""
+        if not user_id:
+            return False
+        with self.connection() as conn:
+            cur = conn.execute("DELETE FROM users WHERE id = ?", (str(user_id),))
+            return cur.rowcount > 0
+
+    def create_oauth_login_state(
+        self,
+        state_sha256: str,
+        code_verifier: str,
+        nonce: str,
+        browser_binding_sha256: str,
+        return_to: str,
+        expires_at: str,
+    ) -> None:
+        """Persist a single-use PKCE + Login-CSRF state record and purge expired rows."""
+        now = _now_iso()
+        with self.connection() as conn:
+            conn.execute("DELETE FROM oauth_login_states WHERE expires_at <= ?", (now,))
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO oauth_login_states (
+                    state_sha256, code_verifier, nonce,
+                    browser_binding_sha256, return_to, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    state_sha256,
+                    code_verifier,
+                    nonce,
+                    browser_binding_sha256,
+                    return_to or "/",
+                    now,
+                    expires_at,
+                ),
+            )
+
+    def consume_oauth_login_state(self, state_sha256: str) -> Optional[dict[str, Any]]:
+        """Atomically fetch and delete a single-use OAuth login state by SHA-256 hash."""
+        if not state_sha256:
+            return None
+        with self._lock:
+            with self.connection() as conn:
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """
+                    DELETE FROM oauth_login_states
+                    WHERE state_sha256 = ?
+                    RETURNING state_sha256, code_verifier, nonce,
+                              browser_binding_sha256, return_to, created_at, expires_at
+                    """,
+                    (state_sha256,),
+                ).fetchall()
+                if not rows:
+                    return None
+                return dict(rows[0])
+
+    def create_auth_session(
+        self,
+        user_id: str,
+        token_sha256: str,
+        csrf_token: str,
+        expires_at: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Insert a hashed session record into `auth_sessions` (raw token is never stored)."""
+        now_dt = datetime.now(UTC)
+        now = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        resolved_expires = expires_at
+        if not resolved_expires:
+            secs = max(60, int(ttl_seconds or 1209600))
+            resolved_expires = (now_dt + timedelta(seconds=secs)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        session_id = str(uuid.uuid4())
+        with self.connection() as conn:
+            conn.execute(
+                "DELETE FROM auth_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL",
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT INTO auth_sessions (
+                    id, user_id, token_sha256, csrf_token,
+                    created_at, last_seen_at, expires_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (session_id, user_id, token_sha256, csrf_token, now, now, resolved_expires),
+            )
+        return {
+            "id": session_id,
+            "user_id": user_id,
+            "csrf_token": csrf_token,
+            "created_at": now,
+            "expires_at": resolved_expires,
+        }
+
+    def get_active_session_by_token_hash(
+        self, token_sha256: str
+    ) -> Optional[dict[str, Any]]:
+        """Resolve an active, unrevoked, non-expired session joined with its `users` record."""
+        if not token_sha256:
+            return None
+        now_dt = datetime.now(UTC).replace(microsecond=0)
+        now_str = now_dt.isoformat().replace("+00:00", "Z")
+        with self.connection() as conn:
+            s_row = conn.execute(
+                """
+                SELECT id AS session_id, user_id, csrf_token, created_at, last_seen_at, expires_at, revoked_at
+                FROM auth_sessions
+                WHERE token_sha256 = ?
+                """,
+                (token_sha256,),
+            ).fetchone()
+            if s_row is None or s_row["revoked_at"] is not None:
+                return None
+            exp_dt = _parse_iso_utc(str(s_row["expires_at"]))
+            if exp_dt is None or exp_dt <= now_dt:
+                return None
+            u_row = conn.execute(
+                "SELECT * FROM users WHERE id = ?",
+                (str(s_row["user_id"]),),
+            ).fetchone()
+            if u_row is None:
+                return None
+            conn.execute(
+                "UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?",
+                (now_str, str(s_row["session_id"])),
+            )
+        return {
+            "session_id": str(s_row["session_id"]),
+            "user_id": str(s_row["user_id"]),
+            "csrf_token": str(s_row["csrf_token"]),
+            "expires_at": str(s_row["expires_at"]),
+            "user": self._row_to_user_dict(u_row),
+        }
+
+    def revoke_session_by_token_hash(self, token_sha256: str) -> bool:
+        """Immediately revoke an `auth_sessions` record by SHA-256 token digest."""
+        if not token_sha256:
+            return False
+        now = _now_iso()
+        with self.connection() as conn:
+            cur = conn.execute(
+                "UPDATE auth_sessions SET revoked_at = ? WHERE token_sha256 = ? AND revoked_at IS NULL",
+                (now, token_sha256),
+            )
+            return cur.rowcount > 0
+
+    def get_proposal_owner_info(self, proposal_id: str) -> Optional[dict[str, Any]]:
+        """Return ownership metadata for a SQLite-persisted `VacationOptionProposal`."""
+        if not proposal_id:
+            return None
+        with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT p.id AS proposal_id,
+                       q.family_profile_id AS family_profile_id,
+                       fp.user_id AS user_id,
+                       COALESCE(fp.is_legacy_quarantined, 0) AS is_legacy_quarantined
+                FROM vacation_option_proposals p
+                JOIN flight_search_queries q ON p.search_query_id = q.id
+                LEFT JOIN family_profiles fp ON q.family_profile_id = fp.id
+                WHERE p.id = ?
+                """,
+                (proposal_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "proposal_id": str(row["proposal_id"]),
+            "family_profile_id": row["family_profile_id"],
+            "user_id": row["user_id"],
+            "is_legacy_quarantined": bool(int(row["is_legacy_quarantined"] or 0)),
+        }

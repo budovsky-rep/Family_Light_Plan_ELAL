@@ -422,6 +422,34 @@
     return upcoming;
   }
 
+  function createCleanGuestProfile() {
+    return {
+      id: 'guest-ephemeral',
+      profile_name: '',
+      adults_count: 2,
+      workweek_type: 'SUN_THU',
+      erev_chag_pto_weight: 0.5,
+      chol_hamoed_pto_weight: 0.5,
+      annual_pto_budget: 18,
+      max_pto_per_trip: 5,
+      matmid_points_balance: 0,
+      has_flycard: false,
+      flycard_tier: 'NONE',
+      flycard_companion_vouchers: 0,
+      point_valuation_usd: 0.016,
+      preferred_currency: 'USD',
+      children: [],
+      passenger_loyalty_wallets: []
+    };
+  }
+
+  function generateClientChildId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `child-${crypto.randomUUID()}`;
+    }
+    return `child-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
   const state = {
     locale: 'he',
     dir: 'rtl',
@@ -435,7 +463,20 @@
     isCalendarVisible: false,
     showAllProposals: false,
     lastComparison: null,
-    profile: null,
+    auth: {
+      authenticated: false,
+      oauthConfigured: false,
+      testMode: false,
+      csrfToken: null,
+      user: null
+    },
+    notificationsOptIn: false,
+    authNoticeHe: null,
+    authNoticeEn: null,
+    saveFeedbackHe: null,
+    saveFeedbackEn: null,
+    confirmingDeleteProfile: false,
+    profile: createCleanGuestProfile(),
     profileDirty: false,
     upcomingHolidays: [],
     userSelectedHoliday: false,
@@ -604,17 +645,29 @@
   }
 
   async function apiGet(path) {
-    const resp = await fetch(path);
+    const resp = await fetch(path, {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store'
+    });
     if (!resp.ok) {
-      throw new Error(`GET ${path} failed (${resp.status})`);
+      const err = new Error(`GET ${path} failed (${resp.status})`);
+      err.status = resp.status;
+      throw err;
     }
     return resp.json();
   }
 
   async function apiSend(method, path, bodyObj) {
+    const hdrs = { 'Content-Type': 'application/json' };
+    if (state.auth && state.auth.csrfToken) {
+      hdrs['X-CSRF-Token'] = state.auth.csrfToken;
+    }
     const resp = await fetch(path, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: hdrs,
       body: JSON.stringify(bodyObj || {})
     });
     if (!resp.ok) {
@@ -725,8 +778,166 @@
     return matmidTotal;
   }
 
+  function syncProfileStateFromDom() {
+    if (!state.profile) {
+      state.profile = createCleanGuestProfile();
+    }
+    const adultsEl = document.getElementById('prof-adults-count');
+    const ptoEl = document.getElementById('prof-pto-budget');
+    if (adultsEl && adultsEl.value !== '') {
+      state.profile.adults_count = Number(adultsEl.value);
+    }
+    if (ptoEl && ptoEl.value !== '') {
+      state.profile.annual_pto_budget = Number(ptoEl.value);
+    }
+    syncHouseholdMatmidBalance(true);
+    state.profile.passenger_loyalty_wallets = [];
+
+    document.querySelectorAll('[data-child-age]').forEach((ageEl) => {
+      const idx = Number(ageEl.getAttribute('data-child-age'));
+      if (state.profile.children && state.profile.children[idx] && ageEl.value !== '') {
+        const ageNum = Number(ageEl.value);
+        state.profile.children[idx].child_age_years = ageNum;
+      }
+    });
+    document.querySelectorAll('[data-child-fw]').forEach((fwEl) => {
+      const idx = Number(fwEl.getAttribute('data-child-fw'));
+      if (state.profile.children && state.profile.children[idx]) {
+        const val = fwEl.value;
+        state.profile.children[idx].framework_type = val === '' ? null : val;
+      }
+    });
+    (state.profile.children || []).forEach((ch) => {
+      const ageNum = Number(ch.child_age_years ?? 6);
+      ch.child_name = 'ילד/ה';
+      ch.birth_date = null;
+      if (ageNum < 2) {
+        if (ch.passenger_Current_type !== 'INFANT_SEAT') ch.passenger_Current_type = 'INFANT_LAP';
+      } else if (ageNum <= 11) {
+        ch.passenger_Current_type = 'CHILD';
+      } else {
+        ch.passenger_Current_type = 'YOUTH';
+      }
+    });
+  }
+
+  function renderAuthControls() {
+    const isHe = state.locale === 'he';
+    const isAuthed = Boolean(state.auth && state.auth.authenticated && state.auth.user);
+
+    const btnHeaderAuth = document.getElementById('btn-header-auth');
+    const btnHeaderSignout = document.getElementById('btn-header-signout');
+    if (btnHeaderAuth) {
+      if (isAuthed) {
+        btnHeaderAuth.setAttribute('hidden', '');
+        btnHeaderAuth.style.display = 'none';
+      } else {
+        btnHeaderAuth.removeAttribute('hidden');
+        btnHeaderAuth.style.display = 'inline-flex';
+        btnHeaderAuth.textContent = isHe ? 'כניסה' : 'Sign in';
+      }
+    }
+    if (btnHeaderSignout) {
+      if (isAuthed) {
+        btnHeaderSignout.removeAttribute('hidden');
+        btnHeaderSignout.style.display = 'inline-flex';
+        btnHeaderSignout.textContent = isHe ? 'התנתקות' : 'Sign out';
+      } else {
+        btnHeaderSignout.setAttribute('hidden', '');
+        btnHeaderSignout.style.display = 'none';
+      }
+    }
+
+    const authCard = document.getElementById('profile-auth-card');
+    if (authCard) {
+      authCard.classList.toggle('profile-auth-card-signed-in', isAuthed);
+    }
+
+    const guestPanel = document.getElementById('auth-guest-panel');
+    const userPanel = document.getElementById('auth-user-panel');
+    if (guestPanel) {
+      if (isAuthed) {
+        guestPanel.setAttribute('hidden', '');
+        guestPanel.style.display = 'none';
+      } else {
+        guestPanel.removeAttribute('hidden');
+        guestPanel.style.display = 'flex';
+      }
+    }
+    if (userPanel) {
+      if (isAuthed) {
+        userPanel.removeAttribute('hidden');
+        userPanel.style.display = 'flex';
+      } else {
+        userPanel.setAttribute('hidden', '');
+        userPanel.style.display = 'none';
+      }
+    }
+
+    const emailEl = document.getElementById('auth-user-email');
+    if (emailEl) {
+      emailEl.textContent = isAuthed && state.auth.user ? String(state.auth.user.email || '') : '';
+    }
+
+    const notifCheckbox = document.getElementById('input-notifications-opt-in');
+    if (notifCheckbox) {
+      notifCheckbox.checked = Boolean(state.notificationsOptIn);
+    }
+
+    const confirmBar = document.getElementById('auth-delete-confirm-bar');
+    if (confirmBar) {
+      if (isAuthed && state.confirmingDeleteProfile) {
+        confirmBar.removeAttribute('hidden');
+        confirmBar.style.display = 'flex';
+      } else {
+        confirmBar.setAttribute('hidden', '');
+        confirmBar.style.display = 'none';
+      }
+    }
+
+    const statusNote = document.getElementById('auth-status-note');
+    if (statusNote) {
+      const msg = isHe ? state.authNoticeHe : state.authNoticeEn;
+      if (!isAuthed && msg) {
+        statusNote.textContent = msg;
+        statusNote.removeAttribute('hidden');
+        statusNote.style.display = 'block';
+      } else {
+        statusNote.textContent = '';
+        statusNote.setAttribute('hidden', '');
+        statusNote.style.display = 'none';
+      }
+    }
+
+    const feedbackEl = document.getElementById('auth-save-feedback');
+    if (feedbackEl) {
+      const fbMsg = isHe ? state.saveFeedbackHe : state.saveFeedbackEn;
+      if (isAuthed && fbMsg) {
+        feedbackEl.textContent = fbMsg;
+        feedbackEl.removeAttribute('hidden');
+        feedbackEl.style.display = 'block';
+      } else {
+        feedbackEl.textContent = '';
+        feedbackEl.setAttribute('hidden', '');
+        feedbackEl.style.display = 'none';
+      }
+    }
+
+    const btnSaveProfile = document.getElementById('btn-save-profile');
+    if (btnSaveProfile) {
+      const heSave = isAuthed ? '💾 שמור ועדכן' : '🔒 התחברות לשמירה';
+      const enSave = isAuthed ? '💾 Save & Refresh' : '🔒 Sign in to Save';
+      btnSaveProfile.setAttribute('data-he', heSave);
+      btnSaveProfile.setAttribute('data-en', enSave);
+      btnSaveProfile.textContent = isHe ? heSave : enSave;
+    }
+  }
+
   function renderProfileControls() {
-    if (!state.profile) return;
+    if (!state.profile) {
+      state.profile = createCleanGuestProfile();
+    }
+    renderAuthControls();
     const isHe = state.locale === 'he';
     syncHouseholdMatmidBalance(false);
     const adultsInput = document.getElementById('prof-adults-count');
@@ -750,6 +961,13 @@
     const childrenContainer = document.getElementById('children-list-container');
     if (childrenContainer) {
       const isOptionalMode = state.dateSelectionMode === 'SPECIFIC_DATES';
+      if (!state.profile.children || state.profile.children.length === 0) {
+        const emptyHint = isHe
+          ? 'אין ילדים מוגדרים כרגע — לחצו "+ ילד/ה" להוספת גיל ומסגרת חינוך.'
+          : 'No children added yet — click "+ Add Child" to add ages & school frameworks.';
+        childrenContainer.innerHTML = `<p class="children-empty-hint">${escapeHtml(emptyHint)}</p>`;
+        return;
+      }
       childrenContainer.innerHTML = state.profile.children
         .map((child, idx) => {
           const fwOptions = MOE_FRAMEWORKS.map((fw) => {
@@ -818,7 +1036,12 @@
   function renderCalendarTable() {
     const tbody = document.getElementById('moe-calendar-tbody');
     const syncBadge = document.getElementById('calendar-sync-badge');
-    if (!tbody || !state.calendarData) return;
+    if (!tbody) return;
+    if (!state.calendarData) {
+      tbody.innerHTML = '';
+      if (syncBadge) syncBadge.textContent = '';
+      return;
+    }
 
     const isHe = state.locale === 'he';
     if (syncBadge) {
@@ -1507,12 +1730,177 @@
     renderProposals();
   }
 
+  function collectActiveFrameworksCsv() {
+    if (!state.profile || !Array.isArray(state.profile.children)) return '';
+    const fws = state.profile.children
+      .map((c) => (c && c.framework_type ? String(c.framework_type).trim() : ''))
+      .filter(Boolean);
+    return fws.join(',');
+  }
+
+  function refreshClientHolidaysOnProfileEdit() {
+    const refIso = getReferenceToday();
+    state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    populateHolidaySelector(state.upcomingHolidays, {
+      preserveSelection: true,
+      applyDurationDefault: !state.userEditedMaxNights
+    });
+  }
+
+  async function scrubBrowserClientState() {
+    try {
+      sessionStorage.clear();
+    } catch (_e1) {
+      // Ignore storage access errors in restricted contexts
+    }
+    try {
+      localStorage.clear();
+    } catch (_e2) {
+      // Ignore storage access errors in restricted contexts
+    }
+    if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+      try {
+        const cacheNames = await caches.keys();
+        await Promise.all(
+          cacheNames.map(async (cName) => {
+            const cacheObj = await caches.open(cName);
+            const reqs = await cacheObj.keys();
+            await Promise.all(
+              reqs.map((req) => {
+                try {
+                  const u = new URL(req.url);
+                  if (u.pathname.startsWith('/api/')) {
+                    return cacheObj.delete(req);
+                  }
+                } catch (_uErr) {
+                  // Ignore non-URL cache entries
+                }
+                return false;
+              })
+            );
+          })
+        );
+      } catch (_cErr) {
+        // Ignore CacheStorage errors
+      }
+    }
+  }
+
+  function startGoogleSignIn() {
+    const canSignIn = Boolean(
+      state.auth && (state.auth.oauthConfigured || state.auth.testMode)
+    );
+    if (!canSignIn) {
+      state.authNoticeHe =
+        'התחברות Gmail טרם הוגדרה בשרת זה (נדרשת הגדרת GOOGLE_OAUTH_CLIENT_ID בקובץ auth.env). ניתן להמשיך לחפש חופשות כאורחים.';
+      state.authNoticeEn =
+        'Gmail OAuth 2.0 is not configured on this server yet (set GOOGLE_OAUTH_CLIENT_ID in auth.env). You can continue searching as a guest.';
+      renderAuthControls();
+      const profZone = document.getElementById('zone-profile');
+      if (profZone) profZone.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+
+    syncProfileStateFromDom();
+    const hasDraftChanges = Boolean(
+      state.profile &&
+        (state.profileDirty ||
+          Number(state.profile.adults_count || 2) !== 2 ||
+          Number(state.profile.annual_pto_budget ?? 18) !== 18 ||
+          Number(state.profile.matmid_points_balance || 0) > 0 ||
+          (Array.isArray(state.profile.children) && state.profile.children.length > 0))
+    );
+    if (hasDraftChanges && state.profile) {
+      try {
+        sessionStorage.setItem(
+          'fvp_pending_oauth_draft',
+          JSON.stringify({
+            ts: Date.now(),
+            adults_count: state.profile.adults_count,
+            annual_pto_budget: state.profile.annual_pto_budget,
+            matmid_points_balance: state.profile.matmid_points_balance,
+            children: (state.profile.children || []).map((c) => ({
+              child_age_years: Number(c.child_age_years ?? 6),
+              framework_type: c.framework_type || null
+            }))
+          })
+        );
+      } catch (_sErr) {
+        // Ignore sessionStorage quota/privacy restrictions
+      }
+    }
+    const loginUrl = `/api/v1/auth/google/login?lang=${encodeURIComponent(state.locale)}`;
+    window.location.assign(loginUrl);
+  }
+
+  async function handleSignOut() {
+    try {
+      await apiSend('POST', '/api/v1/auth/logout', {});
+    } catch (_logoutErr) {
+      // Always complete client-side scrub even if session already expired
+    }
+    state.auth = {
+      authenticated: false,
+      oauthConfigured: Boolean(state.auth && state.auth.oauthConfigured),
+      testMode: Boolean(state.auth && state.auth.testMode),
+      csrfToken: null,
+      user: null
+    };
+    state.notificationsOptIn = false;
+    state.authNoticeHe = null;
+    state.authNoticeEn = null;
+    state.saveFeedbackHe = null;
+    state.saveFeedbackEn = null;
+    state.confirmingDeleteProfile = false;
+    state.profile = createCleanGuestProfile();
+    state.profileDirty = false;
+    state.calendarData = null;
+    state.proposals = [];
+    state.showAllProposals = false;
+    state.lastComparison = null;
+    state.selectedProposalIds = new Set();
+
+    await scrubBrowserClientState();
+    renderProfileControls();
+    renderCalendarTable();
+    renderComparisonBanner();
+    renderProposals();
+    await refreshUpcomingHolidaysFromServer(false);
+    await loadCalendarForSchoolYear();
+    await runVacationSearch();
+  }
+
+  async function handleDeleteSavedProfile() {
+    if (!state.auth || !state.auth.authenticated) return;
+    try {
+      await apiSend('DELETE', '/api/v1/profile', {});
+      state.profile = createCleanGuestProfile();
+      state.profileDirty = false;
+      state.calendarData = null;
+      state.confirmingDeleteProfile = false;
+      state.saveFeedbackHe = '✓ הנתונים השמורים נמחקו מהחשבון.';
+      state.saveFeedbackEn = '✓ Saved family data deleted from your account.';
+      await scrubBrowserClientState();
+      renderProfileControls();
+      renderCalendarTable();
+      await refreshUpcomingHolidaysFromServer(false);
+      await loadCalendarForSchoolYear();
+      await runVacationSearch();
+    } catch (err) {
+      if (err && err.status === 401) {
+        await handleSignOut();
+      }
+    }
+  }
+
   async function refreshUpcomingHolidaysFromServer(applyDefaultNights) {
     const refIso = getReferenceToday();
     const asOfOverride = getAsOfOverrideIso();
-    const qs = asOfOverride
-      ? `?profile_id=default-family-profile&as_of=${encodeURIComponent(asOfOverride)}`
-      : `?profile_id=default-family-profile&as_of=${encodeURIComponent(refIso)}`;
+    const effectiveAsOf = asOfOverride || refIso;
+    const fwCsv = collectActiveFrameworksCsv();
+    const qs = fwCsv
+      ? `?as_of=${encodeURIComponent(effectiveAsOf)}&frameworks=${encodeURIComponent(fwCsv)}`
+      : `?as_of=${encodeURIComponent(effectiveAsOf)}`;
     try {
       const upcomingRes = await apiGet(`/api/v1/moe-calendar/upcoming${qs}`);
       if (upcomingRes && Array.isArray(upcomingRes.holidays) && upcomingRes.holidays.length > 0) {
@@ -1530,9 +1918,26 @@
     });
   }
 
+  async function loadCalendarForSchoolYear(refIsoOverride) {
+    const refIso = refIsoOverride || getReferenceToday();
+    const currentSy = inferSchoolYearForIso(refIso);
+    const calFwCsv = collectActiveFrameworksCsv();
+    const calPath = calFwCsv
+      ? `/api/v1/moe-calendar/${currentSy}?frameworks=${encodeURIComponent(calFwCsv)}`
+      : `/api/v1/moe-calendar/${currentSy}`;
+    try {
+      state.calendarData = await apiGet(calPath);
+    } catch (_calErr) {
+      state.calendarData = null;
+    }
+    renderCalendarTable();
+  }
+
   async function loadInitialData() {
     const refIso = getReferenceToday();
     initDefaultManualDates();
+    state.profile = createCleanGuestProfile();
+    renderProfileControls();
     state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: state.userSelectedHoliday,
@@ -1540,17 +1945,101 @@
     });
 
     try {
-      const loadedProfile = await apiGet('/api/v1/profile');
-      loadedProfile.passenger_loyalty_wallets = [];
-      state.profile = loadedProfile;
-      state.profileDirty = false;
+      let sess = null;
+      try {
+        sess = await apiGet('/api/v1/auth/session');
+      } catch (_sessErr) {
+        sess = null;
+      }
+
+      if (sess && sess.authenticated && sess.user) {
+        state.auth = {
+          authenticated: true,
+          oauthConfigured: Boolean(sess.oauth_configured),
+          testMode: Boolean(sess.test_mode),
+          csrfToken: sess.csrf_token || null,
+          user: sess.user
+        };
+        state.notificationsOptIn = Boolean(sess.user.notifications_enabled);
+
+        const loadedProfile = await apiGet('/api/v1/profile');
+        loadedProfile.passenger_loyalty_wallets = [];
+
+        let pendingDraft = null;
+        try {
+          const rawDraft = sessionStorage.getItem('fvp_pending_oauth_draft');
+          sessionStorage.removeItem('fvp_pending_oauth_draft');
+          if (rawDraft) {
+            const parsedDraft = JSON.parse(rawDraft);
+            if (parsedDraft && Date.now() - Number(parsedDraft.ts || 0) < 5 * 60 * 1000) {
+              pendingDraft = parsedDraft;
+            }
+          }
+        } catch (_dErr) {
+          pendingDraft = null;
+        }
+
+        if (loadedProfile.is_persisted === false && pendingDraft) {
+          loadedProfile.adults_count = Number(pendingDraft.adults_count || 2);
+          loadedProfile.annual_pto_budget = Number(pendingDraft.annual_pto_budget ?? 18);
+          loadedProfile.matmid_points_balance = Number(pendingDraft.matmid_points_balance || 0);
+          loadedProfile.children = Array.isArray(pendingDraft.children)
+            ? pendingDraft.children.map((ch) => {
+                const ageVal = Number(ch.child_age_years ?? 6);
+                return {
+                  id: generateClientChildId(),
+                  child_name: 'ילד/ה',
+                  birth_date: null,
+                  child_age_years: ageVal,
+                  passenger_Current_type:
+                    ageVal < 2 ? 'INFANT_LAP' : ageVal <= 11 ? 'CHILD' : 'YOUTH',
+                  framework_type: ch.framework_type || null,
+                  school_week_days: 5,
+                  holiday_extension_mode: 'NITZANIM_FULL_WITH_JULY',
+                  treat_camp_as_vacation: true,
+                  bagrut_blackout_dates: []
+                };
+              })
+            : [];
+          try {
+            const savedDraft = await apiSend('PUT', '/api/v1/profile', {
+              ...loadedProfile,
+              notifications_enabled: Boolean(state.notificationsOptIn)
+            });
+            savedDraft.passenger_loyalty_wallets = [];
+            state.profile = savedDraft;
+            state.profileDirty = false;
+            state.saveFeedbackHe = '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
+            state.saveFeedbackEn = '✓ Family profile saved to your account.';
+          } catch (_autoSaveErr) {
+            state.profile = loadedProfile;
+            state.profileDirty = true;
+          }
+        } else {
+          state.profile = loadedProfile;
+          state.profileDirty = false;
+        }
+      } else {
+        state.auth = {
+          authenticated: false,
+          oauthConfigured: Boolean(sess && sess.oauth_configured),
+          testMode: Boolean(sess && sess.test_mode),
+          csrfToken: null,
+          user: null
+        };
+        state.notificationsOptIn = false;
+        try {
+          sessionStorage.removeItem('fvp_pending_oauth_draft');
+        } catch (_rmErr) {
+          // Ignore
+        }
+        state.profile = createCleanGuestProfile();
+        state.profileDirty = false;
+      }
+
       renderProfileControls();
-
       await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
-
-      const currentSy = inferSchoolYearForIso(refIso);
-      state.calendarData = await apiGet(`/api/v1/moe-calendar/${currentSy}`);
-      renderCalendarTable();
+      await loadCalendarForSchoolYear(refIso);
       await runVacationSearch();
     } catch (err) {
       console.error('Initialization error:', err);
@@ -1558,6 +2047,7 @@
   }
 
   async function runVacationSearch() {
+    syncProfileStateFromDom();
     const destVal = (document.getElementById('select-destination') || {}).value || 'ANYWHERE';
     const selectHolidayEl = document.getElementById('select-direct-holiday');
     const holidayVal = (selectHolidayEl && selectHolidayEl.value) || 'HANUKKAH';
@@ -1598,39 +2088,28 @@
       }
     }
 
-    if (state.profile && state.profileDirty) {
-      const adultsEl = document.getElementById('prof-adults-count');
-      const ptoEl = document.getElementById('prof-pto-budget');
-      if (adultsEl) state.profile.adults_count = Number(adultsEl.value || 2);
-      if (ptoEl) state.profile.annual_pto_budget = Number(ptoEl.value || 18);
-      state.profile.matmid_points_balance = matmidBalanceVal;
-      state.profile.passenger_loyalty_wallets = [];
-      (state.profile.children || []).forEach((ch) => {
-        const ageNum = Number(ch.child_age_years ?? 6);
-        if (ageNum < 2) {
-          if (ch.passenger_Current_type !== 'INFANT_SEAT') ch.passenger_Current_type = 'INFANT_LAP';
-        } else if (ageNum <= 11) {
-          ch.passenger_Current_type = 'CHILD';
-        } else {
-          ch.passenger_Current_type = 'YOUTH';
-        }
-      });
-      try {
-        const savedProf = await apiSend('PUT', '/api/v1/profile', state.profile);
-        savedProf.passenger_loyalty_wallets = [];
-        state.profile = savedProf;
-        state.profileDirty = false;
-        renderProfileControls();
-      } catch (_saveErr) {
-        // Search still proceeds with in-request matmid_points_balance override
-      }
-    }
+    const inlineChildren = ((state.profile && state.profile.children) || []).map((ch) => ({
+      child_name: 'ילד/ה',
+      birth_date: null,
+      child_age_years: Number(ch.child_age_years ?? 6),
+      passenger_Current_type: ch.passenger_Current_type || 'CHILD',
+      framework_type: ch.framework_type || null,
+      school_week_days: Number(ch.school_week_days || 5),
+      holiday_extension_mode: ch.holiday_extension_mode || 'NITZANIM_FULL_WITH_JULY',
+      treat_camp_as_vacation: ch.treat_camp_as_vacation !== false
+    }));
 
     const payload = {
       date_selection_mode: state.dateSelectionMode,
       airline_selection_mode: 'EL_AL_ONLY',
       enabled_loyalty_programs: ['ELAL_MATMID'],
       matmid_points_balance: matmidBalanceVal,
+      inline_profile: {
+        adults_count: Number((state.profile && state.profile.adults_count) || 2),
+        annual_pto_budget: Number((state.profile && state.profile.annual_pto_budget) ?? 18),
+        matmid_points_balance: matmidBalanceVal,
+        children: inlineChildren
+      },
       destination_iatas: [destVal],
       direct_holiday_code: holidayVal,
       specific_departure_date: depVal,
@@ -1821,35 +2300,120 @@
       profPtoInput.addEventListener('change', onPtoChange);
     }
 
+    const btnHeaderAuth = document.getElementById('btn-header-auth');
+    if (btnHeaderAuth) {
+      btnHeaderAuth.addEventListener('click', () => {
+        startGoogleSignIn();
+      });
+    }
+
+    const btnGoogleSignin = document.getElementById('btn-google-signin');
+    if (btnGoogleSignin) {
+      btnGoogleSignin.addEventListener('click', () => {
+        startGoogleSignIn();
+      });
+    }
+
+    const btnHeaderSignout = document.getElementById('btn-header-signout');
+    if (btnHeaderSignout) {
+      btnHeaderSignout.addEventListener('click', () => {
+        handleSignOut();
+      });
+    }
+
+    const btnSignout = document.getElementById('btn-signout');
+    if (btnSignout) {
+      btnSignout.addEventListener('click', () => {
+        handleSignOut();
+      });
+    }
+
+    const btnDeleteProfile = document.getElementById('btn-delete-profile');
+    if (btnDeleteProfile) {
+      btnDeleteProfile.addEventListener('click', () => {
+        state.confirmingDeleteProfile = !state.confirmingDeleteProfile;
+        renderAuthControls();
+      });
+    }
+
+    const btnCancelDelete = document.getElementById('btn-cancel-delete-profile');
+    if (btnCancelDelete) {
+      btnCancelDelete.addEventListener('click', () => {
+        state.confirmingDeleteProfile = false;
+        renderAuthControls();
+      });
+    }
+
+    const btnConfirmDelete = document.getElementById('btn-confirm-delete-profile');
+    if (btnConfirmDelete) {
+      btnConfirmDelete.addEventListener('click', () => {
+        handleDeleteSavedProfile();
+      });
+    }
+
+    const inputNotifOptIn = document.getElementById('input-notifications-opt-in');
+    if (inputNotifOptIn) {
+      inputNotifOptIn.addEventListener('change', async () => {
+        state.notificationsOptIn = Boolean(inputNotifOptIn.checked);
+        if (state.auth && state.auth.authenticated) {
+          try {
+            const res = await apiSend('PUT', '/api/v1/auth/notifications', {
+              notifications_enabled: state.notificationsOptIn,
+              notification_preferences: {
+                award_seat_alerts: state.notificationsOptIn,
+                holiday_reminders: state.notificationsOptIn,
+                preferred_locale: state.locale === 'en' ? 'en' : 'he'
+              }
+            });
+            if (res && res.user) {
+              state.auth.user = res.user;
+            }
+            state.saveFeedbackHe = state.notificationsOptIn
+              ? '✓ העדפת ההתראות נשמרה בחשבון.'
+              : '✓ התראות עתידיות כובו.';
+            state.saveFeedbackEn = state.notificationsOptIn
+              ? '✓ Notification readiness preference saved.'
+              : '✓ Future email notifications disabled.';
+            renderAuthControls();
+          } catch (err) {
+            if (err && err.status === 401) {
+              await handleSignOut();
+            }
+          }
+        }
+      });
+    }
+
     const btnSaveProfile = document.getElementById('btn-save-profile');
     if (btnSaveProfile) {
       btnSaveProfile.addEventListener('click', async () => {
-        if (!state.profile) return;
-        state.profile.adults_count = Number(document.getElementById('prof-adults-count').value || 2);
-        state.profile.annual_pto_budget = Number(document.getElementById('prof-pto-budget').value || 18);
-        syncHouseholdMatmidBalance(true);
-        state.profile.passenger_loyalty_wallets = [];
-        (state.profile.children || []).forEach((ch) => {
-          const ageNum = Number(ch.child_age_years ?? 6);
-          if (ageNum < 2) {
-            if (ch.passenger_Current_type !== 'INFANT_SEAT') ch.passenger_Current_type = 'INFANT_LAP';
-          } else if (ageNum <= 11) {
-            ch.passenger_Current_type = 'CHILD';
-          } else {
-            ch.passenger_Current_type = 'YOUTH';
-          }
-        });
+        if (!state.auth || !state.auth.authenticated) {
+          startGoogleSignIn();
+          return;
+        }
+        syncProfileStateFromDom();
         state.validationErrorHe = null;
         state.validationErrorEn = null;
         try {
-          const saved = await apiSend('PUT', '/api/v1/profile', state.profile);
+          const saveBody = {
+            ...state.profile,
+            notifications_enabled: Boolean(state.notificationsOptIn)
+          };
+          const saved = await apiSend('PUT', '/api/v1/profile', saveBody);
           saved.passenger_loyalty_wallets = [];
           state.profile = saved;
           state.profileDirty = false;
+          state.saveFeedbackHe = '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
+          state.saveFeedbackEn = '✓ Family profile saved to your account.';
           renderProfileControls();
           await refreshUpcomingHolidaysFromServer(false);
+          await loadCalendarForSchoolYear();
           await runVacationSearch();
         } catch (err) {
+          if (err && err.status === 401) {
+            await handleSignOut();
+            return;
+          }
           const detail = extractApiErrorDetail(err);
           const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
           const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
@@ -1869,14 +2433,14 @@
       btnAddChild.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        if (!state.profile) return;
+        if (!state.profile) state.profile = createCleanGuestProfile();
         const detailsEl = btnAddChild.closest('details');
         if (detailsEl) detailsEl.open = true;
-        const nextIdx = state.profile.children.length + 1;
         const defaultAge = 7;
         state.profile.children.push({
-          id: `child-custom-${Date.now()}`,
-          child_name_he: `ילד/ה ${nextIdx}`,
+          id: generateClientChildId(),
+          child_name: 'ילד/ה',
+          birth_date: null,
           child_age_years: defaultAge,
           passenger_Current_type: 'CHILD',
           framework_type: state.dateSelectionMode === 'SPECIFIC_DATES' ? null : suggestFrameworkByAge(defaultAge),
@@ -1887,8 +2451,24 @@
         });
         state.profileDirty = true;
         renderProfileControls();
+        refreshClientHolidaysOnProfileEdit();
       });
     }
+
+    document.body.addEventListener('input', (ev) => {
+      const target = ev.target;
+      if (!target || !state.profile) return;
+      if (target.hasAttribute('data-child-age')) {
+        const idx = Number(target.getAttribute('data-child-age'));
+        if (state.profile.children[idx] && target.value !== '') {
+          const newAge = Number(target.value);
+          state.profile.children[idx].child_age_years = newAge;
+          state.profile.children[idx].passenger_Current_type =
+            newAge < 2 ? 'INFANT_LAP' : newAge <= 11 ? 'CHILD' : 'YOUTH';
+          state.profileDirty = true;
+        }
+      }
+    });
 
     document.body.addEventListener('change', (ev) => {
       const target = ev.target;
@@ -1904,11 +2484,13 @@
         }
         state.profileDirty = true;
         renderProfileControls();
+        refreshClientHolidaysOnProfileEdit();
       } else if (target.hasAttribute('data-child-fw')) {
         const idx = Number(target.getAttribute('data-child-fw'));
         const val = target.value;
         state.profile.children[idx].framework_type = val === '' ? null : val;
         state.profileDirty = true;
+        refreshClientHolidaysOnProfileEdit();
       } else if (target.hasAttribute('data-compare-id')) {
         const pid = target.getAttribute('data-compare-id');
         if (target.checked) state.selectedProposalIds.add(pid);
@@ -1932,6 +2514,7 @@
         state.profile.children.splice(idx, 1);
         state.profileDirty = true;
         renderProfileControls();
+        refreshClientHolidaysOnProfileEdit();
       }
     });
 
