@@ -246,6 +246,80 @@ def _build_passenger_specs(profile: FamilyProfile) -> list[_PassengerSpec]:
     return specs
 
 
+GOOGLE_FLIGHTS_PLACE_NAMES: dict[str, str] = {
+    "TLV": "Tel Aviv",
+    "ATH": "Athens",
+    "LCA": "Larnaca",
+    "RHO": "Rhodes",
+    "PFO": "Paphos",
+    "TBS": "Tbilisi",
+    "ROM": "Rome",
+    "FCO": "Rome",
+    "MIL": "Milan",
+    "MXP": "Milan",
+    "VIE": "Vienna",
+    "BUD": "Budapest",
+    "PRG": "Prague",
+    "BER": "Berlin",
+    "MUC": "Munich",
+    "LON": "London",
+    "LHR": "London Heathrow",
+    "LTN": "London",
+    "PAR": "Paris",
+    "CDG": "Paris Charles de Gaulle",
+    "MAD": "Madrid",
+    "BCN": "Barcelona",
+    "AMS": "Amsterdam",
+    "BKK": "Bangkok",
+    "TYO": "Tokyo Narita",
+    "NRT": "Tokyo Narita",
+    "HKT": "HKT",
+    "NYC": "New York JFK",
+    "JFK": "New York JFK",
+    "EWR": "Newark",
+    "MIA": "Miami",
+    "FLL": "Fort Lauderdale",
+    "HER": "Heraklion",
+    "SKG": "Thessaloniki",
+    "CFU": "Corfu",
+    "EFL": "Kefalonia",
+    "JTR": "Santorini",
+    "BUS": "Batumi",
+    "TIV": "Tivat",
+    "BEG": "Belgrade",
+    "OTP": "Bucharest",
+    "SOF": "Sofia",
+    "WAW": "Warsaw",
+    "KRK": "Krakow",
+    "VCE": "Venice",
+    "GVA": "Geneva",
+    "ZRH": "Zurich",
+    "FRA": "Frankfurt am Main",
+    "LIS": "Lisbon",
+    "NCE": "NCE",
+    "DXB": "Dubai",
+    "LAX": "Los Angeles",
+    "BOS": "Boston",
+}
+
+
+def resolve_google_flights_place_name(iata_code: str) -> str:
+    """Resolve an airport/metro code to a verified Google Flights natural-language destination name.
+
+    Prevents ambiguous 3-letter codes (such as `TBS`, `BUS`, `HER`, `OTP`) or parenthetical labels
+    from failing Google Flights' `?q=` parser and falling back to an empty search form.
+    """
+    code = str(iata_code or "TLV").strip().upper()
+    if code in GOOGLE_FLIGHTS_PLACE_NAMES:
+        return GOOGLE_FLIGHTS_PLACE_NAMES[code]
+    meta = DESTINATION_CATALOG.get(code)
+    if meta and meta.get("city_en"):
+        base_city = str(meta["city_en"]).split("(", 1)[0].strip()
+        if base_city:
+            return base_city
+    return code
+
+
 def build_elal_google_flights_url(
     origin_iata: str,
     dest_iata: str,
@@ -255,15 +329,19 @@ def build_elal_google_flights_url(
     passengers: list[_PassengerSpec],
     allocations: list[PassengerTicketAllocation],
 ) -> str:
-    """Build a WAF-safe Google Flights search URL pre-filtered to EL AL (`LY`), nonstop,
-    exact outbound/return dates, cabin class, and family passenger breakdown (`adults`, `children`, `infants`).
+    """Build a WAF-safe Google Flights search URL pre-filled with verified destination names,
+    nonstop filter, exact outbound/return dates, cabin class, and family passenger breakdown
+    (`adults`, `children`, `infants`).
 
-    Clicking 'Book with EL AL' from Google Flights generates an official partner-signed handoff
-    into `booking.elal.com` that passes EL AL's F5 BIG-IP WAF without `Request Not Allowed` errors.
+    Uses verified city/airport names (rather than raw ambiguous 3-letter codes like `TBS`) and
+    omits `"on EL AL"` so both EL AL mainline and Sun d'Or (`2U`/`LY5xxx`) nonstop flights load
+    cleanly with live prices and official partner-signed handoff into `booking.elal.com`.
     """
     orig = str(origin_iata or "TLV").strip().upper()
     dest = str(dest_iata or "FCO").strip().upper()
     ret_orig = str(return_origin_iata or dest).strip().upper()
+    orig_place = resolve_google_flights_place_name(orig)
+    dest_place = resolve_google_flights_place_name(dest)
 
     adt_count = max(
         1,
@@ -298,14 +376,13 @@ def build_elal_google_flights_url(
 
     if ret_orig == dest:
         query_str = (
-            f"Flights to {dest} from {orig} on {dep_date.isoformat()} "
-            f"through {ret_date.isoformat()} with {pax_phrase}{cabin_phrase} nonstop on EL AL"
+            f"Flights to {dest_place} from {orig_place} on {dep_date.isoformat()} "
+            f"through {ret_date.isoformat()} with {pax_phrase}{cabin_phrase} nonstop"
         )
     else:
         query_str = (
-            f"Flights from {orig} to {dest} on {dep_date.isoformat()} "
-            f"and from {ret_orig} to {orig} on {ret_date.isoformat()} "
-            f"with {pax_phrase}{cabin_phrase} nonstop on EL AL"
+            f"One way flights to {dest_place} from {orig_place} on {dep_date.isoformat()} "
+            f"with {pax_phrase}{cabin_phrase} nonstop"
         )
 
     params = [

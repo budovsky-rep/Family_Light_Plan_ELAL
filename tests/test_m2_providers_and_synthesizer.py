@@ -1208,12 +1208,44 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(qs["gl"], "IL")
         self.assertEqual(qs["hl"], "en")
         q_str = qs["q"]
-        self.assertIn("Flights to FCO from TLV", q_str)
+        self.assertIn("Flights to Rome from Tel Aviv", q_str)
         self.assertIn("on 2027-04-11 through 2027-04-18", q_str)
         self.assertIn("3 adults, 1 child and 1 infant", q_str)
-        self.assertIn("nonstop on EL AL", q_str)
+        self.assertTrue(q_str.endswith("nonstop"))
+        self.assertNotIn("on EL AL", q_str)
 
-        # Verify Open-Jaw constructs two explicit directional legs in Google Flights query
+        # Verify Tbilisi (`TBS` — Sun d'Or route whose raw `TBS` IATA code previously failed Google Flights `?q=` parsing)
+        # resolves cleanly to `"Flights to Tbilisi from Tel Aviv ... nonstop"` across all 45 catalog destinations.
+        from backend.app.planner_synthesizer.bonus_planner_service import (
+            DESTINATION_CATALOG,
+            resolve_google_flights_place_name,
+        )
+
+        tbs_props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["TBS"],
+                "specific_departure_date": "2027-04-16",
+                "specific_return_date": "2027-04-27",
+                "flex_days_plus_minus": 0,
+            },
+            profile=self.default_profile,
+        )
+        self.assertGreater(len(tbs_props), 0)
+        tbs_qs = {
+            k: v[0]
+            for k, v in parse_qs(urlparse(str(tbs_props[0].itinerary.elal_google_flights_url)).query).items()
+        }
+        self.assertIn("Flights to Tbilisi from Tel Aviv on 2027-04-16 through 2027-04-27", tbs_qs["q"])
+        self.assertNotIn("Flights to TBS", tbs_qs["q"])
+        self.assertNotIn("on EL AL", tbs_qs["q"])
+        for code in DESTINATION_CATALOG:
+            place_name = resolve_google_flights_place_name(code)
+            self.assertTrue(bool(place_name))
+            self.assertNotIn("(", place_name)
+
+        # Verify Open-Jaw constructs a clean parseable one-way Google Flights query without multi-leg failure
         oj_proposals = [
             p
             for p in self.planner.search_vacations(
@@ -1234,9 +1266,9 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 k: v[0]
                 for k, v in parse_qs(urlparse(str(oj_p.itinerary.elal_google_flights_url)).query).items()
             }
-            self.assertIn(f"from TLV to {oj_p.itinerary.destination_iata}", oj_qs["q"])
-            self.assertIn(f"and from {oj_p.itinerary.return_origin_iata} to TLV", oj_qs["q"])
-            self.assertIn("nonstop on EL AL", oj_qs["q"])
+            dest_place = resolve_google_flights_place_name(oj_p.itinerary.destination_iata)
+            self.assertIn(f"One way flights to {dest_place} from Tel Aviv", oj_qs["q"])
+            self.assertTrue(oj_qs["q"].endswith("nonstop"))
 
         # Verify non-El Al flights in ALL_AIRLINES mode have elal_google_flights_url = None
         all_air_props = self.planner.search_vacations(

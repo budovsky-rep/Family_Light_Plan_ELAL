@@ -1117,17 +1117,91 @@
       .join('');
   }
 
+  const GOOGLE_FLIGHTS_PLACE_NAMES = {
+    TLV: 'Tel Aviv',
+    ATH: 'Athens',
+    LCA: 'Larnaca',
+    RHO: 'Rhodes',
+    PFO: 'Paphos',
+    TBS: 'Tbilisi',
+    ROM: 'Rome',
+    FCO: 'Rome',
+    MIL: 'Milan',
+    MXP: 'Milan',
+    VIE: 'Vienna',
+    BUD: 'Budapest',
+    PRG: 'Prague',
+    BER: 'Berlin',
+    MUC: 'Munich',
+    LON: 'London',
+    LHR: 'London Heathrow',
+    LTN: 'London',
+    PAR: 'Paris',
+    CDG: 'Paris Charles de Gaulle',
+    MAD: 'Madrid',
+    BCN: 'Barcelona',
+    AMS: 'Amsterdam',
+    BKK: 'Bangkok',
+    TYO: 'Tokyo Narita',
+    NRT: 'Tokyo Narita',
+    HKT: 'HKT',
+    NYC: 'New York JFK',
+    JFK: 'New York JFK',
+    EWR: 'Newark',
+    MIA: 'Miami',
+    FLL: 'Fort Lauderdale',
+    HER: 'Heraklion',
+    SKG: 'Thessaloniki',
+    CFU: 'Corfu',
+    EFL: 'Kefalonia',
+    JTR: 'Santorini',
+    BUS: 'Batumi',
+    TIV: 'Tivat',
+    BEG: 'Belgrade',
+    OTP: 'Bucharest',
+    SOF: 'Sofia',
+    WAW: 'Warsaw',
+    KRK: 'Krakow',
+    VCE: 'Venice',
+    GVA: 'Geneva',
+    ZRH: 'Zurich',
+    FRA: 'Frankfurt am Main',
+    LIS: 'Lisbon',
+    NCE: 'NCE',
+    DXB: 'Dubai',
+    LAX: 'Los Angeles',
+    BOS: 'Boston'
+  };
+
+  function resolveGoogleFlightsPlace(iataCode, fallbackCityEn) {
+    const code = String(iataCode || 'TLV').trim().toUpperCase();
+    if (GOOGLE_FLIGHTS_PLACE_NAMES[code]) {
+      return GOOGLE_FLIGHTS_PLACE_NAMES[code];
+    }
+    if (fallbackCityEn) {
+      const cleaned = String(fallbackCityEn).split('(')[0].trim();
+      if (cleaned) return cleaned;
+    }
+    return code;
+  }
+
   function resolveElAlBookingUrl(it) {
     if (!it || !it.is_elal_flight) return null;
     const serverGfUrl = String(it.elal_google_flights_url || '').trim();
-    if (serverGfUrl.startsWith('https://www.google.com/travel/flights')) {
+    if (
+      serverGfUrl.startsWith('https://www.google.com/travel/flights') &&
+      !serverGfUrl.includes('nonstop+on+EL+AL') &&
+      !serverGfUrl.includes('nonstop%20on%20EL%20AL')
+    ) {
       return serverGfUrl;
     }
 
-    // Client-side fallback builder for cached El Al itineraries
+    // Client-side builder using verified Google Flights destination names
     const orig = String(it.origin_iata || 'TLV').toUpperCase();
     const dest = String(it.destination_iata || 'FCO').toUpperCase();
     const retOrig = String(it.return_origin_iata || dest).toUpperCase();
+    const origPlace = resolveGoogleFlightsPlace(orig);
+    const destPlace = resolveGoogleFlightsPlace(dest, it.destination_city_en);
     const depIso = String(it.departure_date || '2027-04-11');
     const retIso = String(it.return_date || '2027-04-18');
 
@@ -1160,8 +1234,8 @@
 
     const qStr =
       retOrig === dest
-        ? `Flights to ${dest} from ${orig} on ${depIso} through ${retIso} with ${paxPhrase} nonstop on EL AL`
-        : `Flights from ${orig} to ${dest} on ${depIso} and from ${retOrig} to ${orig} on ${retIso} with ${paxPhrase} nonstop on EL AL`;
+        ? `Flights to ${destPlace} from ${origPlace} on ${depIso} through ${retIso} with ${paxPhrase} nonstop`
+        : `One way flights to ${destPlace} from ${origPlace} on ${depIso} with ${paxPhrase} nonstop`;
 
     const params = new URLSearchParams();
     params.set('q', qStr);
