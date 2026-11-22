@@ -1,16 +1,17 @@
 /**
- * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v2.0)
+ * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v2.1)
  *
- * Key design for 100% stability and speed on `https://www.elal.com/rbddataclients/`:
- * 1. Exact 25 `DESTINATION_CATALOG` IATA codes (`PRIORITY_IATAS` — excluding unsupported `"ZRH"`).
+ * Key design for 100% stability and zero Reblaze blocks on `https://www.elal.com/rbddataclients/`:
+ * 1. All 45 supported `DESTINATION_CATALOG` IATA codes (`PRIORITY_IATAS` — excluding unsupported `"ZRH"`).
  * 2. Uses El Al's genuine calculator RBD codes: `rbd: "E"` for Economy and `rbd: "A"` for Premium.
- * 3. Executes 14-day (`endDate - startDate == 14 days`) 50-segment (`25 destinations × 2 directions`)
- *    `window.$.ajax` batch requests in the `MAIN` world through Reblaze's native XHR hook across
- *    all 16 Israeli holiday & MoE school vacation windows (`Hanukkah 2026` .. `Sukkot 2027`),
- *    completing the full-year scan in ~20 seconds without DOM form resets or `#errorModal` (`Oops!`).
- * 4. Normalizes `AccumulatedOutput.resultSet` and single-object `Record` entries into arrays while
- *    preserving `SegmentDepTime`, `SegmentArrTime`, `SegmentRoute`, `SegmentDepDate`, `FlightCarrier`,
- *    `FlightNumber`, `RBD`, and `NewAvailability`.
+ * 3. Supports all 4 sync modes directly from the floating RTL widget:
+ *    - Daily Shard (`auto` or `0..4`): 1/5 of the rolling year (~20 polite requests, ~1.5 min).
+ *    - Specific Date (`date`): Single 14-day window across all 45 destinations (4 requests, ~15s).
+ *    - All Holidays (`holidays`): 16 Israeli holiday & MoE vacation windows with 35s breather pauses.
+ *    - Full Year (`all`): All 25 rolling 14-day windows (350 days) with 45s breather pauses.
+ * 4. Distinguishes transient El Al DPEL gateway hiccups (`502`/`503`/`504`/`TIMEOUT` -> 10s wait +
+ *    automatic half-batch split retry) from Reblaze WAAP blocks (`403`/`429`/HTML challenge -> strict
+ *    zero-retry Fail-Fast abort), plus one-click Resume from the exact stopped window.
  */
 
 (function () {
@@ -43,29 +44,50 @@
     { name: "Premium", rbd: "A" }
   ];
 
-  // Contiguous 14-day rolling full-year windows anchored to uniform 5-day cycle
+  // 16×14-day Israeli Holiday & MoE School Vacation windows (UTC start/end dates before T21:00:00.000Z)
+  const HOLIDAY_14D_WINDOWS = [
+    ["חנוכה 2026 א'", "2026-12-01", "2026-12-15"],
+    ["חנוכה 2026 ב'", "2026-12-06", "2026-12-20"],
+    ["פורים 2027", "2027-03-16", "2027-03-30"],
+    ["פסח 2027 א'", "2027-04-07", "2027-04-21"],
+    ["פסח 2027 ב'", "2027-04-19", "2027-05-03"],
+    ["יום העצמאות 2027", "2027-05-05", "2027-05-19"],
+    ["שבועות 2027", "2027-06-04", "2027-06-18"],
+    ["סוף יוני 2027", "2027-06-18", "2027-07-02"],
+    ["יולי 2027 א'", "2027-07-02", "2027-07-16"],
+    ["יולי 2027 ב'", "2027-07-16", "2027-07-30"],
+    ["אוגוסט 2027 א'", "2027-07-30", "2027-08-13"],
+    ["אוגוסט 2027 ב'", "2027-08-13", "2027-08-27"],
+    ["סוף אוגוסט 2027", "2027-08-20", "2027-09-03"],
+    ["ראש השנה וכיפור 2027", "2027-09-26", "2027-10-10"],
+    ["סוכות 2027 א'", "2027-10-08", "2027-10-22"],
+    ["סוכות 2027 ב'", "2027-10-15", "2027-10-29"]
+  ];
+
   const SHARD_COUNT = 5;
+  const DAY_MS = 86400000;
+  const fmtDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const parseUtcIso = (iso) => Date.parse(`${String(iso).slice(0, 10)}T00:00:00Z`);
+
   function buildCycleAnchoredWindows(daysAhead) {
     const horizon = Math.max(14, Math.min(364, Number(daysAhead) || 350));
     const numWindows = Math.floor((horizon + 13) / 14);
     const now = new Date();
-    const dayMs = 86400000;
-    const todayUtcDays = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / dayMs);
+    const todayUtcDays = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS);
     const cycleAnchorDays = Math.floor(todayUtcDays / SHARD_COUNT) * SHARD_COUNT;
-    const anchorUtcMs = cycleAnchorDays * dayMs;
-    const minStartUtcMs = (todayUtcDays - 1) * dayMs;
-    const fmtDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const anchorUtcMs = cycleAnchorDays * DAY_MS;
+    const minStartUtcMs = (todayUtcDays - 1) * DAY_MS;
     const out = [];
     for (let idx = 0; idx < numWindows; idx++) {
-      let startUtcMs = anchorUtcMs - dayMs + 14 * idx * dayMs;
-      let endUtcMs = startUtcMs + 14 * dayMs;
+      let startUtcMs = anchorUtcMs - DAY_MS + 14 * idx * DAY_MS;
+      let endUtcMs = startUtcMs + 14 * DAY_MS;
       if (endUtcMs <= minStartUtcMs) continue;
       if (startUtcMs < minStartUtcMs) {
         startUtcMs = minStartUtcMs;
-        endUtcMs = startUtcMs + 14 * dayMs;
+        endUtcMs = startUtcMs + 14 * DAY_MS;
       }
-      const localStart = fmtDay(startUtcMs + dayMs);
-      const localEnd = fmtDay(endUtcMs + dayMs);
+      const localStart = fmtDay(startUtcMs + DAY_MS);
+      const localEnd = fmtDay(endUtcMs + DAY_MS);
       out.push({
         label: `חלון ${idx + 1}/${numWindows} (${localStart}..${localEnd})`,
         startIso: `${fmtDay(startUtcMs)}T21:00:00.000Z`,
@@ -77,12 +99,82 @@
     return { windows: out, autoShardIdx: todayUtcDays % SHARD_COUNT };
   }
 
-  function selectShardWindows(shardChoice) {
+  function buildPlanForMode(modeChoice, customDateIso) {
+    if (modeChoice === "date") {
+      const cleanDate = /^\d{4}-\d{2}-\d{2}$/.test(String(customDateIso || "").trim())
+        ? String(customDateIso).trim()
+        : fmtDay(Date.now() + 14 * DAY_MS);
+      const tMs = parseUtcIso(cleanDate);
+      const sMs = tMs - DAY_MS;
+      const eMs = sMs + 14 * DAY_MS;
+      const locStart = fmtDay(sMs + DAY_MS);
+      const locEnd = fmtDay(eMs + DAY_MS);
+      return {
+        modeTitle: `תאריך ממוקד (${locStart}..${locEnd})`,
+        windows: [
+          {
+            label: `תאריך ממוקד (${locStart}..${locEnd})`,
+            startIso: `${fmtDay(sMs)}T21:00:00.000Z`,
+            endIso: `${fmtDay(eMs)}T21:00:00.000Z`,
+            localStart: locStart,
+            localEnd: locEnd
+          }
+        ],
+        minDelayMs: 2600,
+        maxDelayMs: 4000,
+        cooldownEveryWindows: 0,
+        cooldownMs: 0
+      };
+    }
+
+    if (modeChoice === "holidays") {
+      const nowMs = Date.now();
+      const wins = HOLIDAY_14D_WINDOWS
+        .filter(([, , eUtc]) => parseUtcIso(eUtc) > nowMs)
+        .map(([lbl, sUtc, eUtc]) => ({
+          label: lbl,
+          startIso: `${sUtc}T21:00:00.000Z`,
+          endIso: `${eUtc}T21:00:00.000Z`,
+          localStart: fmtDay(parseUtcIso(sUtc) + DAY_MS),
+          localEnd: fmtDay(parseUtcIso(eUtc) + DAY_MS)
+        }));
+      return {
+        modeTitle: `כל חגי השנה (${wins.length} חלונות)`,
+        windows: wins,
+        minDelayMs: 3800,
+        maxDelayMs: 6000,
+        cooldownEveryWindows: 4,
+        cooldownMs: 35000
+      };
+    }
+
+    if (modeChoice === "all") {
+      const { windows } = buildCycleAnchoredWindows(350);
+      return {
+        modeTitle: `שנה מלאה (${windows.length} חלונות)`,
+        windows: windows,
+        minDelayMs: 4200,
+        maxDelayMs: 6800,
+        cooldownEveryWindows: 5,
+        cooldownMs: 45000
+      };
+    }
+
     const { windows, autoShardIdx } = buildCycleAnchoredWindows(350);
-    const idx = shardChoice === "auto" ? autoShardIdx : Math.max(0, Math.min(SHARD_COUNT - 1, Number(shardChoice) || 0));
+    const idx =
+      modeChoice === "auto"
+        ? autoShardIdx
+        : Math.max(0, Math.min(SHARD_COUNT - 1, Number(modeChoice) || 0));
     const startPos = Math.floor((idx * windows.length) / SHARD_COUNT);
     const endPos = Math.floor(((idx + 1) * windows.length) / SHARD_COUNT);
-    return { selected: windows.slice(startPos, endPos), resolvedIdx: idx };
+    return {
+      modeTitle: `מנה ${idx + 1}/5`,
+      windows: windows.slice(startPos, endPos),
+      minDelayMs: 2800,
+      maxDelayMs: 4400,
+      cooldownEveryWindows: 0,
+      cooldownMs: 0
+    };
   }
 
   const isIsolatedExtensionWorld =
@@ -119,10 +211,22 @@
     return null;
   }
 
+  function parseJsonIfNeeded(rawJsonOrObj) {
+    if (!rawJsonOrObj) return null;
+    if (typeof rawJsonOrObj === "string") {
+      try {
+        return JSON.parse(rawJsonOrObj);
+      } catch (_e) {
+        return null;
+      }
+    }
+    return typeof rawJsonOrObj === "object" ? rawJsonOrObj : null;
+  }
+
   function extractRowsFromAccumulatedOutput(rawJsonOrObj) {
     const extractedRows = [];
     try {
-      const data = typeof rawJsonOrObj === "string" ? JSON.parse(rawJsonOrObj) : rawJsonOrObj;
+      const data = parseJsonIfNeeded(rawJsonOrObj);
       if (!data || !data.AccumulatedOutput) return extractedRows;
       const rawRs = data.AccumulatedOutput.resultSet;
       const rsList = Array.isArray(rawRs) ? rawRs : (rawRs && typeof rawRs === "object" ? [rawRs] : []);
@@ -161,8 +265,8 @@
             direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
             flight_number: `${carrier}${numPart}`,
             flight_date: fDate,
-            economy_seats: rbdCode === "E" || rbdCode === "X" || rbdCode === "U" ? avail : 0,
-            premium_seats: rbdCode === "A" || rbdCode === "P" || rbdCode === "R" ? avail : 0,
+            economy_seats: rbdCode === "E" || rbdCode === "X" || rbdCode === "U" ? availRaw : 0,
+            premium_seats: rbdCode === "A" || rbdCode === "P" || rbdCode === "R" ? availRaw : 0,
             business_seats: 0,
             departure_time_local: depHhMm,
             arrival_time_local: arrHhMm,
@@ -182,7 +286,7 @@
   }
 
   // ============================================================================
-  // MAIN WORLD INTERCEPTOR & $.ajax 50-SEGMENT BATCH DRIVER
+  // MAIN WORLD INTERCEPTOR & $.ajax BATCH DRIVER
   // ============================================================================
   function installMainWorldInterceptorAndDriver() {
     if (window.__fvpMainWorldInstalled) return;
@@ -210,7 +314,7 @@
       return origOpen.apply(this, arguments);
     };
 
-    XMLHttpRequest.prototype.send = function (body) {
+    XMLHttpRequest.prototype.send = function () {
       const urlStr = String(this.__fvpUrl || "");
       if (urlStr.includes("GetRbdAvailability")) {
         this.addEventListener("load", function () {
@@ -224,7 +328,7 @@
       return origSend.apply(this, arguments);
     };
 
-    // 2. Handle 50-segment $.ajax batch requests from Isolated World
+    // 2. Handle $.ajax batch requests from Isolated World
     window.addEventListener("message", (ev) => {
       if (!ev.data || ev.data.source !== "FVP_ISO_TO_MAIN") return;
 
@@ -236,6 +340,7 @@
               source: "FVP_MAIN_TO_ISO",
               reqId: reqId,
               okOut: false,
+              status: 0,
               reason: "JQUERY_AJAX_NOT_READY",
               rows: []
             },
@@ -256,14 +361,30 @@
               seg: segments
             }
           }),
-          timeout: 25000,
+          timeout: 26000,
           success: function (res) {
-            const rows = extractRowsFromAccumulatedOutput(res);
+            const parsed = parseJsonIfNeeded(res);
+            if (!parsed || !("AccumulatedOutput" in parsed)) {
+              window.postMessage(
+                {
+                  source: "FVP_MAIN_TO_ISO",
+                  reqId: reqId,
+                  okOut: false,
+                  status: 200,
+                  reason: "REBLAZE_OR_INVALID_BODY",
+                  rows: []
+                },
+                "*"
+              );
+              return;
+            }
+            const rows = extractRowsFromAccumulatedOutput(parsed);
             window.postMessage(
               {
                 source: "FVP_MAIN_TO_ISO",
                 reqId: reqId,
                 okOut: true,
+                status: 200,
                 rows: rows
               },
               "*"
@@ -293,16 +414,32 @@
   }
 
   // ============================================================================
-  // ISOLATED EXTENSION WORLD: Widget UI, 50-Segment Batch Auto-Pilot & Sync
+  // ISOLATED EXTENSION WORLD: Widget UI, 4-Mode Auto-Pilot, 502 Split-Retry & Sync
   // ============================================================================
 
   let autoPilotRunning = false;
   let totalSyncedCount = 0;
   let lastSyncedSignature = "";
   let bridgeReqSeq = 0;
+  let savedResumeState = null; // { modeChoice, customDateIso, startWindowIdx, totalWindows }
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function randBetween(minMs, maxMs) {
+    return minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+  }
+
+  function isTransientGatewayFailure(batchRes) {
+    if (!batchRes) return false;
+    const st = Number(batchRes.status || 0);
+    const reason = String(batchRes.reason || "").toUpperCase();
+    // 502 / 503 / 504 or XHR timeout on El Al's Amadeus/DPEL proxy (/generalproxy/proxy/dpel/449)
+    // Never retry 403 / 429 / 200 REBLAZE_OR_INVALID_BODY!
+    if (st === 502 || st === 503 || st === 504) return true;
+    if (st === 0 && (reason.includes("TIMEOUT") || reason === "AJAX_ERROR")) return true;
+    return false;
   }
 
   function buildAllDirectionalSegments(destinations) {
@@ -344,7 +481,8 @@
 
         const outFlight = cells[0].replace(/\s+/g, "");
         const outRoute = cells[1].replace(/\s+/g, "").toUpperCase();
-        const outAvail = parseInt(cells[2], 10);
+        const outAvailRaw = cells[2].trim();
+        const outAvail = parseInt(outAvailRaw, 10);
         if (outFlight && outRoute.includes("-") && !isNaN(outAvail) && outAvail > 0) {
           const [orig, dest] = outRoute.split("-");
           const routeDest = orig === "TLV" ? dest : orig;
@@ -354,8 +492,8 @@
               direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
               flight_number: outFlight,
               flight_date: rowDate,
-              economy_seats: cabin === "ECONOMY" ? outAvail : 0,
-              premium_seats: cabin === "PREMIUM" ? outAvail : 0,
+              economy_seats: cabin === "ECONOMY" ? outAvailRaw : 0,
+              premium_seats: cabin === "PREMIUM" ? outAvailRaw : 0,
               business_seats: 0
             });
           }
@@ -363,7 +501,8 @@
 
         const inFlight = cells[4].replace(/\s+/g, "");
         const inRoute = cells[5].replace(/\s+/g, "").toUpperCase();
-        const inAvail = parseInt(cells[6], 10);
+        const inAvailRaw = cells[6].trim();
+        const inAvail = parseInt(inAvailRaw, 10);
         if (inFlight && inRoute.includes("-") && !isNaN(inAvail) && inAvail > 0) {
           const [orig, dest] = inRoute.split("-");
           const routeDest = orig === "TLV" ? dest : orig;
@@ -373,8 +512,8 @@
               direction: dest === "TLV" ? "INBOUND" : "OUTBOUND",
               flight_number: inFlight,
               flight_date: rowDate,
-              economy_seats: cabin === "ECONOMY" ? inAvail : 0,
-              premium_seats: cabin === "PREMIUM" ? inAvail : 0,
+              economy_seats: cabin === "ECONOMY" ? inAvailRaw : 0,
+              premium_seats: cabin === "PREMIUM" ? inAvailRaw : 0,
               business_seats: 0
             });
           }
@@ -468,37 +607,177 @@
         if (settled) return;
         settled = true;
         window.removeEventListener("message", onMsg);
-        resolve({ okOut: false, reason: "TIMEOUT", rows: [] });
-      }, 28000);
+        resolve({ okOut: false, status: 0, reason: "TIMEOUT", rows: [] });
+      }, 29000);
     });
   }
 
-  async function runAutoPilot() {
+  function updateButtonLabelForSelection() {
+    if (autoPilotRunning) return;
+    const btnEl = document.getElementById("fvp-sync-btn");
+    const badgePillEl = document.getElementById("fvp-mode-pill");
+    const shardSelectEl = document.getElementById("fvp-shard-select");
+    const dateRowEl = document.getElementById("fvp-date-row");
+    const resumeBtnEl = document.getElementById("fvp-resume-btn");
+    if (!btnEl || !shardSelectEl) return;
+
+    const val = shardSelectEl.value;
+    if (dateRowEl) {
+      dateRowEl.style.display = val === "date" ? "flex" : "none";
+    }
+
+    if (val === "date") {
+      btnEl.textContent = "🎯 סנכרן תאריך נבחר לכל היעדים (~15 שנ')";
+      if (badgePillEl) badgePillEl.textContent = "4 בקשות בלבד";
+    } else if (val === "holidays") {
+      btnEl.textContent = "🏖️ סנכרן את כל חגי וחופשות השנה (~6 דק')";
+      if (badgePillEl) badgePillEl.textContent = "16 חלונות + הפסקות";
+    } else if (val === "all") {
+      btnEl.textContent = "🌍 סנכרן שנה מלאה בקצב בטוח (~14 דק')";
+      if (badgePillEl) badgePillEl.textContent = "25 חלונות + הפסקות";
+    } else {
+      btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
+      if (badgePillEl) badgePillEl.textContent = "20 בקשות רגועות";
+    }
+    btnEl.style.background = "#10b981";
+
+    if (resumeBtnEl) {
+      if (savedResumeState && savedResumeState.startWindowIdx < savedResumeState.totalWindows) {
+        resumeBtnEl.style.display = "block";
+        resumeBtnEl.textContent = `▶️ המשך מאיפה שעצר (חלון ${savedResumeState.startWindowIdx + 1}/${savedResumeState.totalWindows})`;
+      } else {
+        resumeBtnEl.style.display = "none";
+      }
+    }
+  }
+
+  async function queryDestinationsWith502SplitFallback(
+    batchDests,
+    win,
+    cabinObj,
+    minDelayMs,
+    maxDelayMs,
+    statusEl
+  ) {
+    const segments = buildAllDirectionalSegments(batchDests);
+    const firstRes = await triggerMainWorldAjaxBatch(
+      win.startIso,
+      win.endIso,
+      cabinObj.rbd,
+      segments
+    );
+    if (firstRes && firstRes.okOut) {
+      return {
+        ok: true,
+        rows: Array.isArray(firstRes.rows) ? firstRes.rows : [],
+        slices: [
+          {
+            destinations: batchDests,
+            start_date: win.localStart,
+            end_date: win.localEnd,
+            cabins: [cabinObj.rbd]
+          }
+        ]
+      };
+    }
+
+    // Only attempt a single calm split-batch recovery on 502/503/504/TIMEOUT (El Al DPEL gateway overload)
+    if (!isTransientGatewayFailure(firstRes) || batchDests.length <= 4 || !autoPilotRunning) {
+      return {
+        ok: false,
+        status: firstRes ? firstRes.status : 0,
+        reason: firstRes ? firstRes.reason : "UNKNOWN"
+      };
+    }
+
+    if (statusEl) {
+      statusEl.textContent = `⏳ שגיאת שער זמנית באל על (${firstRes.status || firstRes.reason}) — ממתין 10 שנ' ומפצל את המקבץ לחצי...`;
+    }
+    await sleep(10000);
+    if (!autoPilotRunning) {
+      return { ok: false, status: 0, reason: "STOPPED" };
+    }
+
+    const mid = Math.ceil(batchDests.length / 2);
+    const subBatches = [batchDests.slice(0, mid), batchDests.slice(mid)];
+    const combinedRows = [];
+    const combinedSlices = [];
+
+    for (let sIdx = 0; sIdx < subBatches.length; sIdx++) {
+      if (!autoPilotRunning) return { ok: false, status: 0, reason: "STOPPED" };
+      const subDests = subBatches[sIdx];
+      const subSegs = buildAllDirectionalSegments(subDests);
+      const subRes = await triggerMainWorldAjaxBatch(
+        win.startIso,
+        win.endIso,
+        cabinObj.rbd,
+        subSegs
+      );
+      if (!subRes || !subRes.okOut) {
+        return {
+          ok: false,
+          status: subRes ? subRes.status : 0,
+          reason: subRes ? subRes.reason : "RETRY_FAILED"
+        };
+      }
+      if (Array.isArray(subRes.rows) && subRes.rows.length > 0) {
+        combinedRows.push(...subRes.rows);
+      }
+      combinedSlices.push({
+        destinations: subDests,
+        start_date: win.localStart,
+        end_date: win.localEnd,
+        cabins: [cabinObj.rbd]
+      });
+      if (sIdx + 1 < subBatches.length) {
+        await sleep(randBetween(minDelayMs, maxDelayMs));
+      }
+    }
+
+    return { ok: true, rows: combinedRows, slices: combinedSlices };
+  }
+
+  async function runAutoPilot(useSavedResume = false) {
     const statusEl = document.getElementById("fvp-sync-status");
     const btnEl = document.getElementById("fvp-sync-btn");
     const shardSelectEl = document.getElementById("fvp-shard-select");
+    const dateInputEl = document.getElementById("fvp-target-date");
+    const resumeBtnEl = document.getElementById("fvp-resume-btn");
 
     if (autoPilotRunning) {
       autoPilotRunning = false;
-      if (btnEl) {
-        btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
-        btnEl.style.background = "#10b981";
-      }
+      updateButtonLabelForSelection();
       if (statusEl) {
-        statusEl.textContent = `⏸️ הסריקה נעצרה. סה"כ סונכרנו ${totalSyncedCount} טיסות לשרת.`;
+        statusEl.textContent = `⏸️ הסריקה נעצרה לבקשתך. סה"כ סונכרנו ${totalSyncedCount} טיסות לשרת (ניתן להמשיך מאותה נקודה).`;
       }
       return;
     }
 
     try {
       autoPilotRunning = true;
+      if (resumeBtnEl) resumeBtnEl.style.display = "none";
       if (btnEl) {
         btnEl.textContent = "⏹️ עצור סנכרון בטוח";
         btnEl.style.background = "#ef4444";
       }
 
-      const shardChoice = shardSelectEl ? shardSelectEl.value : "auto";
-      const { selected: activeWindows, resolvedIdx } = selectShardWindows(shardChoice);
+      const modeChoice =
+        useSavedResume && savedResumeState
+          ? savedResumeState.modeChoice
+          : shardSelectEl
+            ? shardSelectEl.value
+            : "auto";
+      const customDateIso =
+        useSavedResume && savedResumeState
+          ? savedResumeState.customDateIso
+          : dateInputEl
+            ? dateInputEl.value
+            : "";
+
+      const plan = buildPlanForMode(modeChoice, customDateIso);
+      const activeWindows = plan.windows;
+      const startWindowIdx =
+        useSavedResume && savedResumeState ? Math.max(0, savedResumeState.startWindowIdx) : 0;
 
       const pageOptionCodes = new Set();
       document.querySelectorAll("select option").forEach((opt) => {
@@ -510,83 +789,117 @@
           ? PRIORITY_IATAS.filter((c) => pageOptionCodes.has(c))
           : PRIORITY_IATAS.slice();
       const targetIatas = activeIatas.length > 0 ? activeIatas : PRIORITY_IATAS.slice();
-      const destBatches = [];
-      for (let i = 0; i < targetIatas.length; i += 25) {
-        destBatches.push(targetIatas.slice(i, i + 25));
-      }
-      const allCollectedRows = [];
-      let abortedOnThrottle = false;
 
-      for (let wIdx = 0; wIdx < activeWindows.length && autoPilotRunning && !abortedOnThrottle; wIdx++) {
+      // Use 20 destinations (40 directional segments) per batch for multi-window runs to keep El Al DPEL fast and avoid 502s,
+      // or 25 destinations for fast 1-window / daily-shard scans (with automatic 502 split fallback).
+      const batchSize = modeChoice === "all" || modeChoice === "holidays" ? 16 : 25;
+      const destBatches = [];
+      for (let i = 0; i < targetIatas.length; i += batchSize) {
+        destBatches.push(targetIatas.slice(i, i + batchSize));
+      }
+
+      let abortedOnError = false;
+
+      for (let wIdx = startWindowIdx; wIdx < activeWindows.length && autoPilotRunning && !abortedOnError; wIdx++) {
+        if (
+          plan.cooldownEveryWindows > 0 &&
+          wIdx > startWindowIdx &&
+          (wIdx - startWindowIdx) % plan.cooldownEveryWindows === 0
+        ) {
+          const totalSec = Math.round(plan.cooldownMs / 1000);
+          for (let rem = totalSec; rem > 0 && autoPilotRunning; rem--) {
+            if (statusEl) {
+              statusEl.textContent = `☕ הפסקת התרעננות אוטומטית למניעת חסימה (${rem} שנ')... עד כה סונכרנו ${totalSyncedCount} טיסות.`;
+            }
+            await sleep(1000);
+          }
+          if (!autoPilotRunning) {
+            savedResumeState = {
+              modeChoice,
+              customDateIso,
+              startWindowIdx: wIdx,
+              totalWindows: activeWindows.length
+            };
+            break;
+          }
+        }
+
         const win = activeWindows[wIdx];
         const windowRows = [];
         const windowSlices = [];
 
         for (const cabinObj of TARGET_CABINS) {
-          if (!autoPilotRunning || abortedOnThrottle) break;
+          if (!autoPilotRunning || abortedOnError) break;
 
           if (statusEl) {
-            statusEl.textContent = `🛡️ מנה ${resolvedIdx + 1}/5 · חלון [${wIdx + 1}/${activeWindows.length}] (${win.localStart}..${win.localEnd}) | ${cabinObj.name} (${cabinObj.rbd})...`;
+            statusEl.textContent = `🛡️ ${plan.modeTitle} · חלון [${wIdx + 1}/${activeWindows.length}] (${win.localStart}..${win.localEnd}) | ${cabinObj.name} (${cabinObj.rbd})...`;
           }
 
           for (const batchDests of destBatches) {
             if (!autoPilotRunning) break;
-            const segments = buildAllDirectionalSegments(batchDests);
-            const batchRes = await triggerMainWorldAjaxBatch(
-              win.startIso,
-              win.endIso,
-              cabinObj.rbd,
-              segments
+            const batchOutcome = await queryDestinationsWith502SplitFallback(
+              batchDests,
+              win,
+              cabinObj,
+              plan.minDelayMs,
+              plan.maxDelayMs,
+              statusEl
             );
 
-            if (!batchRes || !batchRes.okOut) {
-              abortedOnThrottle = true;
-              if (statusEl) {
-                statusEl.textContent = `⚠️ עצירה בטוחה מיידית (שגיאת שרת/קצב ${batchRes ? batchRes.reason : ""}) כדי למנוע חסימה. מה שכבר נסרק נשמר!`;
+            if (!batchOutcome.ok) {
+              savedResumeState = {
+                modeChoice,
+                customDateIso,
+                startWindowIdx: wIdx,
+                totalWindows: activeWindows.length
+              };
+              if (batchOutcome.reason !== "STOPPED") {
+                abortedOnError = true;
+                if (statusEl) {
+                  statusEl.textContent = `⚠️ עצירה בטוחה בחלון ${wIdx + 1}/${activeWindows.length} (סטטוס ${batchOutcome.status || batchOutcome.reason}). כל מה שנסרק נשמר — אפשר להמשיך בלחיצה!`;
+                }
               }
               break;
             }
 
-            windowSlices.push({
-              destinations: batchDests,
-              start_date: win.localStart,
-              end_date: win.localEnd,
-              cabins: [cabinObj.rbd]
-            });
-
-            if (Array.isArray(batchRes.rows) && batchRes.rows.length > 0) {
-              windowRows.push(...batchRes.rows);
-              allCollectedRows.push(...batchRes.rows);
+            windowSlices.push(...batchOutcome.slices);
+            if (batchOutcome.rows.length > 0) {
+              windowRows.push(...batchOutcome.rows);
             }
 
-            // Polite human-like spacing (2.8s - 4.2s) to avoid triggering Reblaze rate limits
-            const politeMs = 2800 + Math.floor(Math.random() * 1400);
-            await sleep(politeMs);
+            await sleep(randBetween(plan.minDelayMs, plan.maxDelayMs));
           }
         }
 
-        if ((windowRows.length > 0 || windowSlices.length > 0) && autoPilotRunning) {
+        if (windowRows.length > 0 || windowSlices.length > 0) {
           const syncResp = await sendRowsToServerPromise(windowRows, windowSlices);
           if (syncResp && syncResp.ok) {
             totalSyncedCount += Number(syncResp.records_synced || windowRows.length);
           }
         }
+
+        if (!autoPilotRunning && !abortedOnError && wIdx + 1 < activeWindows.length) {
+          savedResumeState = {
+            modeChoice,
+            customDateIso,
+            startWindowIdx: wIdx,
+            totalWindows: activeWindows.length
+          };
+        }
+      }
+
+      if (autoPilotRunning && !abortedOnError) {
+        savedResumeState = null;
       }
 
       autoPilotRunning = false;
-      if (btnEl) {
-        btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
-        btnEl.style.background = "#10b981";
-      }
-      if (statusEl && !abortedOnThrottle) {
-        statusEl.textContent = `🎉 מנה ${resolvedIdx + 1}/5 הושלמה בבטחה! סונכרנו ${totalSyncedCount} טיסות (כולל ניקוי כרטיסים שאזלו) לשרת.`;
+      updateButtonLabelForSelection();
+      if (statusEl && !abortedOnError && !savedResumeState) {
+        statusEl.textContent = `🎉 ${plan.modeTitle} הושלם בבטחה! סה"כ סונכרנו ${totalSyncedCount} טיסות (כולל ניקוי כרטיסים שאזלו) לשרת.`;
       }
     } catch (err) {
       autoPilotRunning = false;
-      if (btnEl) {
-        btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
-        btnEl.style.background = "#10b981";
-      }
+      updateButtonLabelForSelection();
       if (statusEl) {
         statusEl.textContent = `❌ שגיאה בסריקה: ${String(err && err.message ? err.message : err)}`;
       }
@@ -595,6 +908,8 @@
 
   function createFloatingBadge() {
     if (!document.body || document.getElementById("fvp-sync-widget")) return;
+    const defaultDate = fmtDay(Date.now() + 30 * DAY_MS);
+
     const box = document.createElement("div");
     box.id = "fvp-sync-widget";
     box.dir = "rtl";
@@ -613,36 +928,58 @@
       "display: flex",
       "flex-direction: column",
       "gap: 8px",
-      "min-width: 310px",
-      "max-width: 390px",
+      "min-width: 325px",
+      "max-width: 405px",
       "border: 1px solid rgba(56,189,248,0.4)"
     ].join(";");
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>🛡️ סנכרון אל על בטוח (מחזור 5 ימים)</strong>
-        <span style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;">20 בקשות רגועות</span>
+        <strong>🛡️ סנכרון אל על בטוח (כל 45 היעדים)</strong>
+        <span id="fvp-mode-pill" style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;white-space:nowrap;">20 בקשות רגועות</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
-        סורק רק חמישית מהשנה בכל הרצה בקצב איטי ובטוח (או מסנכרן אוטומטית כל חיפוש שתבצע בעצמך בטבלה).
+        בחר מצב סנכרון למטה (או חפש ידנית בטבלה לסנכרון אוטומטי). כולל הגנת פיצול מול שגיאות 502 של אל על.
       </div>
       <select id="fvp-shard-select" style="background:#1e293b;color:#f8fafc;border:1px solid #334155;border-radius:8px;padding:6px 8px;font-size:12px;">
-        <option value="auto">🔄 אוטומטי — המנה היומית להיום (מומלץ)</option>
-        <option value="0">📅 חלק 1 מתוך 5 (שבועות 1–5)</option>
-        <option value="1">📅 חלק 2 מתוך 5 (שבועות 6–10)</option>
-        <option value="2">📅 חלק 3 מתוך 5 (שבועות 11–15)</option>
-        <option value="3">📅 חלק 4 מתוך 5 (שבועות 16–20)</option>
-        <option value="4">📅 חלק 5 מתוך 5 (שבועות 21–25)</option>
+        <optgroup label="מומלץ — מחזור יומי בטוח (5 חלקים)">
+          <option value="auto">🔄 אוטומטי — המנה היומית להיום (מומלץ)</option>
+          <option value="0">📅 חלק 1 מתוך 5 (חלונות 1–5)</option>
+          <option value="1">📅 חלק 2 מתוך 5 (חלונות 6–10)</option>
+          <option value="2">📅 חלק 3 מתוך 5 (חלונות 11–15)</option>
+          <option value="3">📅 חלק 4 מתוך 5 (חלונות 16–20)</option>
+          <option value="4">📅 חלק 5 מתוך 5 (חלונות 21–25)</option>
+        </optgroup>
+        <optgroup label="מצבי סנכרון נוספים לכל היעדים">
+          <option value="date">🎯 תאריך ספציפי — 14 יום לכל היעדים (~15 שנ')</option>
+          <option value="holidays">🏖️ כל חגי וחופשות השנה — עם הפסקות (~6 דק')</option>
+          <option value="all">🌍 כל השנה המלאה (350 יום) — איטי ובטוח (~14 דק')</option>
+        </optgroup>
       </select>
+      <div id="fvp-date-row" style="display:none;align-items:center;justify-content:space-between;gap:8px;background:#1e293b;padding:6px 8px;border-radius:8px;border:1px solid #334155;">
+        <label for="fvp-target-date" style="font-size:12px;color:#e2e8f0;white-space:nowrap;">תאריך התחלה (14 יום):</label>
+        <input id="fvp-target-date" type="date" value="${defaultDate}" style="background:#0f172a;color:#f8fafc;border:1px solid #475569;border-radius:6px;padding:4px 6px;font-size:12px;direction:ltr;" />
+      </div>
       <button id="fvp-sync-btn" type="button" style="background:#10b981;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:12.5px;">
         🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)
+      </button>
+      <button id="fvp-resume-btn" type="button" style="display:none;background:#0284c7;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-weight:700;cursor:pointer;font-size:12px;">
+        ▶️ המשך מאיפה שעצר
       </button>
     `;
     document.body.appendChild(box);
 
+    const shardSelect = document.getElementById("fvp-shard-select");
+    if (shardSelect) {
+      shardSelect.addEventListener("change", () => updateButtonLabelForSelection());
+    }
     const btn = document.getElementById("fvp-sync-btn");
     if (btn) {
-      btn.addEventListener("click", () => runAutoPilot());
+      btn.addEventListener("click", () => runAutoPilot(false));
+    }
+    const resumeBtn = document.getElementById("fvp-resume-btn");
+    if (resumeBtn) {
+      resumeBtn.addEventListener("click", () => runAutoPilot(true));
     }
   }
 
