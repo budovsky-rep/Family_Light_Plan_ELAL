@@ -1568,10 +1568,17 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     if ready:
                         break
 
-            # Step A: Boot as Guest, add 2 children ([2, 8]) + 150,000 Matmid points, click "🔒 Sign in to Save"
+            # Step A: Boot as Guest -> verify 0-points alert + award database note + single sign-in button (`#btn-save-profile` hidden),
+            # then add 2 children ([2, 8]) + 150,000 Matmid points and click `#btn-google-signin`
             _mount_and_wait_boot({}, {})
             guest_draft_state = _cdp_eval(
                 """(() => {
+                  const saveBtnEl = document.getElementById('btn-save-profile');
+                  const saveBtnHiddenOnGuest = Boolean(saveBtnEl && saveBtnEl.hasAttribute('hidden'));
+                  const zeroAlertEl = document.getElementById('zero-points-search-alert');
+                  const zeroAlertText = zeroAlertEl ? zeroAlertEl.textContent : '';
+                  const awardNoteEl = document.getElementById('award-source-note-banner');
+                  const awardNoteText = awardNoteEl ? awardNoteEl.textContent : '';
                   document.getElementById('btn-add-child').click();
                   document.getElementById('btn-add-child').click();
                   const age0 = document.querySelector('[data-child-age="0"]');
@@ -1586,16 +1593,24 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   mInput.value = '150000';
                   mInput.dispatchEvent(new Event('input', { bubbles: true }));
                   mInput.dispatchEvent(new Event('change', { bubbles: true }));
-                  const btnTextBefore = document.getElementById('btn-save-profile').textContent;
-                  document.getElementById('btn-save-profile').click();
+                  const googleBtn = document.getElementById('btn-google-signin');
+                  const btnTextBefore = googleBtn ? googleBtn.textContent : '';
+                  googleBtn.click();
                   return {
+                    saveBtnHiddenOnGuest,
+                    zeroAlertText,
+                    awardNoteText,
                     btnTextBefore,
                     assignedUrl: window.__fvpLastAssignedUrl,
                     ssDump: window.sessionStorage._dump()
                   };
                 })()"""
             )
-            self.assertIn("התחברות לשמירה", guest_draft_state["btnTextBefore"])
+            self.assertTrue(guest_draft_state["saveBtnHiddenOnGuest"])
+            self.assertIn("יתרת מתמיד 0", guest_draft_state["zeroAlertText"])
+            self.assertIn("מאגר כרטיסי הבונוס של אל על", guest_draft_state["awardNoteText"])
+            self.assertNotIn("rbddataclients", guest_draft_state["awardNoteText"].lower())
+            self.assertIn("התחברות עם Gmail", guest_draft_state["btnTextBefore"])
             self.assertTrue(
                 str(guest_draft_state["assignedUrl"]).startswith(
                     "/api/v1/auth/google/login"
@@ -1620,6 +1635,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 """(() => ({
                   ages: Array.from(document.querySelectorAll('[data-child-age]')).map((el) => Number(el.value)),
                   matmid: document.getElementById('prof-matmid-points').value,
+                  saveBtnHiddenAfterLogin: document.getElementById('btn-save-profile').hasAttribute('hidden'),
+                  hasZeroAlertAfterLogin: Boolean(document.getElementById('zero-points-search-alert')),
                   feedback: document.getElementById('auth-save-feedback').textContent,
                   feedbackHidden: document.getElementById('auth-save-feedback').hasAttribute('hidden'),
                   ssRemaining: window.sessionStorage._dump(),
@@ -1629,6 +1646,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(post_login_state["jsErrors"], [])
             self.assertEqual(post_login_state["ages"], [2, 8])
             self.assertEqual(post_login_state["matmid"], "150000")
+            self.assertFalse(post_login_state["saveBtnHiddenAfterLogin"])
+            self.assertFalse(post_login_state["hasZeroAlertAfterLogin"])
             self.assertFalse(post_login_state["feedbackHidden"])
             self.assertIn("נשמר", post_login_state["feedback"])
             self.assertNotIn("fvp_pending_oauth_draft", post_login_state["ssRemaining"])

@@ -1061,6 +1061,73 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   color: #7C4A08;
 }
 
+.zero-points-alert-card {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--brass-border);
+  border-inline-start: 4px solid var(--brass-matmid);
+  background: var(--brass-tint);
+  border-radius: var(--radius-md);
+  padding-block: 10px;
+  padding-inline: 13px;
+  color: #78350F;
+}
+
+.zero-points-alert-main {
+  min-width: 0;
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.zero-points-alert-title {
+  font-size: var(--fs-body);
+  font-weight: 700;
+  color: #78350F;
+}
+
+.zero-points-alert-body {
+  margin: 0;
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: #92400E;
+}
+
+.btn-zero-points-cta {
+  flex-shrink: 0;
+  background: #FFFFFF;
+  border-color: var(--brass-matmid);
+  color: #78350F;
+  font-weight: 700;
+}
+
+.btn-zero-points-cta:hover {
+  background: #FFFBEB;
+  border-color: #92400E;
+}
+
+.award-source-note-card {
+  min-width: 0;
+  border: 1px solid var(--azure-border);
+  border-inline-start: 3px solid var(--azure-elal);
+  background: var(--azure-tint);
+  border-radius: var(--radius-md);
+  padding-block: 8px;
+  padding-inline: 12px;
+  font-size: var(--fs-label);
+  line-height: 1.48;
+  color: var(--ink-secondary);
+}
+
+.award-source-note-card strong {
+  color: var(--ink-flightdeck);
+}
+
 .proposals-grid {
   min-width: 0;
   display: grid;

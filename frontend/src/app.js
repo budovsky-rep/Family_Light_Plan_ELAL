@@ -925,11 +925,18 @@
 
     const btnSaveProfile = document.getElementById('btn-save-profile');
     if (btnSaveProfile) {
-      const heSave = isAuthed ? '💾 שמור ועדכן' : '🔒 התחברות לשמירה';
-      const enSave = isAuthed ? '💾 Save & Refresh' : '🔒 Sign in to Save';
-      btnSaveProfile.setAttribute('data-he', heSave);
-      btnSaveProfile.setAttribute('data-en', enSave);
-      btnSaveProfile.textContent = isHe ? heSave : enSave;
+      if (isAuthed) {
+        const heSave = '💾 שמור ועדכן';
+        const enSave = '💾 Save & Refresh';
+        btnSaveProfile.setAttribute('data-he', heSave);
+        btnSaveProfile.setAttribute('data-en', enSave);
+        btnSaveProfile.textContent = isHe ? heSave : enSave;
+        btnSaveProfile.removeAttribute('hidden');
+        btnSaveProfile.style.display = 'inline-flex';
+      } else {
+        btnSaveProfile.setAttribute('hidden', '');
+        btnSaveProfile.style.display = 'none';
+      }
     }
   }
 
@@ -1289,6 +1296,45 @@
       return;
     }
 
+    const activeMatmidPts = Number((state.profile && state.profile.matmid_points_balance) || 0);
+    const zeroPointsAlertHtml =
+      activeMatmidPts <= 0
+        ? `
+          <div class="zero-points-alert-card" id="zero-points-search-alert" role="status">
+            <div class="zero-points-alert-main">
+              <strong class="zero-points-alert-title">
+                💡 ${
+                  isHe
+                    ? 'החיפוש רץ עם יתרת מתמיד 0 — מוצגים כרגע כרטיסים מסחריים במזומן בלבד'
+                    : 'Search ran with 0 Matmid points — showing commercial cash fares only'
+                }
+              </strong>
+              <p class="zero-points-alert-body">
+                ${
+                  isHe
+                    ? 'כדי לחשב ולמקסם כרטיסי בונוס בנקודות, הזינו את יתרת המתמיד שלכם בשלב 2 ולחצו שוב על כפתור החיפוש.'
+                    : 'Enter your Matmid balance in Step 2 and run Search again to calculate and maximize award seat options.'
+                }
+              </p>
+            </div>
+            <button type="button" class="btn-secondary btn-compact-action btn-zero-points-cta" data-focus-matmid="true">
+              ${isHe ? '✏️ הזנת יתרת מתמיד בשלב 2' : '✏️ Enter Matmid in Step 2'}
+            </button>
+          </div>
+        `
+        : '';
+
+    const awardSourceNoteHtml = `
+      <div class="award-source-note-card" id="award-source-note-banner">
+        ℹ️ <strong>${isHe ? 'הערה על מאגר כרטיסי הבונוס של אל על:' : 'EL AL Award Seat Database Note:'}</strong>
+        <span>${
+          isHe
+            ? 'זמינות המושבים והערכת הנקודות באתר מתבססות על מאגר כרטיסי הבונוס של אל על (תעריף קלאסי, עד 2+ מושבים לקבינה). באתר ההזמנות של אל על הזמינות עשויה להשתנות בזמן אמת והמחיר הסופי בנקודות עשוי להיות דינמי וגבוה יותר (בעיקר בעונות שיא, בטיסות סאן דור או עבור 3+ נוסעים).'
+            : "Seat availability and point estimates are based on EL AL's Classic Award seat database (up to 2+ seats per cabin). On EL AL's main booking site, real-time availability may differ and final point pricing may be dynamic and higher (especially in peak seasons, on Sun d'Or flights, or for 3+ passengers)."
+        }</span>
+      </div>
+    `;
+
     const fallbackBannerHtml = state.weatherFallbackMessageHe
       ? `
         <div class="weather-fallback-card">
@@ -1371,12 +1417,12 @@
         const twoPlusVerifyBannerHtml = it.requires_two_plus_seat_verification
           ? `
             <div class="two-plus-verify-banner">
-              <strong>ℹ️ ${isHe ? `מכסת 2+ מושבי בונוס קלאסי באל על (${seatedCount} מושבים נדרשים):` : `EL AL 2+ Classic Award Seat Cap (${seatedCount} seats needed):`}</strong>
+              <strong>ℹ️ ${isHe ? `מכסת 2+ מושבים במאגר כרטיסי הבונוס של אל על (${seatedCount} מושבים נדרשים):` : `EL AL Award Seat Database 2+ Cap (${seatedCount} seats needed):`}</strong>
               <span>
                 ${
                   isHe
-                    ? `אל על מאשרת לפחות 2 מושבי בונוס קלאסי בטיסה זו. אם בחיפוש ל-${seatedCount} נוסעים מופיע תעריף Cash & Points, הזמינו 2 מושבי בונוס קלאסי והשלימו את היתר בנפרד.`
-                    : `EL AL confirms at least 2 Classic Award seats on this flight. If searching for ${seatedCount} passengers switches to Cash & Points rates, book 2 Classic Award seats first and complete the remaining seat separately.`
+                    ? `מאגר כרטיסי הבונוס של אל על מאשר לפחות 2 מושבי בונוס בטיסה זו. אם בחיפוש ל-${seatedCount} נוסעים באתר אל על מוצג מחיר נקודות דינמי גבוה יותר, מומלץ לבדוק תחילה הזמנה של 2 מושבי בונוס בנפרד.`
+                    : `EL AL's Classic Award seat database confirms at least 2 award seats on this flight. If searching for ${seatedCount} passengers on EL AL switches to higher dynamic point pricing, try checking 2 award seats first.`
                 }
               </span>
             </div>
@@ -1608,7 +1654,7 @@
         `
         : '';
 
-    container.innerHTML = fallbackBannerHtml + cardsHtml + toggleFeedHtml;
+    container.innerHTML = zeroPointsAlertHtml + awardSourceNoteHtml + fallbackBannerHtml + cardsHtml + toggleFeedHtml;
   }
 
   function updateActiveModeBadge() {
@@ -2501,6 +2547,19 @@
     document.body.addEventListener('click', (ev) => {
       const target = ev.target;
       if (!target) return;
+      const focusMatmidBtn = target.closest('[data-focus-matmid]');
+      if (focusMatmidBtn) {
+        const matmidEl = document.getElementById('prof-matmid-points');
+        const profZone = document.getElementById('zone-profile');
+        if (profZone) profZone.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (matmidEl) {
+          setTimeout(() => {
+            matmidEl.focus();
+            if (typeof matmidEl.select === 'function') matmidEl.select();
+          }, 120);
+        }
+        return;
+      }
       const toggleFeedBtn = target.closest('[data-toggle-all-proposals]');
       if (toggleFeedBtn) {
         state.showAllProposals = !state.showAllProposals;
