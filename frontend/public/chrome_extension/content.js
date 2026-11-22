@@ -395,7 +395,7 @@
       chrome.runtime.sendMessage(
         {
           action: "SYNC_ELAL_ROWS",
-          serverUrl: "https://family-trip-planner.duckdns.org",
+          serverUrl: "https://breezyflights.com",
           rows: hasRows ? rows : [],
           reconcileSlices: hasSlices ? reconcileSlices : []
         },

@@ -6,7 +6,7 @@ from `https://www.elal.com/rbddataclients/` (`GeneralRestServices-GetRbdAvailabi
 16×14-day Israeli Holiday & Ministry of Education school vacation windows for all 25 supported
 `DESTINATION_CATALOG` destinations (`50` directional segments per request), and syncs them directly
 into both the local SQLite database (`data/vacation_planner.db`) and the GCP Production server
-(`https://family-trip-planner.duckdns.org/api/v1/elal-bonus/sync`).
+(`https://breezyflights.com/api/v1/elal-bonus/sync`).
 
 Supports two modes:
 1. Live Headless Chrome CDP mode (default): Launches system Google Chrome (`--headless=new`)
@@ -41,7 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_SERVER_URL = "https://family-trip-planner.duckdns.org"
+DEFAULT_SERVER_URL = "https://breezyflights.com"
 DEFAULT_LOCAL_DB_PATH = str(REPO_ROOT / "data" / "vacation_planner.db")
 DEFAULT_SYNC_PROFILE_DIR = str(
     Path.home() / ".local" / "share" / "fvp-chrome-sync-profile"

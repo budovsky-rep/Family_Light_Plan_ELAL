@@ -309,7 +309,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             {
                 "GOOGLE_OAUTH_CLIENT_ID": "prod-cid.apps.googleusercontent.com",
                 "GOOGLE_OAUTH_CLIENT_SECRET": "prod-csecret",
-                "PUBLIC_BASE_URL": "https://family-trip-planner.duckdns.org",
+                "PUBLIC_BASE_URL": "https://breezyflights.com",
                 "VACATION_PLANNER_AUTH_TEST_MODE": None,
             }
         ):
@@ -321,7 +321,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             self.assertEqual(q["client_id"], "prod-cid.apps.googleusercontent.com")
             self.assertEqual(
                 q["redirect_uri"],
-                "https://family-trip-planner.duckdns.org/api/v1/auth/google/callback",
+                "https://breezyflights.com/api/v1/auth/google/callback",
             )
             self.assertEqual(q["response_type"], "code")
             self.assertEqual(q["scope"], "openid email profile")
@@ -944,7 +944,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                     gate_client.post(
                         "/api/v1/auth/test-login",
                         json={"email": "a@gmail.com"},
-                        headers={"Host": "family-trip-planner.duckdns.org"},
+                        headers={"Host": "breezyflights.com"},
                     ).status_code,
                     404,
                 )
@@ -1077,7 +1077,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             # (b) Production HTTPS PUBLIC_BASE_URL with --session-token AND with VACATION_PLANNER_SESSION_TOKEN
             with _EnvContext(
                 {
-                    "PUBLIC_BASE_URL": "https://family-trip-planner.duckdns.org",
+                    "PUBLIC_BASE_URL": "https://breezyflights.com",
                     "VACATION_PLANNER_SESSION_TOKEN": None,
                 }
             ):
@@ -1100,7 +1100,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
 
             with _EnvContext(
                 {
-                    "PUBLIC_BASE_URL": "https://family-trip-planner.duckdns.org",
+                    "PUBLIC_BASE_URL": "https://breezyflights.com",
                     "VACATION_PLANNER_SESSION_TOKEN": raw_tok,
                 }
             ):
@@ -1119,7 +1119,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 csrf_token="csrf-hyphen-token-test",
                 expires_at="2099-01-01T00:00:00Z",
             )
-            for pub_url in (None, "https://family-trip-planner.duckdns.org"):
+            for pub_url in (None, "https://breezyflights.com"):
                 with _EnvContext(
                     {
                         "PUBLIC_BASE_URL": pub_url,
@@ -1507,7 +1507,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
 
             # Under HTTPS PUBLIC_BASE_URL: spoofed X-Forwarded-Host AND http:// Origin downgrade MUST be rejected (403)
             with _EnvContext(
-                {"PUBLIC_BASE_URL": "https://family-trip-planner.duckdns.org"}
+                {"PUBLIC_BASE_URL": "https://breezyflights.com"}
             ):
                 self.assertEqual(
                     tc.put(
@@ -1530,7 +1530,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                         headers={
                             "X-CSRF-Token": csrf,
                             "X-Forwarded-Proto": "https",
-                            "Origin": "http://family-trip-planner.duckdns.org",
+                            "Origin": "http://breezyflights.com",
                         },
                     ).status_code,
                     403,
@@ -1543,7 +1543,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                         headers={
                             "X-CSRF-Token": csrf,
                             "X-Forwarded-Proto": "https",
-                            "Origin": "https://family-trip-planner.duckdns.org",
+                            "Origin": "https://breezyflights.com",
                         },
                     ).status_code,
                     200,
@@ -1605,7 +1605,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 {
                     "GOOGLE_OAUTH_CLIENT_ID": "oidc-cid.apps.googleusercontent.com",
                     "GOOGLE_OAUTH_CLIENT_SECRET": "oidc-csec",
-                    "PUBLIC_BASE_URL": "https://family-trip-planner.duckdns.org",
+                    "PUBLIC_BASE_URL": "https://breezyflights.com",
                     "VACATION_PLANNER_AUTH_TEST_MODE": None,
                 }
             ):

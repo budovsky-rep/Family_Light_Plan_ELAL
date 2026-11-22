@@ -1162,7 +1162,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             env_sub = dict(os.environ)
             env_sub["PYTHONDONTWRITEBYTECODE"] = "1"
             if https_mode:
-                env_sub["PUBLIC_BASE_URL"] = "https://family-trip-planner.duckdns.org"
+                env_sub["PUBLIC_BASE_URL"] = "https://breezyflights.com"
             else:
                 env_sub.pop("PUBLIC_BASE_URL", None)
             proc = subprocess.run(
@@ -1278,7 +1278,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
   Object.defineProperty(window, 'sessionStorage', {{ value: _mkStore(_ss), configurable: true }});
   Object.defineProperty(window, 'localStorage', {{ value: _mkStore(_ls), configurable: true }});
   const _cacheMap = new Map([
-    ['family-vacation-planner-v3', new Set(['https://family-trip-planner.duckdns.org/api/v1/profile', 'https://family-trip-planner.duckdns.org/src/app.js'])]
+    ['family-vacation-planner-v3', new Set(['https://breezyflights.com/api/v1/profile', 'https://breezyflights.com/src/app.js'])]
   ]);
   Object.defineProperty(window, 'caches', {{
     configurable: true,
@@ -1727,7 +1727,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(signout_state["ssLen"], 0)
             self.assertEqual(
                 signout_state["cachesDump"]["family-vacation-planner-v3"],
-                ["https://family-trip-planner.duckdns.org/src/app.js"],
+                ["https://breezyflights.com/src/app.js"],
             )
 
 

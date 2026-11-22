@@ -396,7 +396,7 @@ class Tier1BaseTestCase(unittest.TestCase):
         auth_svc.client_id = "e2e-client.apps.googleusercontent.com"
         auth_svc.client_secret = "e2e-client-secret"
         auth_svc.redirect_uri = (
-            "https://family-trip-planner.duckdns.org/api/v1/auth/google/callback"
+            "https://breezyflights.com/api/v1/auth/google/callback"
         )
 
         login_resp = client.get("/api/v1/auth/google/login")

@@ -24,7 +24,7 @@ Usage:
      ./deploy_argolis_gcp.sh cloud-run <YOUR_ARGOLIS_PROJECT_ID> [me-west1]
 
   2) Deploy to a Google Compute Engine VM in Argolis (with Caddy + optional HTTPS domain):
-     ./deploy_argolis_gcp.sh gce-vm <YOUR_ARGOLIS_PROJECT_ID> [me-west1-a] [family-trip-planner.duckdns.org]
+     ./deploy_argolis_gcp.sh gce-vm <YOUR_ARGOLIS_PROJECT_ID> [me-west1-a] [breezyflights.com]
 EOF
   exit 0
 fi

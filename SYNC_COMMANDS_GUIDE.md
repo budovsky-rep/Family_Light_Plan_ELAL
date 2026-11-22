@@ -42,7 +42,7 @@ cat ~/.local/share/fvp-chrome-sync-profile/shard_state.json
 3. ‏**דחיפה מוצלחת לשרת הפרודקשן (`GCP`) וניקוי טיסות שאזלו:**
    - ‏תחפש בסיום:
      `-> Remote sync batch 1/2 (800 raw -> 391 rows synced)`
-     `Synced 742 merged #live flight rows (reconciled 10 slice(s)) to remote server (https://family-trip-planner.duckdns.org).`
+     `Synced 742 merged #live flight rows (reconciled 10 slice(s)) to remote server (https://breezyflights.com).`
    - ‏המשמעות: המידע נשמר בשרת הפרודקשן והטווחים שנסרקו עודכנו כולל מחיקת מושבי בונוס שירדו ל-`0`.
 
 4. ‏**קידום סמן ההתקדמות למנה הבאה:**
@@ -66,12 +66,12 @@ cat ~/.local/share/fvp-chrome-sync-profile/shard_state.json
 ‏### ב. בדיקת זמינות ועדכניות המידע בשרת הפרודקשן (`GCP`)
 - ‏**בדיקת תקינות השרת (`Health Check`):** הרץ מכל טרמינל כדי לוודא שהאתר והמסד זמינים ומחזירים `status: ok`:
 ```bash
-curl -s "https://family-trip-planner.duckdns.org/api/v1/health" | python3 -m json.tool
+curl -s "https://breezyflights.com/api/v1/health" | python3 -m json.tool
 ```
 
 - ‏**בדיקת טיסות חיות ליעד ולתאריך לדוגמה דרך ה-API:** הרץ מכל טרמינל כדי לראות שהשרת מחזיר טיסות אמיתיות לרומא באפריל `2027` עם תאריך משיכה (`fetched_at`) ותוקף (`expires_at`):
 ```bash
-curl -s "https://family-trip-planner.duckdns.org/api/v1/elal-bonus/availability?destination=FCO&start_date=2027-04-10&end_date=2027-04-20" | python3 -m json.tool | head -n 50
+curl -s "https://breezyflights.com/api/v1/elal-bonus/availability?destination=FCO&start_date=2027-04-10&end_date=2027-04-20" | python3 -m json.tool | head -n 50
 ```
 
 - ‏**בדיקה ישירה של המסד ולוג השרת ב-GCP VM** — הרץ מתוך **Google Cloud Shell** כדי לראות כמה שורות חיות (`#live`) שמורות כרגע, מה טווח התאריכים ומתי בוצעה הכתיבה האחרונה, ולוודא שהשירות רץ ללא שגיאות:
@@ -90,11 +90,11 @@ gcloud compute ssh family-vacation-planner-vm \
 - ‏**הרצת המנה היומית הרגועה (`5` חלונות, חלון כרום גלוי, מעלה ישירות לשרת):**
   - ‏בטרמינל של **macOS**:
 ```bash
-curl -fsSL https://family-trip-planner.duckdns.org/sync_elal_to_server.py -o sync_elal_to_server.py && python3 sync_elal_to_server.py --no-local
+curl -fsSL https://breezyflights.com/sync_elal_to_server.py -o sync_elal_to_server.py && python3 sync_elal_to_server.py --no-local
 ```
   - ‏ב-**PowerShell ב-Windows** (שימוש ב-`curl.exe` כדי להוריד את הסקריפט ולהריץ):
 ```powershell
-curl.exe -fsSL https://family-trip-planner.duckdns.org/sync_elal_to_server.py -o sync_elal_to_server.py; python sync_elal_to_server.py --no-local
+curl.exe -fsSL https://breezyflights.com/sync_elal_to_server.py -o sync_elal_to_server.py; python sync_elal_to_server.py --no-local
 ```
 
 - ‏**הרצה ידנית מהירה לתאריך ספציפי בלבד (`4` בקשות סה"כ — הכי בטוח כשרוצים לבדוק מועד מסוים מיד):**

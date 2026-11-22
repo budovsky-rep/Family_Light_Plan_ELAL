@@ -4,7 +4,7 @@
  * and POSTs them directly to the production Family Vacation Planner server.
  */
 
-const DEFAULT_SERVER_URL = "https://family-trip-planner.duckdns.org";
+const DEFAULT_SERVER_URL = "https://breezyflights.com";
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.action !== "SYNC_ELAL_ROWS") {

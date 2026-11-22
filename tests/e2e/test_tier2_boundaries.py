@@ -106,7 +106,7 @@ class Tier2BoundaryTestBase(unittest.TestCase):
         auth_svc.client_id = "t2-client.apps.googleusercontent.com"
         auth_svc.client_secret = "t2-client-secret"
         auth_svc.redirect_uri = (
-            "https://family-trip-planner.duckdns.org/api/v1/auth/google/callback"
+            "https://breezyflights.com/api/v1/auth/google/callback"
         )
         login_resp = client.get("/api/v1/auth/google/login")
         self.assertEqual(login_resp.status_code, 302)

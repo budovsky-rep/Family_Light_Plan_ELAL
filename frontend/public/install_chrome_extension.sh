@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-SERVER_URL="${1:-https://family-trip-planner.duckdns.org}"
+SERVER_URL="${1:-https://breezyflights.com}"
 TARGET_DIR="$HOME/elal_chrome_extension"
 
 mkdir -p "$TARGET_DIR"
