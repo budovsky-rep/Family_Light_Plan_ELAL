@@ -4,7 +4,7 @@ Supports 5 subcommands:
 - `profile`: Display family profile, children frameworks, and multi-club loyalty wallets.
 - `calendar`: Inspect or sync (`--sync`) Ministry of Education (`משרד החינוך`) school-year calendars.
 - `bonus-availability`: Query or sync (`--sync`) El Al `rbddataclients` bonus seat availability with metro IATA expansion (`ROM` -> `FCO`, `NYC` -> `JFK,EWR`).
-- `search`: Run vacation maximization & flight synthesis across all 3 Date Selection Modes (`specific-dates`, `moe-maximize`, `holiday-direct`) and export `.json` / `.ics`.
+- `search`: Run vacation planning & flight synthesis across Date Selection Modes (`specific-dates`, `holiday-direct`) and export `.json`.
 - `serve`: Launch the local web & API server (`0.0.0.0:8000`).
 """
 
@@ -25,10 +25,6 @@ _MODE_MAP: dict[str, str] = {
     "specific-dates": "SPECIFIC_DATES",
     "specific_dates": "SPECIFIC_DATES",
     "SPECIFIC_DATES": "SPECIFIC_DATES",
-    "moe-maximize": "MOE_VACATION_MAXIMIZATION",
-    "moe_maximize": "MOE_VACATION_MAXIMIZATION",
-    "moe-vacation-maximization": "MOE_VACATION_MAXIMIZATION",
-    "MOE_VACATION_MAXIMIZATION": "MOE_VACATION_MAXIMIZATION",
     "holiday-direct": "HOLIDAY_DIRECT_INTENT",
     "holiday_direct": "HOLIDAY_DIRECT_INTENT",
     "holiday-direct-intent": "HOLIDAY_DIRECT_INTENT",
@@ -49,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="plan-vacation",
         description=(
-            "Family Vacation Planner CLI Companion — Israeli MoE Holiday Maximizer "
+            "Family Vacation Planner CLI Companion — Israeli MoE Holiday Planner "
             "& El Al Bonus Ticket Synthesizer (profile, calendar, bonus-availability, search, serve)"
         ),
     )
@@ -135,12 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
     # 4. search
     p_srch = subparsers.add_parser(
         "search",
-        help="Search & rank family vacation proposals across Modes 1/2/3 and export .json / .ics",
+        help="Search & rank family vacation proposals across Specific Dates & Holiday modes and export .json",
     )
     p_srch.add_argument(
         "--mode",
         default="holiday-direct",
-        help="Date selection mode: specific-dates | moe-maximize | holiday-direct",
+        help="Date selection mode: specific-dates | holiday-direct",
     )
     p_srch.add_argument(
         "--airline",
@@ -166,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_srch.add_argument(
         "--school-year",
         default="2026-2027",
-        help="School year for moe-maximize mode (e.g. 2026-2027)",
+        help="School year filter (e.g. 2026-2027)",
     )
     p_srch.add_argument(
         "--departure-date",
@@ -226,11 +222,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-json",
         default=None,
         help="Optional file path to export proposals JSON",
-    )
-    p_srch.add_argument(
-        "--export-ics",
-        default=None,
-        help="Optional file path to export the top proposal RFC 5545 .ics calendar",
     )
     p_srch.add_argument(
         "--json", action="store_true", help="Output raw JSON"
@@ -471,14 +462,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-        if args.export_ics and data.get("proposals"):
-            top_id = data["proposals"][0]["id"]
-            ics_resp = client.get(f"/api/v1/vacations/{top_id}/export.ics")
-            if ics_resp.status_code == 200:
-                out_ics_path = Path(args.export_ics)
-                out_ics_path.parent.mkdir(parents=True, exist_ok=True)
-                out_ics_path.write_text(ics_resp.text, encoding="utf-8")
-
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=2))
         else:
@@ -499,7 +482,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     f"{city_val} ({it.get('destination_iata', '')}) "
                     f"{it.get('departure_date', '')} -> {it.get('return_date', '')} | "
                     f"Strategy={it.get('fulfillment_strategy', '')} | "
-                    f"CTOS={float(p.get('combined_trip_optimization_score', 0.0)):.2f}"
+                    f"HAS={float(p.get('holiday_alignment_score', 0.0)):.1f} | "
+                    f"CTOS={float(p.get('combined_trip_optimization_score', 0.0)):.2f} | "
+                    f"Est. Cash: ~${float(it.get('total_out_of_pocket_cash_usd', 0.0)):,.0f} (non-binding)"
                 )
         return 0
 

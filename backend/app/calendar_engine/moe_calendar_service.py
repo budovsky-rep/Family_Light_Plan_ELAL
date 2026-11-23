@@ -28,7 +28,6 @@ from backend.app.schemas.domain import (
     ChildDayStatus,
     ChildFramework,
     DailyFamilyCalendarMatrix,
-    DailyParentStatus,
     FamilyProfile,
     HolidayExtensionMode,
     MoECalendarSyncStatus,
@@ -361,7 +360,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": rh_start.isoformat(),
                     "end_date": rh_end.isoformat(),
                     "resume_date": rh_resume.isoformat(),
-                    "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {},
                     "nitzanim_window": None,
@@ -375,7 +373,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": yk_eve.isoformat(),
                     "end_date": sukkot_k9_end.isoformat(),
                     "resume_date": sukkot_k9_resume.isoformat(),
-                    "parent_workday_status": "CHOL_HAMOED",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {
                         "HIGH_SCHOOL_10_12": {
@@ -401,7 +398,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": han_start.isoformat(),
                     "end_date": han_end.isoformat(),
                     "resume_date": han_resume.isoformat(),
-                    "parent_workday_status": "REGULAR_WORKDAY",
                     "applies_to_frameworks": k12_no_daycare,
                     "framework_overrides": {},
                     "nitzanim_window": {
@@ -423,7 +419,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": purim_start.isoformat(),
                     "end_date": purim_end.isoformat(),
                     "resume_date": purim_resume.isoformat(),
-                    "parent_workday_status": "REGULAR_WORKDAY",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {},
                     "nitzanim_window": None,
@@ -437,7 +432,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": pesach_start.isoformat(),
                     "end_date": pesach_end.isoformat(),
                     "resume_date": pesach_resume.isoformat(),
-                    "parent_workday_status": "CHOL_HAMOED",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {
                         "DAYCARE_SUPERVISED": {
@@ -465,7 +459,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": atzmaut_d.isoformat(),
                     "end_date": atzmaut_d.isoformat(),
                     "resume_date": atzmaut_resume.isoformat(),
-                    "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {},
                     "nitzanim_window": None,
@@ -479,7 +472,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": shavuot_start.isoformat(),
                     "end_date": shavuot_end.isoformat(),
                     "resume_date": shavuot_resume.isoformat(),
-                    "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {},
                     "nitzanim_window": None,
@@ -493,7 +485,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": summer_7_12_start.isoformat(),
                     "end_date": date(y2, 6, 30).isoformat(),
                     "resume_date": next_school_start.isoformat(),
-                    "parent_workday_status": "REGULAR_WORKDAY",
                     "applies_to_frameworks": [
                         "MIDDLE_SCHOOL_7_9",
                         "HIGH_SCHOOL_10_12",
@@ -510,7 +501,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": date(y2, 7, 1).isoformat(),
                     "end_date": date(y2, 7, 31).isoformat(),
                     "resume_date": next_school_start.isoformat(),
-                    "parent_workday_status": "REGULAR_WORKDAY",
                     "applies_to_frameworks": [
                         "MUNICIPAL_GAN",
                         "ELEMENTARY_1_3",
@@ -539,7 +529,6 @@ class HebrewCalendarRuleProjector:
                     "start_date": date(y2, 8, 1).isoformat(),
                     "end_date": date(y2, 8, 31).isoformat(),
                     "resume_date": next_school_start.isoformat(),
-                    "parent_workday_status": "REGULAR_WORKDAY",
                     "applies_to_frameworks": all_8,
                     "framework_overrides": {
                         "DAYCARE_SUPERVISED": {
@@ -612,7 +601,7 @@ class MoECalendarAutoUpdaterService:
 
 
 class MoECalendarService:
-    """Evaluates daily parent & multi-child MoE schedules across all 8 frameworks."""
+    """Evaluates daily multi-child MoE schedules across all 8 frameworks."""
 
     def __init__(self, repository: SQLiteRepository) -> None:
         self.repository = repository
@@ -851,124 +840,6 @@ class MoECalendarService:
             return mins <= 22 * 60 + 30
         return False
 
-    def get_parent_day_status(
-        self, profile: FamilyProfile, target_date: date
-    ) -> DailyParentStatus:
-        """Compute parent workday status, PTO cost $P(d)$, and `TLV` closure flag."""
-        wd = target_date.weekday()  # Mon=0 .. Fri=4, Sat=5, Sun=6
-        tlv_closed = self.is_tlv_airport_closed(target_date)
-
-        # Weekend check
-        if wd == 5:  # Saturday
-            return DailyParentStatus(
-                calendar_date=target_date,
-                workday_status="PUBLIC_HOLIDAY_OFF",
-                pto_cost=0.0,
-                label_he="שבת (סוף שבוע)",
-                tlv_airport_closed=tlv_closed,
-            )
-        if wd == 4 and profile.workweek_type == "SUN_THU":
-            return DailyParentStatus(
-                calendar_date=target_date,
-                workday_status="PUBLIC_HOLIDAY_OFF",
-                pto_cost=0.0,
-                label_he="יום שישי (סוף שבוע)",
-                tlv_airport_closed=tlv_closed,
-            )
-
-        school_year = self.infer_school_year_for_date(target_date)
-        heb_year, _ = gregorian_school_year_to_hebrew_year(school_year)
-        rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(heb_year)
-        pesach1 = HebrewCalendarRuleProjector.pesach_first_day(heb_year)
-        atzmaut_d = HebrewCalendarRuleProjector.yom_haatzmaut_date(heb_year)
-
-        # In 5787 (2027), align Pesach uncovered week (Apr 20-28) parent workday status
-        # with APPLICATION_PLAN.md §3.3 Table 3.3B & §3.6 Ex 4 (2.0 PTO across uncovered week)
-        if heb_year == 5787 and date(2027, 4, 20) <= target_date <= date(2027, 4, 28):
-            if target_date in (date(2027, 4, 21), date(2027, 4, 27), date(2027, 4, 28)):
-                return DailyParentStatus(
-                    calendar_date=target_date,
-                    workday_status="PUBLIC_HOLIDAY_OFF",
-                    pto_cost=0.0,
-                    label_he="חג הפסח (שבתון)",
-                    tlv_airport_closed=tlv_closed,
-                )
-            if target_date in (date(2027, 4, 20), date(2027, 4, 26)):
-                return DailyParentStatus(
-                    calendar_date=target_date,
-                    workday_status="EREV_CHAG_HALF_DAY",
-                    pto_cost=float(profile.erev_chag_pto_weight),
-                    label_he="ערב חג הפסח",
-                    tlv_airport_closed=tlv_closed,
-                )
-            return DailyParentStatus(
-                calendar_date=target_date,
-                workday_status="CHOL_HAMOED",
-                pto_cost=float(profile.chol_hamoed_pto_weight),
-                label_he="חול המועד פסח",
-                tlv_airport_closed=tlv_closed,
-            )
-
-        public_holidays: dict[date, str] = {
-            rh1: "ראש השנה א'",
-            rh1 + timedelta(days=1): "ראש השנה ב'",
-            rh1 + timedelta(days=9): "יום הכיפורים",
-            rh1 + timedelta(days=14): "חג סוכות א'",
-            rh1 + timedelta(days=21): "שמחת תורה / שמיני עצרת",
-            pesach1: "חג פסח א'",
-            pesach1 + timedelta(days=6): "שביעי של פסח",
-            pesach1 + timedelta(days=7): "חופשת חג הפסח",
-            atzmaut_d: "יום העצמאות",
-            pesach1 + timedelta(days=50): "חג השבועות",
-        }
-        if target_date in public_holidays:
-            return DailyParentStatus(
-                calendar_date=target_date,
-                workday_status="PUBLIC_HOLIDAY_OFF",
-                pto_cost=0.0,
-                label_he=public_holidays[target_date],
-                tlv_airport_closed=tlv_closed,
-            )
-
-        erev_chag_dates: dict[date, str] = {
-            rh1 - timedelta(days=1): "ערב ראש השנה",
-            rh1 + timedelta(days=8): "ערב יום הכיפורים",
-            rh1 + timedelta(days=13): "ערב חג הסוכות",
-            rh1 + timedelta(days=20): "הושענא רבה / ערב שמחת תורה",
-            pesach1 - timedelta(days=1): "ערב פסח (ליל הסדר)",
-            pesach1 + timedelta(days=5): "ערב שביעי של פסח",
-            pesach1 + timedelta(days=49): "ערב חג השבועות",
-        }
-        if target_date in erev_chag_dates:
-            return DailyParentStatus(
-                calendar_date=target_date,
-                workday_status="EREV_CHAG_HALF_DAY",
-                pto_cost=float(profile.erev_chag_pto_weight),
-                label_he=erev_chag_dates[target_date],
-                tlv_airport_closed=tlv_closed,
-            )
-
-        chol_hamoed_dates: set[date] = {
-            *(rh1 + timedelta(days=offset) for offset in range(15, 20)),
-            *(pesach1 + timedelta(days=offset) for offset in range(1, 5)),
-        }
-        if target_date in chol_hamoed_dates:
-            return DailyParentStatus(
-                calendar_date=target_date,
-                workday_status="CHOL_HAMOED",
-                pto_cost=float(profile.chol_hamoed_pto_weight),
-                label_he="חול המועד",
-                tlv_airport_closed=tlv_closed,
-            )
-
-        return DailyParentStatus(
-            calendar_date=target_date,
-            workday_status="REGULAR_WORKDAY",
-            pto_cost=1.0,
-            label_he="יום עבודה רגיל",
-            tlv_airport_closed=tlv_closed,
-        )
-
     def get_child_day_status(
         self, child: ChildFramework, target_date: date
     ) -> ChildDayStatus:
@@ -1152,7 +1023,7 @@ class MoECalendarService:
     def get_daily_status_matrix(
         self, profile: FamilyProfile, start_date: date, end_date: date
     ) -> DailyFamilyCalendarMatrix:
-        """Build the multi-child & parent daily status matrix and $\\mathcal{I}, \\mathcal{I}_{\\text{camp}}, \\mathcal{U}$ sets."""
+        """Build the multi-child daily status matrix and $\\mathcal{I}, \\mathcal{I}_{\\text{camp}}, \\mathcal{U}$ sets."""
         if end_date < start_date:
             raise ValueError("end_date must be >= start_date")
 
@@ -1160,8 +1031,6 @@ class MoECalendarService:
         total_days = (end_date - start_date).days + 1
         dates = [start_date + timedelta(days=i) for i in range(total_days)]
 
-        parent_pto_cost_by_date: dict[str, float] = {}
-        parent_workday_status_by_date: dict[str, str] = {}
         tlv_airport_closed_by_date: dict[str, bool] = {}
         holiday_codes_by_date: dict[str, list[str]] = {}
         child_status_by_id: dict[str, dict[str, ChildDayStatus]] = {
@@ -1174,10 +1043,7 @@ class MoECalendarService:
 
         for d in dates:
             d_iso = d.isoformat()
-            p_status = self.get_parent_day_status(profile, d)
-            parent_pto_cost_by_date[d_iso] = p_status.pto_cost
-            parent_workday_status_by_date[d_iso] = p_status.workday_status
-            tlv_airport_closed_by_date[d_iso] = p_status.tlv_airport_closed
+            tlv_airport_closed_by_date[d_iso] = self.is_tlv_airport_closed(d)
 
             day_holidays: list[str] = []
             child_states: list[str] = []
@@ -1207,8 +1073,6 @@ class MoECalendarService:
             start_date=start_date,
             end_date=end_date,
             dates=dates,
-            parent_pto_cost_by_date=parent_pto_cost_by_date,
-            parent_workday_status_by_date=parent_workday_status_by_date,
             tlv_airport_closed_by_date=tlv_airport_closed_by_date,
             holiday_codes_by_date=holiday_codes_by_date,
             child_status_by_id=child_status_by_id,

@@ -4,7 +4,7 @@
 
 Milestone M5 replaces the legacy single-household shared profile behavior with a **clean unauthenticated guest experience** and **private, per-user Gmail authentication and persistence**:
 
-- **Unauthenticated Visitors (Clean Guest Mode)**: Opening `https://breezyflights.com` starts in a neutral state (`2` adults, `0` children, `0` El Al Matmid points, `18` PTO days). Guests can freely search holidays or manual dates, enter temporary children's ages (`0–18`), school frameworks, and Matmid balances, compare proposals, and export `.ics` calendars **without signing in** and with **zero SQLite writes**.
+- **Unauthenticated Visitors (Clean Guest Mode)**: Opening `https://breezyflights.com` starts in a neutral state (`2` adults, `0` children, `0` El Al Matmid points). Guests can freely search holidays or manual dates, enter temporary children's ages (`0–18`), school frameworks, and Matmid balances, and compare proposals **without signing in** and with **zero SQLite writes**.
 - **Gmail-Authenticated Users (Private Persistence & Notification Readiness)**: Signing in with Gmail via server-side **OAuth 2.0 / OpenID Connect (Authorization Code + PKCE `S256`)** binds a revocable, SHA-256-hashed server session cookie (`__Host-fvp_session`) to the user's immutable Google subject (`google_sub`). Signed-in users can privately save and reload their family composition (including children's integer ages and frameworks), manage explicit opt-in consent for future email notifications, and delete their saved data or account at any time.
 
 ---
@@ -87,11 +87,11 @@ Defined identically in `backend/app/storage_cache/schema.sql` and `backend/app/d
 1. **Server-Enforced Identity & IDOR Prevention**:
    - `GET /api/v1/profile`, `PUT /api/v1/profile`, and `DELETE /api/v1/profile` require an active verified session (`HTTP 401` when unauthenticated) and resolve ownership exclusively from `session.user_id` on the server.
    - Any client-supplied `id`, `profile_id`, `family_profile_id`, `user_id`, or `email` in query strings or JSON bodies is ignored/stripped.
-   - `POST /api/v1/vacations/search` and `GET /api/v1/moe-calendar/*` ignore client `profile_id` / `family_profile_id` parameters; `POST /api/v1/vacations/compare` and `GET /api/v1/vacations/{proposal_id}/export.ics` enforce strict owner scoping (`HTTP 404` on unowned or quarantined proposals).
+   - `POST /api/v1/vacations/search` and `GET /api/v1/moe-calendar/*` ignore client `profile_id` / `family_profile_id` parameters; `POST /api/v1/vacations/compare` enforces strict owner scoping (`HTTP 404` on unowned or quarantined proposals).
    - Child and loyalty-wallet primary keys are server-namespaced (`user-profile-<user_id>:child:<idx>`, `user-profile-<user_id>:wallet:<idx>`) so cross-user primary-key collisions or overwrites are impossible.
 2. **Children's Data Minimization**:
    - Only integer `child_age_years` (`0..18`, required for infant `<2` / child `2–11` / youth `12–17` fare rules) and optional `MoEFrameworkType` (`DAYCARE_SUPERVISED` .. `HIGH_SCHOOL_10_12`) are collected.
-   - Children's names and exact dates of birth are never requested in the UI; saved records default `child_name` to a generic label and `birth_date` to `NULL`, and proposal cards render generic passenger labels (`Child #1 (Age 5)`).
+   - Children's names and exact dates of birth are never requested in the UI; saved records default `child_name` to a generic label and `birth_date` to `NULL`, and proposal cards render aggregate household traveler counts without per-passenger breakdowns.
 3. **Zero-Persistence Guest Isolation**:
    - Unauthenticated visitors never call `GET /api/v1/profile` or `PUT /api/v1/profile`.
    - Guest vacation searches pass inline household parameters (`inline_profile`) evaluated purely in memory (`persist_results=False`), writing **zero** rows to `family_profiles`, `child_frameworks`, `flight_search_queries`, `flight_itineraries`, or `vacation_option_proposals`.

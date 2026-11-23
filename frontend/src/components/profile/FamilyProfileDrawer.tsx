@@ -1,6 +1,6 @@
 /**
  * FamilyProfileDrawer Component (`frontend/src/components/profile/FamilyProfileDrawer.tsx`)
- * Manages parents' workweek & PTO budget, children's ages (`child_age_years`, 0..18) and
+ * Manages household adults & Matmid balance, children's ages (`child_age_years`, 0..18) and
  * OPTIONAL educational frameworks (`framework_type` — אופציונלי במצב תאריכים ספציפיים / null),
  * and per-passenger multi-club loyalty wallets across all 10 `LoyaltyProgramCode` programs.
  */

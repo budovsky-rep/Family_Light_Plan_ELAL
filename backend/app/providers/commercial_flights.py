@@ -94,7 +94,7 @@ class FamilyBaggageNormalizer:
                 child.passenger_Current_type
                 or classify_passenger_type(child.child_age_years)
             )
-            if pax_type == "INFANT_LAP":
+            if pax_type == "INFANT_LAP" and lap_infants < adults:
                 lap_infants += 1
             else:
                 seated_children += 1

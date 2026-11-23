@@ -78,7 +78,6 @@
       "start_date": "2027-10-01",
       "end_date": "2027-10-03",
       "resume_date": "2027-10-04",
-      "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",
@@ -101,7 +100,6 @@
       "start_date": "2027-10-10",
       "end_date": "2027-10-23",
       "resume_date": "2027-10-24",
-      "parent_workday_status": "CHOL_HAMOED",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",
@@ -136,7 +134,6 @@
       "start_date": "2027-12-26",
       "end_date": "2028-01-01",
       "resume_date": "2028-01-02",
-      "parent_workday_status": "REGULAR_WORKDAY",
       "applies_to_frameworks": [
         "MUNICIPAL_GAN",
         "ELEMENTARY_1_3",
@@ -166,7 +163,6 @@
       "start_date": "2028-03-12",
       "end_date": "2028-03-13",
       "resume_date": "2028-03-14",
-      "parent_workday_status": "REGULAR_WORKDAY",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",
@@ -189,7 +185,6 @@
       "start_date": "2028-04-02",
       "end_date": "2028-04-17",
       "resume_date": "2028-04-18",
-      "parent_workday_status": "CHOL_HAMOED",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",
@@ -238,7 +233,6 @@
       "start_date": "2028-05-02",
       "end_date": "2028-05-02",
       "resume_date": "2028-05-03",
-      "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",
@@ -261,7 +255,6 @@
       "start_date": "2028-05-31",
       "end_date": "2028-06-01",
       "resume_date": "2028-06-02",
-      "parent_workday_status": "PUBLIC_HOLIDAY_OFF",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",
@@ -284,7 +277,6 @@
       "start_date": "2028-06-21",
       "end_date": "2028-06-30",
       "resume_date": "2028-09-01",
-      "parent_workday_status": "REGULAR_WORKDAY",
       "applies_to_frameworks": [
         "MIDDLE_SCHOOL_7_9",
         "HIGH_SCHOOL_10_12"
@@ -301,7 +293,6 @@
       "start_date": "2028-07-01",
       "end_date": "2028-07-31",
       "resume_date": "2028-09-01",
-      "parent_workday_status": "REGULAR_WORKDAY",
       "applies_to_frameworks": [
         "MUNICIPAL_GAN",
         "ELEMENTARY_1_3",
@@ -330,7 +321,6 @@
       "start_date": "2028-08-01",
       "end_date": "2028-08-31",
       "resume_date": "2028-09-01",
-      "parent_workday_status": "REGULAR_WORKDAY",
       "applies_to_frameworks": [
         "DAYCARE_SUPERVISED",
         "MUNICIPAL_GAN",

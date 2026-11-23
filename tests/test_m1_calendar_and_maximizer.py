@@ -44,7 +44,6 @@ from backend.app.schemas.domain import (
     LoyaltyProgramCode,
     MoEFrameworkType,
     PassengerLoyaltyWallet,
-    PassengerTicketAllocation,
     VacationOptionProposal,
     classify_passenger_type,
     suggest_framework_for_age,
@@ -98,9 +97,9 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
         self.assertEqual(metro["MIA_AREA"], ["MIA", "FLL"])
 
         weights = settings["optimization_weights"]
-        self.assertAlmostEqual(weights["vus_alpha_per"], 0.60)
-        self.assertAlmostEqual(weights["vus_beta_ccg"], 0.40)
-        self.assertAlmostEqual(weights["vus_gamma_sap"], 0.35)
+        self.assertNotIn("vus_alpha_per", weights)
+        self.assertNotIn("vus_beta_ccg", weights)
+        self.assertNotIn("vus_gamma_sap", weights)
         self.assertAlmostEqual(weights["ctos_calendar_weight"], 0.55)
         self.assertAlmostEqual(weights["ctos_flight_weight"], 0.45)
 
@@ -280,14 +279,10 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
             fulfillment_strategy=FulfillmentStrategy.HYBRID_BONUS_PLUS_CASH,
             outbound_legs=[FlightLeg(flight_number="LY381", flight_date=date(2027, 4, 11))],
             inbound_legs=[FlightLeg(flight_number="LY384", flight_date=date(2027, 4, 18))],
-            family_ticket_allocation=[
-                PassengerTicketAllocation(
-                    passenger_label="יוני",
-                    ticket_mode="ELAL_MATMID_BONUS",
-                    points_used=30000,
-                    taxes_usd=97.5,
-                )
-            ],
+            seated_passengers_count=4,
+            bonus_tickets_count=4,
+            cash_tickets_count=0,
+            primary_cabin="ECONOMY",
             total_matmid_points=142000,
             total_taxes_and_fees_usd=390.0,
             total_supplemental_cash_fares_usd=460.0,
@@ -302,12 +297,9 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
             itinerary_id="cascade-itin-1",
             associated_holiday_codes=["PESACH"],
             window_set_type="SPECIFIC_USER_WINDOW",
-            total_vacation_days=8,
-            parent_pto_days_used=5.0,
-            pto_efficiency_ratio=1.6,
             school_absence_penalty=1.17,
             childcare_coverage_gain=0.75,
-            vacation_utilization_score=84.9,
+            holiday_alignment_score=88.0,
             flight_bonus_value_score=92.0,
             combined_trip_optimization_score=95.0,
             explanation_summary_he="בדיקת מחיקה מדורגת",
@@ -499,14 +491,13 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
     # Optimization & Worked Examples Tests (`TEST-OPT-01`, `F12`-`F15`)
     # ------------------------------------------------------------------
     def test_opt_01_pesach_2027_uncovered_vs_nitzanim_week(self) -> None:
-        """TEST-OPT-01: Pesach 2027 uncovered week (`VUS=100.0`) vs Nitzanim pre-Pesach week."""
+        """TEST-OPT-01: Pesach 2027 uncovered week (`HAS=100.0`) vs Nitzanim pre-Pesach week."""
         uncovered = self.maximizer.evaluate_window(
             self.profile, date(2027, 4, 20), date(2027, 4, 28)
         )
         self.assertEqual(uncovered.school_absence_penalty, 0.0)
         self.assertEqual(uncovered.childcare_coverage_gain, 1.0)
-        self.assertGreaterEqual(uncovered.pto_efficiency_ratio, 4.0)
-        self.assertEqual(uncovered.vacation_utilization_score, 100.0)
+        self.assertEqual(uncovered.holiday_alignment_score, 100.0)
 
         # Pre-Pesach Nitzanim week (`2027-04-13` to `2027-04-19`) with treat_camp_as_vacation=True (psi=0.15)
         nitz_vac = self.maximizer.evaluate_window(
@@ -528,74 +519,63 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
             nitz_care.school_absence_penalty, nitz_vac.school_absence_penalty
         )
         self.assertLess(
-            nitz_care.vacation_utilization_score,
-            nitz_vac.vacation_utilization_score,
+            nitz_care.holiday_alignment_score,
+            nitz_vac.holiday_alignment_score,
         )
         self.assertLess(
-            nitz_vac.vacation_utilization_score,
-            uncovered.vacation_utilization_score,
+            nitz_vac.holiday_alignment_score,
+            uncovered.holiday_alignment_score,
         )
 
     def test_worked_examples_1_through_6_exact_math_f15(self) -> None:
-        """Verify all 6 Worked Examples from `APPLICATION_PLAN.md` §3.6."""
+        """Verify all 6 Worked Examples PTO-free HAS, SAP, and CCG math."""
         examples = self.maximizer.evaluate_worked_examples(self.profile)
 
         # Ex 1: Kippur-Sukkot Mega-Bridge (Tue Sep 22 - Sat Oct 3, 2026)
         ex1 = examples["EX1_KIPPUR_SUKKOT_MEGA_BRIDGE"]
-        self.assertEqual(ex1.total_vacation_days, 12)
-        self.assertAlmostEqual(ex1.parent_pto_days_used, 5.5)
-        self.assertAlmostEqual(ex1.pto_efficiency_ratio, 2.18, places=2)
+        self.assertEqual(ex1.trip_nights, 11)
         self.assertAlmostEqual(ex1.school_absence_penalty, 0.00, places=2)
         self.assertAlmostEqual(ex1.childcare_coverage_gain, 1.00, places=2)
-        self.assertAlmostEqual(ex1.vacation_utilization_score, 72.7, places=1)
+        self.assertAlmostEqual(ex1.holiday_alignment_score, 100.0, places=1)
 
         # Ex 2: Hanukkah Post-Nitzanim Shift (Thu Dec 10 - Mon Dec 14, 2026)
         ex2 = examples["EX2_HANUKKAH_POST_NITZANIM_SHIFT"]
-        self.assertEqual(ex2.total_vacation_days, 5)
-        self.assertAlmostEqual(ex2.parent_pto_days_used, 3.0)
-        self.assertAlmostEqual(ex2.pto_efficiency_ratio, 1.67, places=2)
+        self.assertEqual(ex2.trip_nights, 4)
         self.assertAlmostEqual(ex2.school_absence_penalty, 0.68, places=2)
         self.assertAlmostEqual(ex2.childcare_coverage_gain, 0.73, places=2)
-        self.assertAlmostEqual(ex2.vacation_utilization_score, 49.5, places=1)
+        self.assertAlmostEqual(ex2.holiday_alignment_score, 62.5, places=1)
 
         # Ex 3: Purim Long-Weekend Bridge (Tue Mar 23 - Sat Mar 27, 2027)
         ex3 = examples["EX3_PURIM_LONG_WEEKEND_BRIDGE"]
-        self.assertEqual(ex3.total_vacation_days, 5)
-        self.assertAlmostEqual(ex3.parent_pto_days_used, 3.0)
-        self.assertAlmostEqual(ex3.pto_efficiency_ratio, 1.67, places=2)
+        self.assertEqual(ex3.trip_nights, 4)
         self.assertAlmostEqual(ex3.school_absence_penalty, 0.69, places=2)
         self.assertAlmostEqual(ex3.childcare_coverage_gain, 0.77, places=2)
-        self.assertAlmostEqual(ex3.vacation_utilization_score, 51.0, places=1)
+        self.assertAlmostEqual(ex3.holiday_alignment_score, 64.8, places=1)
 
         # Ex 4A: Pesach Pre-Holiday Shoulder Bridge (Sun Apr 11 - Sun Apr 18, 2027)
         ex4a = examples["EX4A_PESACH_PRE_HOLIDAY_SHOULDER"]
-        self.assertEqual(ex4a.total_vacation_days, 8)
-        self.assertAlmostEqual(ex4a.parent_pto_days_used, 5.0)
+        self.assertEqual(ex4a.trip_nights, 7)
         self.assertAlmostEqual(ex4a.school_absence_penalty, 1.17, places=2)
         self.assertAlmostEqual(ex4a.childcare_coverage_gain, 0.75, places=2)
-        self.assertAlmostEqual(ex4a.vacation_utilization_score, 84.9, places=1)
+        self.assertAlmostEqual(ex4a.holiday_alignment_score, 68.4, places=1)
 
         # Ex 4B: Pesach Uncovered Week
         ex4b = examples["EX4B_PESACH_UNCOVERED_WEEK"]
-        self.assertAlmostEqual(ex4b.vacation_utilization_score, 100.0, places=1)
+        self.assertAlmostEqual(ex4b.holiday_alignment_score, 100.0, places=1)
 
         # Ex 5: Shavuot Extended Weekend (Wed Jun 9 - Sat Jun 12, 2027)
         ex5 = examples["EX5_SHAVUOT_EXTENDED_WEEKEND"]
-        self.assertEqual(ex5.total_vacation_days, 4)
-        self.assertAlmostEqual(ex5.parent_pto_days_used, 1.5)
-        self.assertAlmostEqual(ex5.pto_efficiency_ratio, 2.67, places=2)
+        self.assertEqual(ex5.trip_nights, 3)
         self.assertAlmostEqual(ex5.school_absence_penalty, 0.67, places=2)
         self.assertAlmostEqual(ex5.childcare_coverage_gain, 0.75, places=2)
-        self.assertAlmostEqual(ex5.vacation_utilization_score, 64.2, places=1)
+        self.assertAlmostEqual(ex5.holiday_alignment_score, 67.5, places=1)
 
         # Ex 6: June 20-30 Inter-Framework Arbitrage (Mon Jun 21 - Mon Jun 28, 2027)
         ex6 = examples["EX6_JUNE_20_30_INTER_FRAMEWORK_ARBITRAGE"]
-        self.assertEqual(ex6.total_vacation_days, 8)
-        self.assertAlmostEqual(ex6.parent_pto_days_used, 6.0)
-        self.assertAlmostEqual(ex6.pto_efficiency_ratio, 1.33, places=2)
+        self.assertEqual(ex6.trip_nights, 7)
         self.assertAlmostEqual(ex6.school_absence_penalty, 0.83, places=2)
         self.assertAlmostEqual(ex6.childcare_coverage_gain, 0.58, places=2)
-        self.assertAlmostEqual(ex6.vacation_utilization_score, 39.6, places=1)
+        self.assertAlmostEqual(ex6.holiday_alignment_score, 37.5, places=1)
 
     def test_mode1_specific_dates_with_null_frameworks_f12(self) -> None:
         """Mode 1 (`SPECIFIC_DATES`) works when children have `framework_type=None`."""
@@ -813,10 +793,10 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
             prof_with_bagrut, date(2027, 6, 21), date(2027, 6, 25)
         )
         self.assertTrue(eval_bagrut.has_bagrut_blackout)
-        self.assertEqual(eval_bagrut.vacation_utilization_score, 0.0)
+        self.assertEqual(eval_bagrut.holiday_alignment_score, 0.0)
 
     def test_mode2_sets_i_icamp_u_and_zero_pto_window_f13_f15(self) -> None:
-        """Verify sets I, I_camp, U in June 21-30 and zero-PTO PER denominator clamping."""
+        """Verify sets I, I_camp, U in June 21-30 and full school break HAS=100.0 on Rosh Hashanah."""
         matrix = self.calendar_service.get_daily_status_matrix(
             self.profile, date(2027, 6, 21), date(2027, 6, 28)
         )
@@ -825,14 +805,12 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
         # Only Saturday Jun 26 has all 3 children strictly on VACATION -> Set I has 1 day
         self.assertEqual(matrix.strict_intersection_dates, [date(2027, 6, 26)])
 
-        # Zero parent PTO window: Rosh Hashanah 2026 (Fri Sep 11 - Sun Sep 13, 2026)
+        # Full holiday window: Rosh Hashanah 2026 (Fri Sep 11 - Sun Sep 13, 2026)
         rh_win = self.maximizer.evaluate_window(
             self.profile, date(2026, 9, 11), date(2026, 9, 13)
         )
-        self.assertEqual(rh_win.parent_pto_days_used, 0.0)
-        # PER = 3 / max(0.0, 0.5) = 6.0
-        self.assertAlmostEqual(rh_win.pto_efficiency_ratio, 6.0)
-        self.assertEqual(rh_win.vacation_utilization_score, 100.0)
+        self.assertEqual(rh_win.school_absence_penalty, 0.0)
+        self.assertEqual(rh_win.holiday_alignment_score, 100.0)
 
     def test_all_10_loyalty_programs_and_env_db_path_f02_f16(self) -> None:
         """Verify all 10 LoyaltyProgramCode values persist and seeded El Al flights obey Shabbat/YK."""
@@ -1002,12 +980,9 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
                 itinerary_id="tier2-cache-itin1",
                 associated_holiday_codes=["PESACH"],
                 window_set_type="SPECIFIC_USER_WINDOW",
-                total_vacation_days=8,
-                parent_pto_days_used=5.0,
-                pto_efficiency_ratio=1.6,
                 school_absence_penalty=1.17,
                 childcare_coverage_gain=0.75,
-                vacation_utilization_score=84.9,
+                holiday_alignment_score=85.0,
                 flight_bonus_value_score=91.0,
                 combined_trip_optimization_score=87.6,
                 explanation_summary_he="בדיקת מטמון שכבה 2",

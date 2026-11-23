@@ -43,18 +43,13 @@ CREATE TABLE IF NOT EXISTS oauth_login_states (
     expires_at TEXT NOT NULL
 );
 
--- 1. FamilyProfile: Stores household configuration, parent PTO rules, and default household Matmid summary
+-- 1. FamilyProfile: Stores household configuration and default household Matmid summary
 CREATE TABLE IF NOT EXISTS family_profiles (
     id TEXT PRIMARY KEY,                          -- UUID v4 or user-profile-<user_id>
     user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     is_legacy_quarantined INTEGER NOT NULL DEFAULT 0 CHECK (is_legacy_quarantined IN (0, 1)),
     profile_name TEXT NOT NULL DEFAULT 'המשפחה שלי',
     adults_count INTEGER NOT NULL DEFAULT 2 CHECK (adults_count BETWEEN 1 AND 6),
-    workweek_type TEXT NOT NULL DEFAULT 'SUN_THU' CHECK (workweek_type IN ('SUN_THU', 'SUN_FRI')),
-    erev_chag_pto_weight REAL NOT NULL DEFAULT 0.5 CHECK (erev_chag_pto_weight IN (0.0, 0.5, 1.0)),
-    chol_hamoed_pto_weight REAL NOT NULL DEFAULT 0.5 CHECK (chol_hamoed_pto_weight IN (0.0, 0.5, 1.0)),
-    annual_pto_budget REAL NOT NULL DEFAULT 14.0 CHECK (annual_pto_budget >= 0.0),
-    max_pto_per_trip REAL NOT NULL DEFAULT 5.0 CHECK (max_pto_per_trip >= 0.0),
     matmid_points_balance INTEGER NOT NULL DEFAULT 0 CHECK (matmid_points_balance >= 0),
     has_flycard INTEGER NOT NULL DEFAULT 1 CHECK (has_flycard IN (0, 1)),
     flycard_tier TEXT NOT NULL DEFAULT 'FLY_CARD_PREMIUM' CHECK (flycard_tier IN ('NONE', 'FLY_CARD', 'FLY_CARD_PREMIUM')),
@@ -152,12 +147,6 @@ CREATE TABLE IF NOT EXISTS moe_vacation_windows (
     is_covered_by_nitzanim INTEGER NOT NULL DEFAULT 0 CHECK (is_covered_by_nitzanim IN (0, 1)),
     nitzanim_start_date TEXT,                     -- ISO-8601 YYYY-MM-DD if Nitzanim operates during part of window
     nitzanim_end_date TEXT,                       -- ISO-8601 YYYY-MM-DD
-    parent_workday_status TEXT NOT NULL DEFAULT 'REGULAR_WORKDAY' CHECK (parent_workday_status IN (
-        'PUBLIC_HOLIDAY_OFF',                     -- חג רשמי (שבתון מלא במשק - 0 ימי חופש הורים)
-        'EREV_CHAG_HALF_DAY',                     -- ערב חג (0.5 יום חופש הורים)
-        'CHOL_HAMOED',                            -- חול המועד (0.5 יום חופש הורים)
-        'REGULAR_WORKDAY'                         -- יום עבודה רגיל במשק (אך חופשה במוסדות החינוך, למשל אסרו חג / חנוכה)
-    )),
     tlv_airport_closed INTEGER NOT NULL DEFAULT 0 CHECK (tlv_airport_closed IN (0, 1)),
     calendar_sync_source TEXT NOT NULL DEFAULT 'OFFICIAL_MOE_CIRCULAR' CHECK (calendar_sync_source IN (
         'OFFICIAL_MOE_CIRCULAR',                  -- Pre-seeded or verified MoE Director General Circular
@@ -170,14 +159,13 @@ CREATE TABLE IF NOT EXISTS moe_vacation_windows (
 );
 CREATE INDEX IF NOT EXISTS idx_moe_vacation_year_framework ON moe_vacation_windows(school_year, framework_type, start_date);
 
--- 5. FlightSearchQuery: Captures user search execution across Date Mode (1/2/3) and Airline Mode (1/2)
+-- 5. FlightSearchQuery: Captures user search execution across Date Mode (Specific Dates or Holiday Direct Intent) and Airline Mode (1/2)
 CREATE TABLE IF NOT EXISTS flight_search_queries (
     id TEXT PRIMARY KEY,                          -- UUID v4
     family_profile_id TEXT REFERENCES family_profiles(id) ON DELETE CASCADE,
     date_selection_mode TEXT NOT NULL CHECK (date_selection_mode IN (
-        'SPECIFIC_DATES',                         -- R2 Mode 1: Specific / Flexible Dates
-        'MOE_VACATION_MAXIMIZATION',              -- R2 Mode 2: Around Children's MoE Vacations (Full School-Year Optimizer)
-        'HOLIDAY_DIRECT_INTENT'                   -- R2 Mode 3: Specific Holiday/Vacation + Year Maximizer (e.g. Pesach 2027)
+        'SPECIFIC_DATES',                         -- Mode 1: Specific / Flexible Dates
+        'HOLIDAY_DIRECT_INTENT'                   -- Holiday Mode: Specific Holiday/Vacation + Year Planner (e.g. Pesach 2027)
     )),
     airline_selection_mode TEXT NOT NULL CHECK (airline_selection_mode IN (
         'EL_AL_ONLY',                             -- R3 Mode 1: Focus on El Al (including rbddataclients bonus)
@@ -187,23 +175,22 @@ CREATE TABLE IF NOT EXISTS flight_search_queries (
     include_sundor_flights INTEGER NOT NULL DEFAULT 1 CHECK (include_sundor_flights IN (0, 1)),
     origin_iata TEXT NOT NULL DEFAULT 'TLV',
     destination_iatas_json TEXT NOT NULL,         -- JSON array of IATA/Metro codes or '["ANYWHERE"]'
-    -- Mode 1 (Specific Dates) fields:
+    -- Specific Dates fields:
     specific_departure_date TEXT,                 -- YYYY-MM-DD
     specific_return_date TEXT,                    -- YYYY-MM-DD
     flex_days_plus_minus INTEGER NOT NULL DEFAULT 0 CHECK (flex_days_plus_minus BETWEEN 0 AND 7),
-    -- Mode 2 (MoE Vacation Maximization) fields:
+    -- School-year & holiday filter fields:
     school_year TEXT,                             -- e.g. '2025-2026', '2026-2027', '2027-2028'
     target_holiday_codes_json TEXT,               -- JSON array of holiday_code strings
-    -- Mode 3 (Specific Holiday/Vacation + Year Maximizer) fields:
+    -- Direct Holiday/Vacation + Year fields:
     direct_holiday_code TEXT,                     -- Selected holiday/vacation code: e.g. 'PESACH', 'SUKKOT', 'HANUKKAH', 'ROSH_HASHANAH', 'PURIM', 'SHAVUOT', 'SUMMER_JULY', 'SUMMER_AUGUST'
     direct_target_year INTEGER CHECK (direct_target_year IS NULL OR direct_target_year BETWEEN 2025 AND 2035), -- Selected year: e.g. 2027
     min_trip_nights INTEGER NOT NULL DEFAULT 4 CHECK (min_trip_nights >= 1),
     max_trip_nights INTEGER NOT NULL DEFAULT 10 CHECK (max_trip_nights >= min_trip_nights),
     max_bridge_days_shift INTEGER NOT NULL DEFAULT 3 CHECK (max_bridge_days_shift BETWEEN 0 AND 5),
-    overlap_policy TEXT NOT NULL DEFAULT 'MAXIMIZE_EFFICIENCY_SCORE' CHECK (overlap_policy IN (
+    overlap_policy TEXT NOT NULL DEFAULT 'CAMP_ADJUSTED_INTERSECTION' CHECK (overlap_policy IN (
         'STRICT_ALL_CHILDREN_OFF',
-        'CAMP_ADJUSTED_INTERSECTION',
-        'MAXIMIZE_EFFICIENCY_SCORE'
+        'CAMP_ADJUSTED_INTERSECTION'
     )),
     -- El Al & Multi-Club Bonus Filters:
     preferred_cabins_json TEXT NOT NULL DEFAULT '["ECONOMY","PREMIUM","BUSINESS"]',
@@ -279,7 +266,10 @@ CREATE TABLE IF NOT EXISTS flight_itineraries (
     inbound_legs_json TEXT NOT NULL,              -- JSON array of FlightLeg objects
     outbound_bonus_id TEXT REFERENCES elal_bonus_availability(id),
     inbound_bonus_id TEXT REFERENCES elal_bonus_availability(id),
-    family_ticket_allocation_json TEXT NOT NULL,  -- JSON array of PassengerTicketAllocation objects (with passenger_id & program_code)
+    seated_passengers_count INTEGER NOT NULL DEFAULT 1 CHECK (seated_passengers_count >= 1),
+    bonus_tickets_count INTEGER NOT NULL DEFAULT 0 CHECK (bonus_tickets_count >= 0),
+    cash_tickets_count INTEGER NOT NULL DEFAULT 0 CHECK (cash_tickets_count >= 0),
+    primary_cabin TEXT NOT NULL DEFAULT 'ECONOMY' CHECK (primary_cabin IN ('ECONOMY', 'PREMIUM', 'BUSINESS')),
     points_used_by_wallet_json TEXT NOT NULL DEFAULT '{}', -- JSON map of wallet_id/program_code -> points deducted per passenger
     requires_two_plus_seat_verification INTEGER NOT NULL DEFAULT 0 CHECK (requires_two_plus_seat_verification IN (0, 1)),
     total_matmid_points INTEGER NOT NULL DEFAULT 0 CHECK (total_matmid_points >= 0),
@@ -294,7 +284,7 @@ CREATE TABLE IF NOT EXISTS flight_itineraries (
     booking_deep_link_url TEXT NOT NULL
 );
 
--- 8. VacationOptionProposal: Joins a FlightItinerary with MoE Multi-Child Vacation Maximization Metrics
+-- 8. VacationOptionProposal: Joins a FlightItinerary with MoE Multi-Child School Break Alignment Metrics
 CREATE TABLE IF NOT EXISTS vacation_option_proposals (
     id TEXT PRIMARY KEY,                          -- UUID v4
     search_query_id TEXT NOT NULL REFERENCES flight_search_queries(id) ON DELETE CASCADE,
@@ -306,22 +296,19 @@ CREATE TABLE IF NOT EXISTS vacation_option_proposals (
         'FRAMEWORK_DELTA_UNION',                  -- Set U: Partial framework overlap (e.g. June 20-30 Middle/High off)
         'SPECIFIC_USER_WINDOW'                    -- Mode 1 user-selected dates
     )),
-    total_vacation_days INTEGER NOT NULL CHECK (total_vacation_days >= 1),
-    parent_pto_days_used REAL NOT NULL CHECK (parent_pto_days_used >= 0.0),
-    pto_efficiency_ratio REAL NOT NULL,           -- PER = total_vacation_days / MAX(0.5, parent_pto_days_used)
     school_absence_penalty REAL NOT NULL,         -- SAP weighted school absence penalty across children
     childcare_coverage_gain REAL NOT NULL,        -- CCG fraction of trip covering unsupervised vacation/weekend days
     per_child_impact_json TEXT NOT NULL,          -- JSON array of ChildTripImpact objects
     total_school_days_missed_across_children INTEGER NOT NULL CHECK (total_school_days_missed_across_children >= 0),
     max_single_child_school_days_missed INTEGER NOT NULL CHECK (max_single_child_school_days_missed >= 0),
     -- Explicit Mathematical Scoring Breakdown (0 to 100):
-    vacation_utilization_score REAL NOT NULL CHECK (vacation_utilization_score BETWEEN 0.0 AND 100.0), -- VUS
+    holiday_alignment_score REAL NOT NULL DEFAULT 0.0 CHECK (holiday_alignment_score >= 0.0 AND holiday_alignment_score <= 100.0), -- HAS
     flight_bonus_value_score REAL NOT NULL CHECK (flight_bonus_value_score BETWEEN 0.0 AND 100.0),   -- FBVS
     weather_suitability_score REAL NOT NULL DEFAULT 0.0 CHECK (weather_suitability_score BETWEEN 0.0 AND 100.0), -- WSS
     vacation_type_scores_json TEXT NOT NULL DEFAULT '{}',
     weather_metrics_json TEXT,
     combined_trip_optimization_score REAL NOT NULL CHECK (combined_trip_optimization_score BETWEEN 0.0 AND 100.0), -- CTOS
-    explanation_summary_he TEXT NOT NULL,         -- Hebrew explanation of why this option maximizes vacation + bonus value
+    explanation_summary_he TEXT NOT NULL,         -- Hebrew explanation of school break alignment + bonus value
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_query_rank ON vacation_option_proposals(search_query_id, combined_trip_optimization_score DESC);

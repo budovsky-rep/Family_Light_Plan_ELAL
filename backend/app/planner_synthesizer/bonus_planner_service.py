@@ -19,9 +19,8 @@ Implements Features `F22` through `F28`:
     `ONE_WAY_BONUS_ONE_WAY_CASH` including regional Open-Jaw `TLV->MXP` / `FCO->TLV`,
     `CASH_AND_POINTS` with `<0.8c` low-CPP warning, `MULTI_CLUB_PER_PASSENGER_SPLIT`)
     plus `COMMERCIAL_CASH_ONLY`.
-  - Computes `CPP`, `FBVS` (Bonus & Cash modes), and `CTOS = 0.55 * VUS + 0.45 * FBVS`.
-  - Provides `search_vacations`, `compare_proposals` (`VacationComparisonMatrix`),
-    and RFC 5545 `export_proposal_ics`.
+  - Computes `CPP`, `FBVS` (Bonus & Cash modes), and `CTOS = 0.55 * HAS + 0.45 * FBVS`.
+  - Provides `search_vacations` and `compare_proposals` (`VacationComparisonMatrix`).
 """
 
 from __future__ import annotations
@@ -61,7 +60,6 @@ from backend.app.schemas.domain import (
     FulfillmentStrategy,
     LoyaltyProgramCode,
     PassengerLoyaltyWallet,
-    PassengerTicketAllocation,
     VacationComparisonMatrix,
     VacationOptionProposal,
     classify_passenger_type,
@@ -218,12 +216,17 @@ def _build_passenger_specs(profile: FamilyProfile) -> list[_PassengerSpec]:
             )
         )
 
+    lap_infants_assigned = 0
     for j, child in enumerate(profile.children or [], start=1):
         pid = f"CHILD_{j}"
         age = int(child.child_age_years)
         raw_f_type = str(child.passenger_Current_type or "").upper()
         if age < 2:
-            f_type = "INFANT_SEAT" if raw_f_type == "INFANT_SEAT" else "INFANT_LAP"
+            if raw_f_type != "INFANT_SEAT" and lap_infants_assigned < adults_n:
+                f_type = "INFANT_LAP"
+                lap_infants_assigned += 1
+            else:
+                f_type = "INFANT_SEAT"
         elif age <= 11:
             f_type = "CHILD"
         else:
@@ -327,7 +330,7 @@ def build_elal_google_flights_url(
     dep_date: date,
     ret_date: date,
     passengers: list[_PassengerSpec],
-    allocations: list[PassengerTicketAllocation],
+    primary_cabin: str = "ECONOMY",
 ) -> str:
     """Build a WAF-safe Google Flights search URL pre-filled with verified destination names,
     nonstop filter, exact outbound/return dates, cabin class, and family passenger breakdown
@@ -363,15 +366,11 @@ def build_elal_google_flights_url(
     else:
         pax_phrase = f"{pax_parts[0]}, {pax_parts[1]} and {pax_parts[2]}"
 
-    seated_cabins = [
-        str(a.cabin_class or "ECONOMY").strip().upper()
-        for a in allocations
-        if int(a.points_used or 0) > 0 or float(a.cash_fare_usd or 0.0) > 0 or float(a.taxes_usd or 0.0) > 0
-    ]
+    norm_cabin = str(primary_cabin or "ECONOMY").strip().upper()
     cabin_phrase = ""
-    if seated_cabins and all(c == "BUSINESS" for c in seated_cabins):
+    if norm_cabin == "BUSINESS":
         cabin_phrase = " business class"
-    elif seated_cabins and all(c == "PREMIUM" for c in seated_cabins):
+    elif norm_cabin == "PREMIUM":
         cabin_phrase = " premium economy"
 
     if ret_orig == dest:
@@ -941,60 +940,34 @@ class MultiClubWalletAllocationEngine:
         primary_carrier = outbound_legs[0].operating_carrier if outbound_legs else "LY"
         is_elal = primary_carrier in ("LY", "2U")
 
-        def _append_lap_infant_allocations(
-            allocs: list[PassengerTicketAllocation],
-        ) -> list[PassengerTicketAllocation]:
-            if not lap_infants:
-                return allocs
-            ref_mode = allocs[0].ticket_mode if allocs else "ELAL_MATMID_BONUS"
-            ref_dir = allocs[0].direction if allocs else "ROUND_TRIP"
-            ref_cabin = allocs[0].cabin_class if allocs else "ECONOMY"
-            ref_prog = allocs[0].program_code if allocs else "ELAL_MATMID"
-            for inf in lap_infants:
-                allocs.append(
-                    PassengerTicketAllocation(
-                        passenger_label=inf.passenger_label,
-                        ticket_mode=ref_mode,
-                        direction=ref_dir,
-                        cabin_class=ref_cabin,
-                        rbd_code="INF",
-                        points_used=0,
-                        cash_fare_usd=0.0,
-                        taxes_usd=0.0,
-                        passenger_id=inf.passenger_id,
-                        program_code=ref_prog,
-                        wallet_id=None,
-                    )
-                )
-            return allocs
-
         def _finalize_result(
-            allocs: list[PassengerTicketAllocation],
+            *,
+            bonus_tickets_count: int,
+            cash_tickets_count: int,
+            primary_cabin: str,
+            total_pts: int,
+            total_taxes: float,
+            total_supp: float,
             points_by_wallet: dict[str, int],
             requires_verify: bool,
             utilizes_bonus: bool = True,
             baggage_fees_usd: float = 0.0,
-            override_taxes_usd: Optional[float] = None,
-            override_supp_cash_usd: Optional[float] = None,
         ) -> dict[str, Any]:
-            full_allocs = _append_lap_infant_allocations(list(allocs))
-            total_pts = sum(int(a.points_used) for a in full_allocs)
-            total_taxes = (
-                round(override_taxes_usd, 2)
-                if override_taxes_usd is not None
-                else round(sum(float(a.taxes_usd) for a in full_allocs), 2)
-            )
-            total_supp = (
-                round(override_supp_cash_usd, 2)
-                if override_supp_cash_usd is not None
-                else round(sum(float(a.cash_fare_usd) for a in full_allocs), 2)
-            )
+            clean_pts = int(total_pts)
+            clean_taxes = round(float(total_taxes), 2)
+            clean_supp = round(float(total_supp), 2)
             total_bag = round(float(baggage_fees_usd), 2)
-            total_oop = round(total_taxes + total_supp + total_bag, 2)
+            total_oop = round(clean_taxes + clean_supp + total_bag, 2)
             net_saved = round(full_cash_benchmark_usd - total_oop, 2)
             cpp_val: Optional[float] = None
-            if total_pts > 0:
-                cpp_val = round((net_saved * 100.0) / float(total_pts), 2)
+            if clean_pts > 0:
+                cpp_val = round((net_saved * 100.0) / float(clean_pts), 2)
+
+            norm_cabin = (
+                primary_cabin
+                if primary_cabin in ("ECONOMY", "PREMIUM", "BUSINESS")
+                else "ECONOMY"
+            )
 
             itin = FlightItinerary(
                 id=str(uuid.uuid4()),
@@ -1014,12 +987,15 @@ class MultiClubWalletAllocationEngine:
                 inbound_legs=inbound_legs,
                 outbound_bonus_id=outbound_award.id if (outbound_award and utilizes_bonus) else None,
                 inbound_bonus_id=inbound_award.id if (inbound_award and utilizes_bonus) else None,
-                family_ticket_allocation=full_allocs,
+                seated_passengers_count=n_seated,
+                bonus_tickets_count=int(bonus_tickets_count),
+                cash_tickets_count=int(cash_tickets_count),
+                primary_cabin=norm_cabin,
                 points_used_by_wallet={k: int(v) for k, v in points_by_wallet.items() if int(v) > 0},
                 requires_two_plus_seat_verification=bool(requires_verify),
-                total_matmid_points=total_pts,
-                total_taxes_and_fees_usd=total_taxes,
-                total_supplemental_cash_fares_usd=total_supp,
+                total_matmid_points=clean_pts,
+                total_taxes_and_fees_usd=clean_taxes,
+                total_supplemental_cash_fares_usd=clean_supp,
                 total_baggage_fees_usd=total_bag,
                 total_out_of_pocket_cash_usd=total_oop,
                 full_cash_benchmark_usd=full_cash_benchmark_usd,
@@ -1039,7 +1015,7 @@ class MultiClubWalletAllocationEngine:
                         dep_date=dep_date,
                         ret_date=ret_date,
                         passengers=passengers,
-                        allocations=full_allocs,
+                        primary_cabin=norm_cabin,
                     )
                     if is_elal
                     else None
@@ -1070,32 +1046,17 @@ class MultiClubWalletAllocationEngine:
                 fam_tax = round(rt_tax_per_pax * n_seated, 2)
                 fam_supp = round(max(0.0, (total_with_bag - bag_fee) - fam_tax), 2)
 
-            per_pax_tax = round(fam_tax / n_seated, 2)
-            per_pax_supp = round(fam_supp / n_seated, 2)
-            allocs = [
-                PassengerTicketAllocation(
-                    passenger_label=p.passenger_label,
-                    ticket_mode="COMMERCIAL_CASH",
-                    direction="ROUND_TRIP",
-                    cabin_class="ECONOMY",
-                    rbd_code="Y",
-                    points_used=0,
-                    cash_fare_usd=per_pax_supp,
-                    taxes_usd=per_pax_tax,
-                    passenger_id=p.passenger_id,
-                    program_code=None,
-                    wallet_id=None,
-                )
-                for p in seated_passengers
-            ]
             return _finalize_result(
-                allocs=allocs,
+                bonus_tickets_count=0,
+                cash_tickets_count=n_seated,
+                primary_cabin="ECONOMY",
+                total_pts=0,
+                total_taxes=fam_tax,
+                total_supp=fam_supp,
                 points_by_wallet={},
                 requires_verify=False,
                 utilizes_bonus=False,
                 baggage_fees_usd=bag_fee,
-                override_taxes_usd=fam_tax,
-                override_supp_cash_usd=fam_supp,
             )
 
         # =====================================================================
@@ -1108,7 +1069,7 @@ class MultiClubWalletAllocationEngine:
                 if cabin not in pref_cabins:
                     continue
                 out_s, out_2p, out_rbd, out_pts = _cabin_award_info(outbound_award, cabin)
-                in_s, in_2p, in_rbd, in_pts = _cabin_award_info(inbound_award, cabin)
+                in_s, in_2p, _in_rbd, in_pts = _cabin_award_info(inbound_award, cabin)
                 if out_pts <= 0 or in_pts <= 0:
                     continue
                 if n_seated == 1:
@@ -1125,7 +1086,7 @@ class MultiClubWalletAllocationEngine:
                 rt_pts = out_pts + in_pts
                 wallets = self._prepare_working_wallets(profile, prog_list)
                 pts_by_wallet: dict[str, int] = {}
-                allocs = []
+                funded_cnt = 0
                 feasible = True
                 for p in seated_passengers:
                     slot = _BonusSlot(
@@ -1144,25 +1105,15 @@ class MultiClubWalletAllocationEngine:
                     if funded is None:
                         feasible = False
                         break
-                    prog_used, wid_used = funded
-                    allocs.append(
-                        PassengerTicketAllocation(
-                            passenger_label=p.passenger_label,
-                            ticket_mode="ELAL_MATMID_BONUS",
-                            direction="ROUND_TRIP",
-                            cabin_class=cabin,
-                            rbd_code=out_rbd or in_rbd,
-                            points_used=rt_pts,
-                            cash_fare_usd=0.0,
-                            taxes_usd=rt_tax_per_pax,
-                            passenger_id=p.passenger_id,
-                            program_code=prog_used,
-                            wallet_id=wid_used or None,
-                        )
-                    )
-                if feasible and len(allocs) == n_seated:
+                    funded_cnt += 1
+                if feasible and funded_cnt == n_seated:
                     return _finalize_result(
-                        allocs=allocs,
+                        bonus_tickets_count=n_seated,
+                        cash_tickets_count=0,
+                        primary_cabin=cabin,
+                        total_pts=n_seated * rt_pts,
+                        total_taxes=round(n_seated * rt_tax_per_pax, 2),
+                        total_supp=0.0,
                         points_by_wallet=pts_by_wallet,
                         requires_verify=(n_seated >= 3),
                         utilizes_bonus=True,
@@ -1240,8 +1191,6 @@ class MultiClubWalletAllocationEngine:
             for slots_plan, req_verify in candidate_slot_plans:
                 wallets = self._prepare_working_wallets(profile, prog_list)
                 pts_by_wallet = {}
-                # Pair adults with young children across the split cabins:
-                # Group slots by cabin in order of appearance
                 cabins_in_plan: list[str] = []
                 for s in slots_plan:
                     if s.cabin_class not in cabins_in_plan:
@@ -1251,20 +1200,57 @@ class MultiClubWalletAllocationEngine:
                 under12 = [p for p in seated_passengers if not p.is_adult and p.is_under_12]
                 others = [p for p in seated_passengers if not p.is_adult and not p.is_under_12]
 
-                # Order passengers so Cabin 1 gets ADULT_1 + child(ren) and Cabin 2 gets ADULT_2 + child(ren)
-                slots_in_c1 = sum(1 for s in slots_plan if s.cabin_class == cabins_in_plan[0])
-                ordered_pax: list[_PassengerSpec] = []
-                if len(adults) >= 2 and slots_in_c1 >= 1 and len(slots_plan) > slots_in_c1:
-                    rem_pool = [*under12, *others, *adults[2:]]
-                    c1_fill = rem_pool[: max(0, slots_in_c1 - 1)]
-                    c2_fill = rem_pool[max(0, slots_in_c1 - 1) :]
-                    ordered_pax = [adults[0], *c1_fill, adults[1], *c2_fill]
-                else:
-                    ordered_pax = list(seated_passengers)
+                # Enforce Adult-Child Under-12 cabin/PNR pairing safety across all cabin buckets
+                cabin_slots_map: dict[str, list[_BonusSlot]] = {c: [] for c in cabins_in_plan}
+                for s in slots_plan:
+                    cabin_slots_map[s.cabin_class].append(s)
+                sorted_cabins = sorted(
+                    cabins_in_plan, key=lambda c: len(cabin_slots_map[c]), reverse=True
+                )
+                sorted_caps = [len(cabin_slots_map[c]) for c in sorted_cabins]
 
-                allocs = []
+                if under12:
+                    max_adult_buckets = min(len(adults), len(sorted_caps))
+                    valid_k: Optional[int] = None
+                    for k_u in range(1, max_adult_buckets + 1):
+                        if k_u + len(under12) <= sum(sorted_caps[:k_u]):
+                            valid_k = k_u
+                            break
+                    if valid_k is None:
+                        continue
+                else:
+                    valid_k = min(len(adults), len(sorted_caps))
+
+                ordered_slots: list[_BonusSlot] = []
+                ordered_pax: list[_PassengerSpec] = []
+                rem_under12 = list(under12)
+                rem_others = [*others, *adults[valid_k:]]
+                for idx_c, cab_name in enumerate(sorted_cabins):
+                    c_slots = cabin_slots_map[cab_name]
+                    ordered_slots.extend(c_slots)
+                    cap_c = len(c_slots)
+                    if idx_c < valid_k and cap_c >= 1:
+                        ordered_pax.append(adults[idx_c])
+                        rem_cap = cap_c - 1
+                        take_u12 = rem_under12[:rem_cap]
+                        rem_under12 = rem_under12[rem_cap:]
+                        ordered_pax.extend(take_u12)
+                        rem_cap -= len(take_u12)
+                        if rem_cap > 0:
+                            take_oth = rem_others[:rem_cap]
+                            rem_others = rem_others[rem_cap:]
+                            ordered_pax.extend(take_oth)
+                    else:
+                        take_oth = rem_others[:cap_c]
+                        rem_others = rem_others[cap_c:]
+                        ordered_pax.extend(take_oth)
+
+                if rem_under12 or len(ordered_pax) != n_seated:
+                    continue
+
                 feasible = True
-                for p, slot in zip(ordered_pax, slots_plan):
+                funded_cnt = 0
+                for p, slot in zip(ordered_pax, ordered_slots):
                     funded = self._fund_single_slot(
                         slot=slot,
                         passenger=p,
@@ -1275,25 +1261,15 @@ class MultiClubWalletAllocationEngine:
                     if funded is None:
                         feasible = False
                         break
-                    prog_used, wid_used = funded
-                    allocs.append(
-                        PassengerTicketAllocation(
-                            passenger_label=p.passenger_label,
-                            ticket_mode="ELAL_MATMID_BONUS",
-                            direction="ROUND_TRIP",
-                            cabin_class=slot.cabin_class,
-                            rbd_code=slot.rbd_code,
-                            points_used=slot.points_cost,
-                            cash_fare_usd=0.0,
-                            taxes_usd=slot.taxes_usd,
-                            passenger_id=p.passenger_id,
-                            program_code=prog_used,
-                            wallet_id=wid_used or None,
-                        )
-                    )
-                if feasible and len(allocs) == n_seated:
+                    funded_cnt += 1
+                if feasible and funded_cnt == n_seated:
                     return _finalize_result(
-                        allocs=allocs,
+                        bonus_tickets_count=n_seated,
+                        cash_tickets_count=0,
+                        primary_cabin="ECONOMY",
+                        total_pts=sum(s.points_cost for s in ordered_slots),
+                        total_taxes=round(sum(s.taxes_usd for s in ordered_slots), 2),
+                        total_supp=0.0,
                         points_by_wallet=pts_by_wallet,
                         requires_verify=req_verify,
                         utilizes_bonus=True,
@@ -1347,9 +1323,9 @@ class MultiClubWalletAllocationEngine:
                 bonus_pax, cash_pax = partition
                 wallets = self._prepare_working_wallets(profile, prog_list)
                 pts_by_wallet = {}
-                allocs = []
                 feasible = True
-                for p, slot in zip(bonus_pax, avail_slots[:k_try]):
+                used_slots = avail_slots[:k_try]
+                for p, slot in zip(bonus_pax, used_slots):
                     funded = self._fund_single_slot(
                         slot=slot,
                         passenger=p,
@@ -1360,44 +1336,16 @@ class MultiClubWalletAllocationEngine:
                     if funded is None:
                         feasible = False
                         break
-                    prog_used, wid_used = funded
-                    allocs.append(
-                        PassengerTicketAllocation(
-                            passenger_label=p.passenger_label,
-                            ticket_mode="ELAL_MATMID_BONUS",
-                            direction="ROUND_TRIP",
-                            cabin_class=slot.cabin_class,
-                            rbd_code=slot.rbd_code,
-                            points_used=slot.points_cost,
-                            cash_fare_usd=0.0,
-                            taxes_usd=slot.taxes_usd,
-                            passenger_id=p.passenger_id,
-                            program_code=prog_used,
-                            wallet_id=wid_used or None,
-                        )
-                    )
                 if not feasible:
                     continue
 
-                for cp in cash_pax:
-                    allocs.append(
-                        PassengerTicketAllocation(
-                            passenger_label=cp.passenger_label,
-                            ticket_mode="COMMERCIAL_CASH",
-                            direction="ROUND_TRIP",
-                            cabin_class="ECONOMY",
-                            rbd_code="Y",
-                            points_used=0,
-                            cash_fare_usd=supp_cash_per_pax,
-                            taxes_usd=0.0,
-                            passenger_id=cp.passenger_id,
-                            program_code=None,
-                            wallet_id=None,
-                        )
-                    )
-
                 return _finalize_result(
-                    allocs=allocs,
+                    bonus_tickets_count=len(bonus_pax),
+                    cash_tickets_count=len(cash_pax),
+                    primary_cabin="ECONOMY",
+                    total_pts=sum(s.points_cost for s in used_slots),
+                    total_taxes=round(sum(s.taxes_usd for s in used_slots), 2),
+                    total_supp=round(len(cash_pax) * supp_cash_per_pax, 2),
                     points_by_wallet=pts_by_wallet,
                     requires_verify=False,
                     utilizes_bonus=True,
@@ -1419,13 +1367,11 @@ class MultiClubWalletAllocationEngine:
             )
             if is_open_jaw:
                 assert outbound_award is not None and inbound_award is not None
-                out_s, _, out_rbd, out_pts = _cabin_award_info(outbound_award, "ECONOMY")
+                out_s, _, _out_rbd, out_pts = _cabin_award_info(outbound_award, "ECONOMY")
                 in_s, _, _in_rbd, in_pts = _cabin_award_info(inbound_award, "ECONOMY")
                 if out_s >= 1 and in_s >= 1 and out_pts > 0 and in_pts > 0:
                     wallets = self._prepare_working_wallets(profile, prog_list)
                     pts_by_wallet = {}
-                    allocs = []
-                    # Allocate as many RT open-jaw bonus seats as available, plus cash/OW for remainder
                     oj_slots: list[_BonusSlot] = []
                     for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
                         if cab not in pref_cabins:
@@ -1445,7 +1391,8 @@ class MultiClubWalletAllocationEngine:
                     if partition is not None and k_oj >= 1:
                         b_pax, c_pax = partition
                         feasible = True
-                        for p, slot in zip(b_pax, oj_slots[:k_oj]):
+                        used_oj_slots = oj_slots[:k_oj]
+                        for p, slot in zip(b_pax, used_oj_slots):
                             funded = self._fund_single_slot(
                                 slot=slot,
                                 passenger=p,
@@ -1455,41 +1402,18 @@ class MultiClubWalletAllocationEngine:
                             if funded is None:
                                 feasible = False
                                 break
-                            prog_used, wid_used = funded
-                            allocs.append(
-                                PassengerTicketAllocation(
-                                    passenger_label=p.passenger_label,
-                                    ticket_mode="ELAL_MATMID_BONUS",
-                                    direction="OPEN_JAW_ROUND_TRIP",
-                                    cabin_class=slot.cabin_class,
-                                    rbd_code=slot.rbd_code,
-                                    points_used=slot.points_cost,
-                                    cash_fare_usd=0.0,
-                                    taxes_usd=slot.taxes_usd,
-                                    passenger_id=p.passenger_id,
-                                    program_code=prog_used,
-                                    wallet_id=wid_used or None,
-                                )
-                            )
                         if feasible:
-                            for cp in c_pax:
-                                allocs.append(
-                                    PassengerTicketAllocation(
-                                        passenger_label=cp.passenger_label,
-                                        ticket_mode="COMMERCIAL_CASH",
-                                        direction="OPEN_JAW_ROUND_TRIP",
-                                        cabin_class="ECONOMY",
-                                        rbd_code="Y",
-                                        points_used=0,
-                                        cash_fare_usd=supp_cash_per_pax,
-                                        taxes_usd=0.0,
-                                        passenger_id=cp.passenger_id,
-                                        program_code=None,
-                                        wallet_id=None,
-                                    )
-                                )
+                            cab_set = {s.cabin_class for s in used_oj_slots}
+                            if c_pax:
+                                cab_set.add("ECONOMY")
+                            prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
                             return _finalize_result(
-                                allocs=allocs,
+                                bonus_tickets_count=len(b_pax),
+                                cash_tickets_count=len(c_pax),
+                                primary_cabin=prim_cab,
+                                total_pts=sum(s.points_cost for s in used_oj_slots),
+                                total_taxes=round(sum(s.taxes_usd for s in used_oj_slots), 2),
+                                total_supp=round(len(c_pax) * supp_cash_per_pax, 2),
                                 points_by_wallet=pts_by_wallet,
                                 requires_verify=False,
                                 utilizes_bonus=True,
@@ -1530,8 +1454,8 @@ class MultiClubWalletAllocationEngine:
             ow_cash_per_pax = round(0.45 * bench_per_pax, 2)
             wallets = self._prepare_working_wallets(profile, prog_list)
             pts_by_wallet = {}
-            allocs = []
-            funded_any = False
+            funded_ow_cnt = 0
+            cash_ow_cnt = 0
 
             for p in seated_passengers:
                 slot = _BonusSlot(
@@ -1548,45 +1472,22 @@ class MultiClubWalletAllocationEngine:
                     points_used_by_wallet=pts_by_wallet,
                 )
                 if funded is not None:
-                    funded_any = True
-                    prog_used, wid_used = funded
-                    allocs.append(
-                        PassengerTicketAllocation(
-                            passenger_label=p.passenger_label,
-                            ticket_mode="ONE_WAY_BONUS_PLUS_ONE_WAY_CASH",
-                            direction=best_dir,
-                            cabin_class=chosen_cabin,
-                            rbd_code=chosen_rbd,
-                            points_used=chosen_ow_pts,
-                            cash_fare_usd=ow_cash_per_pax,
-                            taxes_usd=chosen_ow_tax,
-                            passenger_id=p.passenger_id,
-                            program_code=prog_used,
-                            wallet_id=wid_used or None,
-                        )
-                    )
+                    funded_ow_cnt += 1
                 else:
-                    allocs.append(
-                        PassengerTicketAllocation(
-                            passenger_label=p.passenger_label,
-                            ticket_mode="COMMERCIAL_CASH",
-                            direction="ROUND_TRIP",
-                            cabin_class="ECONOMY",
-                            rbd_code="Y",
-                            points_used=0,
-                            cash_fare_usd=bench_per_pax,
-                            taxes_usd=0.0,
-                            passenger_id=p.passenger_id,
-                            program_code=None,
-                            wallet_id=None,
-                        )
-                    )
+                    cash_ow_cnt += 1
 
-            if not funded_any:
+            if funded_ow_cnt <= 0:
+                return None
+            if cash_ow_cnt > 0 and self._assign_passengers_with_pnr_safety(seated_passengers, funded_ow_cnt) is None:
                 return None
 
             return _finalize_result(
-                allocs=allocs,
+                bonus_tickets_count=funded_ow_cnt,
+                cash_tickets_count=cash_ow_cnt,
+                primary_cabin=chosen_cabin if cash_ow_cnt == 0 else "ECONOMY",
+                total_pts=funded_ow_cnt * chosen_ow_pts,
+                total_taxes=round(funded_ow_cnt * chosen_ow_tax, 2),
+                total_supp=round(funded_ow_cnt * ow_cash_per_pax + cash_ow_cnt * bench_per_pax, 2),
                 points_by_wallet=pts_by_wallet,
                 requires_verify=(n_seated >= 3 and chosen_award.economy_award_seats == 2),
                 utilizes_bonus=True,
@@ -1611,7 +1512,6 @@ class MultiClubWalletAllocationEngine:
             cpp_rate_usd = 0.0072
             max_pts_by_fare = int(math.floor((0.45 * full_cash_benchmark_usd) / cpp_rate_usd))
             target_total_pts = min(total_avail_pts, n_seated * 15000, max(5000, max_pts_by_fare))
-            # Round down to a clean multiple of n_seated where possible
             if target_total_pts >= n_seated:
                 target_total_pts = (target_total_pts // n_seated) * n_seated
             if target_total_pts <= 0:
@@ -1643,36 +1543,16 @@ class MultiClubWalletAllocationEngine:
             total_oop = round(max(total_taxes, full_cash_benchmark_usd - discount_usd), 2)
             total_supp = round(max(0.0, total_oop - total_taxes), 2)
 
-            pts_per_pax = actual_airline_pts // n_seated
-            pts_rem = actual_airline_pts - (pts_per_pax * n_seated)
-            supp_per_pax = round(total_supp / n_seated, 2)
-
-            allocs = []
-            for idx, p in enumerate(seated_passengers):
-                p_pts = pts_per_pax + (pts_rem if idx == 0 else 0)
-                allocs.append(
-                    PassengerTicketAllocation(
-                        passenger_label=p.passenger_label,
-                        ticket_mode="ELAL_CASH_AND_POINTS",
-                        direction="ROUND_TRIP",
-                        cabin_class="ECONOMY",
-                        rbd_code="Y",
-                        points_used=p_pts,
-                        cash_fare_usd=supp_per_pax,
-                        taxes_usd=rt_tax_per_pax,
-                        passenger_id=p.passenger_id,
-                        program_code="ELAL_MATMID",
-                        wallet_id=elal_wallets[0].wallet_id if elal_wallets else None,
-                    )
-                )
-
             return _finalize_result(
-                allocs=allocs,
+                bonus_tickets_count=n_seated,
+                cash_tickets_count=0,
+                primary_cabin="ECONOMY",
+                total_pts=actual_airline_pts,
+                total_taxes=total_taxes,
+                total_supp=total_supp,
                 points_by_wallet=pts_by_wallet,
                 requires_verify=False,
                 utilizes_bonus=True,
-                override_taxes_usd=total_taxes,
-                override_supp_cash_usd=total_supp,
             )
 
         # =====================================================================
@@ -1708,8 +1588,6 @@ class MultiClubWalletAllocationEngine:
                             _BonusSlot(cab, out_rbd, out_pts + in_pts, rt_tax_per_pax)
                         )
 
-                # If more seated passengers remain, partner airline clubs enabled in `prog_list`
-                # can fulfill additional round-trip slots at `rt_econ_pts`
                 partner_wallets = [
                     w for w in wallets if w.program_code in PARTNER_AIRLINE_PROGRAMS
                 ]
@@ -1727,7 +1605,6 @@ class MultiClubWalletAllocationEngine:
                             )
                         )
 
-                # Determine how many full RT slots can be funded
                 test_wallets = self._prepare_working_wallets(profile, prog_list)
                 test_used: dict[str, int] = {}
                 funded_rt_count = 0
@@ -1756,8 +1633,8 @@ class MultiClubWalletAllocationEngine:
                         return None
                     bonus_pax, cash_pax = partition
                     pts_by_wallet = {}
-                    allocs = []
-                    for p, slot in zip(bonus_pax, mc_slots[:funded_rt_count]):
+                    used_mc_slots = mc_slots[:funded_rt_count]
+                    for p, slot in zip(bonus_pax, used_mc_slots):
                         funded = self._fund_single_slot(
                             slot=slot,
                             passenger=p,
@@ -1768,45 +1645,17 @@ class MultiClubWalletAllocationEngine:
                         )
                         if funded is None:
                             return None
-                        prog_used, wid_used = funded
-                        t_mode = (
-                            "ELAL_MATMID_BONUS"
-                            if prog_used == "ELAL_MATMID"
-                            else f"MULTI_CLUB_{prog_used}_BONUS"
-                        )
-                        allocs.append(
-                            PassengerTicketAllocation(
-                                passenger_label=p.passenger_label,
-                                ticket_mode=t_mode,
-                                direction="ROUND_TRIP",
-                                cabin_class=slot.cabin_class,
-                                rbd_code=slot.rbd_code,
-                                points_used=slot.points_cost,
-                                cash_fare_usd=0.0,
-                                taxes_usd=slot.taxes_usd,
-                                passenger_id=p.passenger_id,
-                                program_code=prog_used,
-                                wallet_id=wid_used or None,
-                            )
-                        )
-                    for cp in cash_pax:
-                        allocs.append(
-                            PassengerTicketAllocation(
-                                passenger_label=cp.passenger_label,
-                                ticket_mode="COMMERCIAL_CASH",
-                                direction="ROUND_TRIP",
-                                cabin_class="ECONOMY",
-                                rbd_code="Y",
-                                points_used=0,
-                                cash_fare_usd=supp_cash_per_pax,
-                                taxes_usd=0.0,
-                                passenger_id=cp.passenger_id,
-                                program_code=None,
-                                wallet_id=None,
-                            )
-                        )
+                    cab_set = {s.cabin_class for s in used_mc_slots}
+                    if cash_pax:
+                        cab_set.add("ECONOMY")
+                    prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
                     return _finalize_result(
-                        allocs=allocs,
+                        bonus_tickets_count=len(bonus_pax),
+                        cash_tickets_count=len(cash_pax),
+                        primary_cabin=prim_cab,
+                        total_pts=sum(s.points_cost for s in used_mc_slots),
+                        total_taxes=round(sum(s.taxes_usd for s in used_mc_slots), 2),
+                        total_supp=round(len(cash_pax) * supp_cash_per_pax, 2),
                         points_by_wallet=pts_by_wallet,
                         requires_verify=False,
                         utilizes_bonus=True,
@@ -1815,9 +1664,9 @@ class MultiClubWalletAllocationEngine:
                 # Fallback for un-pooled wallets that cannot cover a full RT (`30,000` pts)
                 # but CAN cover an entire One-Way leg (`15,000 <= 25,000` pts, `test_f27_01`):
                 pts_by_wallet = {}
-                allocs = []
                 ow_cash_per_pax = round(0.45 * bench_per_pax, 2)
-                any_ow_funded = False
+                funded_ow_cnt = 0
+                cash_ow_cnt = 0
                 for p in seated_passengers:
                     ow_slot = _BonusSlot(
                         cabin_class="ECONOMY",
@@ -1835,42 +1684,19 @@ class MultiClubWalletAllocationEngine:
                         prefer_multi_wallet_split=True,
                     )
                     if funded is not None:
-                        any_ow_funded = True
-                        prog_used, wid_used = funded
-                        allocs.append(
-                            PassengerTicketAllocation(
-                                passenger_label=p.passenger_label,
-                                ticket_mode="ONE_WAY_BONUS_PLUS_ONE_WAY_CASH",
-                                direction="OUTBOUND_ONLY",
-                                cabin_class="ECONOMY",
-                                rbd_code=econ_rbd,
-                                points_used=ow_econ_pts,
-                                cash_fare_usd=ow_cash_per_pax,
-                                taxes_usd=round(out_tax_per_pax, 2),
-                                passenger_id=p.passenger_id,
-                                program_code=prog_used,
-                                wallet_id=wid_used or None,
-                            )
-                        )
+                        funded_ow_cnt += 1
                     else:
-                        allocs.append(
-                            PassengerTicketAllocation(
-                                passenger_label=p.passenger_label,
-                                ticket_mode="COMMERCIAL_CASH",
-                                direction="ROUND_TRIP",
-                                cabin_class="ECONOMY",
-                                rbd_code="Y",
-                                points_used=0,
-                                cash_fare_usd=bench_per_pax,
-                                taxes_usd=0.0,
-                                passenger_id=p.passenger_id,
-                                program_code=None,
-                                wallet_id=None,
-                            )
-                        )
-                if any_ow_funded:
+                        cash_ow_cnt += 1
+                if funded_ow_cnt > 0:
+                    if cash_ow_cnt > 0 and self._assign_passengers_with_pnr_safety(seated_passengers, funded_ow_cnt) is None:
+                        return None
                     return _finalize_result(
-                        allocs=allocs,
+                        bonus_tickets_count=funded_ow_cnt,
+                        cash_tickets_count=cash_ow_cnt,
+                        primary_cabin="ECONOMY",
+                        total_pts=funded_ow_cnt * ow_econ_pts,
+                        total_taxes=round(funded_ow_cnt * round(out_tax_per_pax, 2), 2),
+                        total_supp=round(funded_ow_cnt * ow_cash_per_pax + cash_ow_cnt * bench_per_pax, 2),
                         points_by_wallet=pts_by_wallet,
                         requires_verify=False,
                         utilizes_bonus=True,
@@ -1904,9 +1730,6 @@ class BonusVacationPlannerService:
             self._settings.get(
                 "optimization_weights",
                 {
-                    "vus_alpha_per": 0.60,
-                    "vus_beta_ccg": 0.40,
-                    "vus_gamma_sap": 0.35,
                     "ctos_calendar_weight": 0.55,
                     "ctos_flight_weight": 0.45,
                 },
@@ -2028,12 +1851,7 @@ class BonusVacationPlannerService:
         n_seated: int,
     ) -> float:
         """Compute Flight Bonus Value Score (`FBVS_bonus` in `[0.0, 100.0]`)."""
-        bonus_allocs = [
-            a
-            for a in itinerary.family_ticket_allocation
-            if a.ticket_mode != "COMMERCIAL_CASH" and int(a.points_used) > 0
-        ]
-        n_bonus = len(bonus_allocs)
+        n_bonus = int(itinerary.bonus_tickets_count)
         strat = (
             itinerary.fulfillment_strategy.value
             if isinstance(itinerary.fulfillment_strategy, Enum)
@@ -2073,14 +1891,14 @@ class BonusVacationPlannerService:
         if itinerary.requires_two_plus_seat_verification:
             raw_score -= 4.0
         # Slight penalty when low-CPP (<0.8c) Cash & Points is used
-        if cpp > 0.0 and cpp < 0.80:
+        if itinerary.total_matmid_points > 0 and cpp < 0.80:
             raw_score = min(raw_score, 62.0)
 
         return round(min(100.0, max(0.0, raw_score)), 1)
 
     def _compute_ctos(
         self,
-        vus: float,
+        has_score: float,
         fbvs: float,
         wss: Optional[float] = None,
         has_weather_filter: bool = False,
@@ -2088,20 +1906,20 @@ class BonusVacationPlannerService:
     ) -> float:
         """Compute Combined Trip Optimization Score (`CTOS`).
 
-        - Unfiltered (`has_weather_filter=False`): `CTOS = round(0.55 * VUS + 0.45 * FBVS, 1)`.
+        - Unfiltered (`has_weather_filter=False`): `CTOS = round(0.55 * HAS + 0.45 * FBVS, 1)`.
         - Filtered by vacation type (`has_weather_filter=True`):
-          `CTOS = round(clamp(0.35 * WSS + 0.35 * VUS + 0.30 * FBVS - 0.50 * max(0, tau_t - WSS), 0, 100), 1)`.
+          `CTOS = round(clamp(0.35 * WSS + 0.35 * HAS + 0.30 * FBVS - 0.50 * max(0, tau_t - WSS), 0, 100), 1)`.
         """
         if not has_weather_filter or wss is None:
             w_cal = float(self._weights.get("ctos_calendar_weight", 0.55))
             w_flt = float(self._weights.get("ctos_flight_weight", 0.45))
-            return round(min(100.0, max(0.0, w_cal * float(vus) + w_flt * float(fbvs))), 1)
+            return round(min(100.0, max(0.0, w_cal * float(has_score) + w_flt * float(fbvs))), 1)
 
         w_wea = float(self._weights.get("ctos_filtered_weather_weight", 0.35))
         w_cal_f = float(self._weights.get("ctos_filtered_calendar_weight", 0.35))
         w_flt_f = float(self._weights.get("ctos_filtered_flight_weight", 0.30))
         pen_factor = float(self._weights.get("ctos_sub_threshold_penalty_factor", 0.50))
-        base_ctos = w_wea * float(wss) + w_cal_f * float(vus) + w_flt_f * float(fbvs)
+        base_ctos = w_wea * float(wss) + w_cal_f * float(has_score) + w_flt_f * float(fbvs)
         penalty = pen_factor * max(0.0, float(min_weather_threshold) - float(wss))
         return round(min(100.0, max(0.0, base_ctos - penalty)), 1)
 
@@ -2139,12 +1957,12 @@ class BonusVacationPlannerService:
         return (
             f"{itinerary.destination_city_he} ({itinerary.destination_iata}) | "
             f"{window.start_date.isoformat()} עד {window.end_date.isoformat()} "
-            f"({itinerary.trip_nights} לילות / {window.total_vacation_days} ימים) | "
+            f"({itinerary.trip_nights} לילות) | "
             f"אסטרטגיה: {strat}{open_jaw_note} | "
             f"נקודות: {itinerary.total_matmid_points:,} | "
-            f"תשלום במזומן: ${itinerary.total_out_of_pocket_cash_usd:,.2f} "
-            f"(חיסכון נטו: ${itinerary.net_cash_saved_usd:,.2f}) | "
-            f"ציונים: VUS={window.vacation_utilization_score}, FBVS={fbvs}{weather_note}, CTOS={ctos}"
+            f"הערכת תשלום במזומן (לא מחייב): ~${itinerary.total_out_of_pocket_cash_usd:,.2f} "
+            f"(חיסכון משוער: ~${itinerary.net_cash_saved_usd:,.2f}) | "
+            f"ציונים: התאמת חופשת בי״ס={window.holiday_alignment_score:.1f}/100, FBVS={fbvs}{weather_note}, CTOS={ctos}"
             f"{low_cpp_warn}{weather_tail}"
         )
 
@@ -2504,7 +2322,7 @@ class BonusVacationPlannerService:
                 seen_pairs.add(pair)
                 selected.append(w)
 
-        # 2. Fill with top-ranked windows by VUS
+        # 2. Fill with top-ranked windows by HAS
         max_windows = 8 if len(expanded_destinations) <= 3 else (4 if len(expanded_destinations) <= 6 else 2)
         for w in all_windows:
             if len(selected) >= max_windows:
@@ -3012,7 +2830,7 @@ class BonusVacationPlannerService:
                 )
                 p.flight_bonus_value_score = fbvs_c
                 p.combined_trip_optimization_score = self._compute_ctos(
-                    p.vacation_utilization_score,
+                    p.holiday_alignment_score,
                     fbvs_c,
                     wss=p.weather_suitability_score,
                     has_weather_filter=has_weather_filter,
@@ -3022,15 +2840,12 @@ class BonusVacationPlannerService:
                     window=CandidateVacationWindow(
                         start_date=p.itinerary.departure_date,
                         end_date=p.itinerary.return_date,
-                        total_vacation_days=p.total_vacation_days,
                         trip_nights=p.itinerary.trip_nights,
                         window_set_type=p.window_set_type,
                         associated_holiday_codes=p.associated_holiday_codes,
-                        parent_pto_days_used=p.parent_pto_days_used,
-                        pto_efficiency_ratio=p.pto_efficiency_ratio,
                         school_absence_penalty=p.school_absence_penalty,
                         childcare_coverage_gain=p.childcare_coverage_gain,
-                        vacation_utilization_score=p.vacation_utilization_score,
+                        holiday_alignment_score=p.holiday_alignment_score,
                     ),
                     itinerary=p.itinerary,
                     fbvs=fbvs_c,
@@ -3077,13 +2892,13 @@ class BonusVacationPlannerService:
                     p.combined_trip_optimization_score,
                     p.weather_suitability_score,
                     p.flight_bonus_value_score,
-                    p.vacation_utilization_score,
+                    p.holiday_alignment_score,
                     p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
                 )
             return (
                 p.combined_trip_optimization_score,
                 p.flight_bonus_value_score,
-                p.vacation_utilization_score,
+                p.holiday_alignment_score,
                 p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
             )
 
@@ -3183,7 +2998,7 @@ class BonusVacationPlannerService:
         )
 
         ctos = self._compute_ctos(
-            window.vacation_utilization_score,
+            window.holiday_alignment_score,
             fbvs,
             wss=wss,
             has_weather_filter=has_weather_filter,
@@ -3204,15 +3019,12 @@ class BonusVacationPlannerService:
             itinerary_id=itinerary.id,
             associated_holiday_codes=list(window.associated_holiday_codes),
             window_set_type=window.window_set_type,
-            total_vacation_days=window.total_vacation_days,
-            parent_pto_days_used=window.parent_pto_days_used,
-            pto_efficiency_ratio=window.pto_efficiency_ratio,
             school_absence_penalty=window.school_absence_penalty,
             childcare_coverage_gain=window.childcare_coverage_gain,
             per_child_impact=list(window.per_child_impact),
             total_school_days_missed_across_children=window.total_school_days_missed_across_children,
             max_single_child_school_days_missed=window.max_single_child_school_days_missed,
-            vacation_utilization_score=window.vacation_utilization_score,
+            holiday_alignment_score=window.holiday_alignment_score,
             flight_bonus_value_score=fbvs,
             weather_suitability_score=wss,
             vacation_type_scores=vtype_scores,
@@ -3261,7 +3073,7 @@ class BonusVacationPlannerService:
             proposals,
             key=lambda p: (
                 p.combined_trip_optimization_score,
-                p.vacation_utilization_score,
+                p.holiday_alignment_score,
                 p.flight_bonus_value_score,
             ),
         )
@@ -3270,14 +3082,6 @@ class BonusVacationPlannerService:
             key=lambda p: (
                 p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
                 -(p.itinerary.total_out_of_pocket_cash_usd if p.itinerary else 999999.0),
-            ),
-        )
-        best_by_per = max(
-            proposals,
-            key=lambda p: (
-                p.pto_efficiency_ratio,
-                -p.parent_pto_days_used,
-                p.total_vacation_days,
             ),
         )
         best_by_absence = min(
@@ -3326,9 +3130,9 @@ class BonusVacationPlannerService:
                 "Dates & Duration",
                 lambda p: (
                     f"{p.itinerary.departure_date.isoformat()} -> {p.itinerary.return_date.isoformat()} "
-                    f"({p.itinerary.trip_nights} לילות / {p.total_vacation_days} ימים)"
+                    f"({p.itinerary.trip_nights} לילות)"
                     if p.itinerary
-                    else f"{p.total_vacation_days} ימים"
+                    else ""
                 ),
             ),
             _row(
@@ -3363,30 +3167,29 @@ class BonusVacationPlannerService:
             ),
             _row(
                 "out_of_pocket_cash_usd",
-                "תשלום במזומן (כולל מסים וכבודה)",
-                "Out-of-Pocket Cash (USD)",
-                lambda p: p.itinerary.total_out_of_pocket_cash_usd if p.itinerary else 0.0,
+                "הערכת תשלום במזומן (כולל מסים וכבודה, לא מחייב)",
+                "Estimated Cash Price (USD, non-binding)",
+                lambda p: (
+                    f"~${p.itinerary.total_out_of_pocket_cash_usd:,.2f}"
+                    if p.itinerary
+                    else "~$0.00"
+                ),
             ),
             _row(
                 "net_cash_saved_usd",
-                "חיסכון נטו במזומן מול מחיר מלא",
-                "Net Cash Saved (USD)",
-                lambda p: p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
+                "חיסכון משוער מול הערכת מחיר מלא",
+                "Estimated Net Cash Saved (USD)",
+                lambda p: (
+                    f"~${p.itinerary.net_cash_saved_usd:,.2f}"
+                    if p.itinerary
+                    else "~$0.00"
+                ),
             ),
             _row(
                 "cents_per_point",
-                "שווי נקודה (CPP בסנט)",
-                "Cents Per Point (CPP)",
+                "שווי נקודה משוער במימוש זה (CPP בסנט)",
+                "Estimated Point Value (CPP, cents)",
                 lambda p: p.itinerary.cents_per_point_value if p.itinerary else None,
-            ),
-            _row(
-                "parent_pto_and_per",
-                "ימי חופש הורים ומכפיל יעילות (PER)",
-                "Parent PTO & PER",
-                lambda p: {
-                    "parent_pto_days_used": p.parent_pto_days_used,
-                    "pto_efficiency_ratio": p.pto_efficiency_ratio,
-                },
             ),
             _row(
                 "school_days_missed",
@@ -3414,10 +3217,10 @@ class BonusVacationPlannerService:
             ),
             _row(
                 "scores",
-                "ציוני אופטימיזציה (VUS / FBVS / WSS / CTOS)",
+                "ציוני אופטימיזציה (HAS / FBVS / WSS / CTOS)",
                 "Optimization Scores",
                 lambda p: {
-                    "VUS": p.vacation_utilization_score,
+                    "HAS": p.holiday_alignment_score,
                     "FBVS": p.flight_bonus_value_score,
                     "WSS": p.weather_suitability_score,
                     "CTOS": p.combined_trip_optimization_score,
@@ -3430,149 +3233,7 @@ class BonusVacationPlannerService:
             comparison_rows=comparison_rows,
             best_by_ctos_id=best_by_ctos.id,
             best_by_cash_savings_id=best_by_savings.id,
-            best_by_per_id=best_by_per.id,
             best_by_minimal_absence_id=best_by_absence.id,
             best_by_weather_id=best_by_weather.id,
         )
         return matrix.to_dict()
-
-    def export_proposal_ics(
-        self,
-        proposal_id: str | VacationOptionProposal | dict[str, Any],
-        *,
-        requester_user_id: Optional[str] = None,
-        enforce_owner: bool = False,
-    ) -> str:
-        """Export a `VacationOptionProposal` as an RFC 5545 iCalendar (`.ics`) document (`F28`)."""
-        if isinstance(proposal_id, VacationOptionProposal):
-            prop = proposal_id
-        elif isinstance(proposal_id, dict):
-            prop = VacationOptionProposal.from_dict(proposal_id)
-        else:
-            loaded = self.resolve_proposal_for_requester(
-                str(proposal_id),
-                requester_user_id=requester_user_id,
-                enforce_owner=enforce_owner,
-            )
-            if loaded is None:
-                raise ValueError(f"VacationOptionProposal not found: {proposal_id!r}")
-            prop = loaded
-
-        itin = prop.itinerary
-        now_stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        dep_date = itin.departure_date if itin else date(2027, 4, 11)
-        ret_date = itin.return_date if itin else date(2027, 4, 18)
-        dest_he = itin.destination_city_he if itin else "חופשה"
-        dest_en = itin.destination_city_en if itin else "Rome"
-        dest_iata = itin.destination_iata if itin else "FCO"
-        orig_iata = itin.origin_iata if itin else "TLV"
-        ret_orig_iata = itin.return_origin_iata if itin else dest_iata
-
-        def _fmt_dt(d: date, hhmm: str) -> str:
-            parts = str(hhmm or "08:00").strip().split(":")
-            hh = int(parts[0]) if parts and parts[0].isdigit() else 8
-            mm = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-            return f"{d.strftime('%Y%m%d')}T{hh:02d}{mm:02d}00"
-
-        lines: list[str] = [
-            "BEGIN:VCALENDAR",
-            "VERSION:2.0",
-            "PRODID:-//FamilyVacationPlanner//MoE-ElAl-Bonus-Planner//HE",
-            "CALSCALE:GREGORIAN",
-            "METHOD:PUBLISH",
-            f"X-WR-CALNAME:חופשה משפחתית - {dest_he} ({dest_en} / {dest_iata})",
-            "X-WR-TIMEZONE:Asia/Jerusalem",
-        ]
-
-        # 1. Outbound Flight VEVENT
-        out_leg = itin.outbound_legs[0] if (itin and itin.outbound_legs) else None
-        out_fnum = out_leg.flight_number if out_leg else "LY381"
-        out_dep_t = out_leg.departure_time_local if out_leg else "07:15"
-        out_arr_t = out_leg.arrival_time_local if out_leg else "10:00"
-        out_arr_date = (
-            dep_date + timedelta(days=1) if out_arr_t < out_dep_t else dep_date
-        )
-        strategy_str = (
-            itin.fulfillment_strategy.value
-            if (itin and isinstance(itin.fulfillment_strategy, Enum))
-            else (str(itin.fulfillment_strategy) if itin else "HYBRID_BONUS_PLUS_CASH")
-        )
-        pts_used = itin.total_matmid_points if itin else 0
-        cash_used = itin.total_out_of_pocket_cash_usd if itin else 0.0
-        saved_usd = itin.net_cash_saved_usd if itin else 0.0
-
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:{prop.id}-outbound@familyvacationplanner.local",
-                f"DTSTAMP:{now_stamp}",
-                f"DTSTART:{_fmt_dt(dep_date, out_dep_t)}",
-                f"DTEND:{_fmt_dt(out_arr_date, out_arr_t)}",
-                f"SUMMARY:טיסת הלוך {out_fnum} ({orig_iata} -> {dest_iata}) - {dest_he} ({dest_en})",
-                f"LOCATION:{orig_iata}",
-                (
-                    f"DESCRIPTION:אסטרטגיה: {strategy_str} | נקודות: {pts_used} | "
-                    f"מזומן: ${cash_used:.2f} | חיסכון: ${saved_usd:.2f}"
-                ),
-                "END:VEVENT",
-            ]
-        )
-
-        # 2. Inbound Flight VEVENT
-        in_leg = itin.inbound_legs[0] if (itin and itin.inbound_legs) else None
-        in_fnum = in_leg.flight_number if in_leg else "LY384"
-        in_dep_t = in_leg.departure_time_local if in_leg else "21:45"
-        in_arr_t = in_leg.arrival_time_local if in_leg else "02:10"
-        in_arr_date = (
-            ret_date + timedelta(days=1) if in_arr_t < in_dep_t else ret_date
-        )
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:{prop.id}-inbound@familyvacationplanner.local",
-                f"DTSTAMP:{now_stamp}",
-                f"DTSTART:{_fmt_dt(ret_date, in_dep_t)}",
-                f"DTEND:{_fmt_dt(in_arr_date, in_arr_t)}",
-                f"SUMMARY:טיסת חזור {in_fnum} ({ret_orig_iata} -> {orig_iata})",
-                f"LOCATION:{ret_orig_iata}",
-                f"DESCRIPTION:טיסת חזור מ{dest_he} ({ret_orig_iata} -> {orig_iata})",
-                "END:VEVENT",
-            ]
-        )
-
-        # 3. MoE Holiday, Nitzanim & Per-Child School Impact VEVENT
-        child_notes = " ; ".join(
-            f"{c.child_name} ({c.framework_type.value if isinstance(c.framework_type, Enum) else (c.framework_type or 'ללא מסגרת')}): "
-            f"חופשה={c.official_vacation_days}, ניצנים={c.nitzanim_days_overlapped}, ימי גשר={c.bridge_school_days_missed}"
-            for c in prop.per_child_impact
-        )
-        holidays_str = ", ".join(prop.associated_holiday_codes) or "SPECIFIC_DATES"
-        exclusive_end = (ret_date + timedelta(days=1)).strftime("%Y%m%d")
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:{prop.id}-moe-calendar@familyvacationplanner.local",
-                f"DTSTAMP:{now_stamp}",
-                f"DTSTART;VALUE=DATE:{dep_date.strftime('%Y%m%d')}",
-                f"DTEND;VALUE=DATE:{exclusive_end}",
-                f"SUMMARY:לוח חופשות משרד החינוך וניצנים - {dest_he} ({holidays_str})",
-                f"DESCRIPTION:VUS={prop.vacation_utilization_score} | SAP={prop.school_absence_penalty} | CCG={prop.childcare_coverage_gain} | {child_notes}",
-                "END:VEVENT",
-            ]
-        )
-
-        # 4. Parent PTO Reminder VEVENT
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:{prop.id}-parent-pto@familyvacationplanner.local",
-                f"DTSTAMP:{now_stamp}",
-                f"DTSTART;VALUE=DATE:{dep_date.strftime('%Y%m%d')}",
-                f"DTEND;VALUE=DATE:{exclusive_end}",
-                f"SUMMARY:תזכורת דיווח חופשה להורים (PTO: {prop.parent_pto_days_used} ימים | PER: {prop.pto_efficiency_ratio}x)",
-                f"DESCRIPTION:סה\"כ {prop.total_vacation_days} ימי חופשה משפחתית תמורת {prop.parent_pto_days_used} ימי חופש הורים (CTOS={prop.combined_trip_optimization_score})",
-                "END:VEVENT",
-                "END:VCALENDAR",
-            ]
-        )
-        return "\r\n".join(lines) + "\r\n"

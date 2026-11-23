@@ -378,7 +378,11 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(full_bonus), 1)
         p5 = full_bonus[0]
-        self.assertEqual(len(p5.itinerary.family_ticket_allocation), 5)
+        self.assertEqual(p5.itinerary.seated_passengers_count, 5)
+        self.assertEqual(p5.itinerary.bonus_tickets_count, 5)
+        self.assertEqual(p5.itinerary.cash_tickets_count, 0)
+        self.assertNotIn("family_ticket_allocation", p5.itinerary.to_dict())
+        self.assertTrue(p5.itinerary.to_dict()["is_cash_price_estimate"])
         self.assertEqual(p5.itinerary.total_supplemental_cash_fares_usd, 0.0)
         self.assertTrue(p5.itinerary.requires_two_plus_seat_verification)
 
@@ -422,11 +426,11 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreaterEqual(len(split_props), 1)
         sp = split_props[0]
         self.assertEqual(sp.itinerary.total_supplemental_cash_fares_usd, 0.0)
-        cabins = {a.cabin_class for a in sp.itinerary.family_ticket_allocation}
-        self.assertGreaterEqual(len(cabins), 2)
-        self.assertTrue(
-            all(a.points_used > 0 and a.cash_fare_usd == 0.0 for a in sp.itinerary.family_ticket_allocation)
-        )
+        self.assertEqual(sp.itinerary.seated_passengers_count, 5)
+        self.assertEqual(sp.itinerary.bonus_tickets_count, 5)
+        self.assertEqual(sp.itinerary.cash_tickets_count, 0)
+        self.assertEqual(sp.itinerary.primary_cabin, "ECONOMY")
+        self.assertGreater(sp.itinerary.total_matmid_points, 0)
 
     def test_syn_01_strategy_3_hybrid_bonus_plus_cash_rome_ly381_ly384_f24(self) -> None:
         """8. Verify `F24` & `TEST-SYN-01` canonical Rome `LY381`/`LY384` `HYBRID_BONUS_PLUS_CASH` math."""
@@ -504,30 +508,33 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(hybrid_props), 1)
         for prop in hybrid_props:
-            allocs = prop.itinerary.family_ticket_allocation
-            cash_allocs = [a for a in allocs if a.cash_fare_usd > 0 and a.points_used == 0]
-            award_allocs = [a for a in allocs if a.points_used > 0]
-            for group in (cash_allocs, award_allocs):
-                if not group:
-                    continue
-                has_under_12 = any(
-                    (a.passenger_id or "").startswith("CHILD_")
-                    or "נועה" in a.passenger_label
-                    or "עידו" in a.passenger_label
-                    or "דניאל" in a.passenger_label
-                    for a in group
-                )
-                if has_under_12:
-                    has_adult = any(
-                        (a.passenger_id or "").startswith("ADULT_")
-                        or "ADULT_" in a.passenger_label
-                        or "הורה" in a.passenger_label
-                        for a in group
-                    )
-                    self.assertTrue(
-                        has_adult,
-                        f"Child under 12 isolated without adult in PNR group: {group}",
-                    )
+            self.assertEqual(prop.itinerary.seated_passengers_count, 5)
+            self.assertGreaterEqual(prop.itinerary.bonus_tickets_count, 1)
+            self.assertGreaterEqual(prop.itinerary.cash_tickets_count, 1)
+            self.assertEqual(
+                prop.itinerary.bonus_tickets_count + prop.itinerary.cash_tickets_count,
+                5,
+            )
+
+        # Single adult + 3 children under 12 cannot split across separate bonus + cash PNRs
+        single_parent_young = copy.deepcopy(young_family)
+        single_parent_young.adults_count = 1
+        sp_proposals = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "allow_hybrid_bonus_cash": True,
+            },
+            profile=single_parent_young,
+        )
+        sp_hybrids = [
+            p for p in sp_proposals if p.itinerary.fulfillment_strategy == "HYBRID_BONUS_PLUS_CASH"
+        ]
+        self.assertEqual(len(sp_hybrids), 0)
 
     def test_strategy_4_one_way_bonus_one_way_cash_and_open_jaw_mxp_fco_f25(self) -> None:
         """10. Verify `F25` `ONE_WAY_BONUS_ONE_WAY_CASH` (asymmetric ATH & Open-Jaw `MXP`/`FCO`)."""
@@ -682,7 +689,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreaterEqual(len(mc_props[0].itinerary.points_used_by_wallet), 1)
 
     def test_search_vacations_all_6_mode_combinations_and_sqlite_persistence_f28(self) -> None:
-        """13. Verify `F17`-`F28` `search_vacations` across all 3x2 mode combinations and SQLite persistence."""
+        """13. Verify `F17`-`F28` `search_vacations` across active 2x2 mode combinations and SQLite persistence."""
         # Mode 1 profile with framework_type=None (optional in Mode 1)
         mode1_profile = copy.deepcopy(self.default_profile)
         for child in mode1_profile.children:
@@ -712,28 +719,6 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                     "flex_days_plus_minus": 0,
                 },
                 mode1_profile,
-            ),
-            # Mode 2 x EL_AL_ONLY
-            (
-                {
-                    "date_selection_mode": "MOE_VACATION_MAXIMIZATION",
-                    "airline_selection_mode": "EL_AL_ONLY",
-                    "destination_iatas": ["FCO", "ATH"],
-                    "school_year": "2026-2027",
-                    "target_holiday_codes": ["PESACH"],
-                },
-                self.default_profile,
-            ),
-            # Mode 2 x ALL_AIRLINES
-            (
-                {
-                    "date_selection_mode": "MOE_VACATION_MAXIMIZATION",
-                    "airline_selection_mode": "ALL_AIRLINES",
-                    "destination_iatas": ["FCO", "ATH"],
-                    "school_year": "2026-2027",
-                    "target_holiday_codes": ["PESACH"],
-                },
-                self.default_profile,
             ),
             # Mode 3 x EL_AL_ONLY
             (
@@ -767,7 +752,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             self.assertEqual(ctos_values, sorted(ctos_values, reverse=True))
             for p in proposals:
                 expected_ctos = round(
-                    0.55 * p.vacation_utilization_score + 0.45 * p.flight_bonus_value_score,
+                    0.55 * p.holiday_alignment_score + 0.45 * p.flight_bonus_value_score,
                     1,
                 )
                 self.assertAlmostEqual(
@@ -775,6 +760,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 )
                 self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
                 self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
+                self.assertIn("~$", p.explanation_summary_he)
             # Persisted in SQLite
             persisted = self.repo.get_proposal_by_id(proposals[0].id)
             self.assertIsNotNone(persisted)
@@ -795,16 +781,25 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         selected_ids = [p.id for p in proposals[:3]]
         matrix = self.planner.compare_proposals(selected_ids)
         self.assertEqual(len(matrix["proposals"]), 3)
-        self.assertGreaterEqual(len(matrix["comparison_rows"]), 8)
+        self.assertGreaterEqual(len(matrix["comparison_rows"]), 7)
         self.assertIn(matrix["best_by_ctos_id"], selected_ids)
         self.assertIn(matrix["best_by_cash_savings_id"], selected_ids)
-        self.assertIn(matrix["best_by_per_id"], selected_ids)
+        self.assertNotIn("best_by_per_id", matrix)
         self.assertIn(matrix["best_by_minimal_absence_id"], selected_ids)
+        row_keys = {r["metric_key"] for r in matrix["comparison_rows"]}
+        self.assertNotIn("parent_pto_and_per", row_keys)
+        oop_row = next(r for r in matrix["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd")
+        self.assertIn("הערכת תשלום במזומן", oop_row["label_he"])
 
-    def test_export_proposal_ics_rfc5545_vcalendar_f28(self) -> None:
-        """15. Verify `F28` `export_proposal_ics` generates valid RFC 5545 iCalendar payload."""
-        proposals = self.planner.search_vacations(
-            {
+    def test_ics_export_removed_and_estimated_cash_metadata_present_f28(self) -> None:
+        """15. Verify `R3` ICS export removal (`-> 404`) and `R1` non-binding estimated cash metadata."""
+        from backend.app.main import VacationPlannerTestClient
+
+        self.assertFalse(hasattr(self.planner, "export_proposal_ics"))
+        client = VacationPlannerTestClient(db_path=":memory:")
+        s_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
                 "date_selection_mode": "SPECIFIC_DATES",
                 "airline_selection_mode": "EL_AL_ONLY",
                 "destination_iatas": ["FCO"],
@@ -812,19 +807,16 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 "specific_return_date": "2027-04-18",
                 "flex_days_plus_minus": 0,
             },
-            profile=self.default_profile,
         )
-        self.assertGreater(len(proposals), 0)
-        ics_text = self.planner.export_proposal_ics(proposals[0].id)
-        self.assertIn("BEGIN:VCALENDAR", ics_text)
-        self.assertIn("VERSION:2.0", ics_text)
-        self.assertIn("PRODID:", ics_text)
-        self.assertEqual(ics_text.count("BEGIN:VEVENT"), 4)
-        self.assertEqual(ics_text.count("END:VEVENT"), 4)
-        self.assertIn("END:VCALENDAR", ics_text)
-
-        with self.assertRaises(ValueError):
-            self.planner.export_proposal_ics("non-existent-proposal-id")
+        self.assertEqual(s_resp.status_code, 200)
+        body = s_resp.json()
+        self.assertTrue(body["is_cash_price_estimate"])
+        self.assertIn("cash_pricing_disclaimer_he", body)
+        self.assertGreater(len(body["proposals"]), 0)
+        pid = body["proposals"][0]["id"]
+        self.assertTrue(body["proposals"][0]["itinerary"]["is_cash_price_estimate"])
+        ics_resp = client.get(f"/api/v1/vacations/{pid}/export.ics")
+        self.assertEqual(ics_resp.status_code, 404)
 
     def test_weather_suitability_engine_seasonal_accuracy_and_all_vacation_types_f33(
         self,
@@ -935,14 +927,14 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertIsNotNone(top_prop.weather_metrics)
         self.assertGreaterEqual(top_prop.weather_suitability_score, 85.0)
 
-        # Verify typed CTOS formula: round(clamp(0.35*WSS + 0.35*VUS + 0.30*FBVS - 0.50*max(0, 60 - WSS), 0, 100), 1)
+        # Verify typed CTOS formula: round(clamp(0.35*WSS + 0.35*HAS + 0.30*FBVS - 0.50*max(0, 60 - WSS), 0, 100), 1)
         for p in beach_props:
             wss = p.weather_suitability_score
-            vus = p.vacation_utilization_score
+            has_score = p.holiday_alignment_score
             fbvs = p.flight_bonus_value_score
             shortfall = max(0.0, 60.0 - wss)
             expected_typed_ctos = round(
-                max(0.0, min(100.0, 0.35 * wss + 0.35 * vus + 0.30 * fbvs - 0.50 * shortfall)),
+                max(0.0, min(100.0, 0.35 * wss + 0.35 * has_score + 0.30 * fbvs - 0.50 * shortfall)),
                 1,
             )
             self.assertAlmostEqual(
@@ -1391,12 +1383,12 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreater(len(full_bonus), 0)
         it4 = full_bonus[0].itinerary
         assert it4 is not None
-        # 3 seated passengers * (9,000 + 9,000) = 54,000 pts; infant (age 1) = 0 pts
+        # 3 seated passengers * (9,000 + 9,000) = 54,000 pts; infant (age 1) = 0 pts, 0 seats
         self.assertEqual(it4.total_matmid_points, 54000)
         self.assertTrue(it4.requires_two_plus_seat_verification)
-        inf_allocs = [a for a in it4.family_ticket_allocation if a.passenger_id == "CHILD_1"]
-        self.assertEqual(len(inf_allocs), 1)
-        self.assertEqual(inf_allocs[0].points_used, 0)
+        self.assertEqual(it4.seated_passengers_count, 3)
+        self.assertEqual(it4.bonus_tickets_count, 3)
+        self.assertEqual(it4.cash_tickets_count, 0)
 
         # Verify live-only DB never fabricates a synthetic return flight on 2027-04-28 when no live inbound exists
         live_only_repo = SQLiteRepository(":memory:", auto_seed=False)
@@ -1931,16 +1923,8 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(inf_zero_resp.status_code, 200)
         inf_props = inf_zero_resp.json()["proposals"]
         self.assertGreater(len(inf_props), 0)
-        inf_rows = [
-            a
-            for a in inf_props[0]["itinerary"]["family_ticket_allocation"]
-            if a.get("passenger_id") == "CHILD_1"
-        ]
-        self.assertEqual(len(inf_rows), 1)
-        self.assertEqual(inf_rows[0]["rbd_code"], "INF")
-        self.assertEqual(inf_rows[0]["points_used"], 0)
-        self.assertEqual(inf_rows[0]["cash_fare_usd"], 0.0)
-        self.assertEqual(inf_rows[0]["taxes_usd"], 0.0)
+        self.assertEqual(inf_props[0]["itinerary"]["seated_passengers_count"], 2)
+        self.assertNotIn("family_ticket_allocation", inf_props[0]["itinerary"])
 
         # Live ThreadingHTTPServer malformed JSON boundary sweep -> 422 without socket drop
         with tempfile.TemporaryDirectory() as srv_tmp:
@@ -1987,7 +1971,8 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 ("PUT", "/api/v1/profile", {**base_prof, "matmid_points_balance": "inf"}),
                 ("PUT", "/api/v1/profile", {**base_prof, "adults_count": None}),
                 ("PUT", "/api/v1/profile", {**base_prof, "adults_count": True}),
-                ("PUT", "/api/v1/profile", {**base_prof, "annual_pto_days_budget": "nan"}),
+                ("PUT", "/api/v1/profile", {**base_prof, "point_valuation_usd": "nan"}),
+                ("PUT", "/api/v1/profile", {**base_prof, "unsupported_removed_field": 1}),
                 ("PUT", "/api/v1/profile", []),
             ]
             try:

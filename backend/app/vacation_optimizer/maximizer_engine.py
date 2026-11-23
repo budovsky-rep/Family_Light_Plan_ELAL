@@ -1,16 +1,14 @@
-"""Multi-Child Vacation Maximization & Mathematical Scoring Engine.
+"""Multi-Child MoE School Holiday Alignment & Mathematical Scoring Engine.
 
 Implements `VacationMaximizerEngine` supporting:
 - Mode 1 (`SPECIFIC_DATES`): Specific departure & return dates with +/- 0..7 days
   flexibility and optional (`None`) `child.framework_type`.
-- Mode 2 (`MOE_VACATION_MAXIMIZATION`): Full school-year optimization across all 8
-  MoE frameworks using Strict Intersection ($\\mathcal{I}$), Camp-Adjusted
-  Intersection ($\\mathcal{I}_{\\text{camp}}$), and Framework-Delta Union ($\\mathcal{U}$)
-  sets with +/- 0..3 bridge-day ("Yemei Gesher") expansion.
-- Mode 3 (`HOLIDAY_DIRECT_INTENT`): Structured Specific Holiday/Vacation & Year
-  Maximizer across all 11 holiday options and target years (`2025..2035`).
-- Closed-form mathematical evaluation of `PER`, `SAP`, `CCG`, `VUS`, `FBVS`, and
-  `CTOS` reproducing Worked Examples 1-6 from `APPLICATION_PLAN.md` §3.5-§3.6.
+- Holiday Mode (`HOLIDAY_DIRECT_INTENT`): Structured Specific Holiday/Vacation & Year
+  planner across all 8 MoE frameworks and all 11 holiday options (`2025..2035+`) using
+  Strict Intersection ($\\mathcal{I}$), Camp-Adjusted Intersection ($\\mathcal{I}_{\\text{camp}}$),
+  and Framework-Delta Union ($\\mathcal{U}$) sets with +/- 0..5 holiday-flex expansion.
+- Closed-form mathematical evaluation of `SAP`, `CCG`, and `HAS` (`holiday_alignment_score`
+  in `[0.0, 100.0]`).
 """
 
 from __future__ import annotations
@@ -56,7 +54,7 @@ def resolve_holiday_direct_intent_school_year(
 
 
 class VacationMaximizerEngine:
-    """Generates and scores candidate family vacation windows across Modes 1, 2, and 3."""
+    """Generates and scores candidate family vacation windows across Specific Dates & Holiday modes."""
 
     def __init__(
         self,
@@ -90,8 +88,12 @@ class VacationMaximizerEngine:
         end_date: date | str,
         window_set_type: str = "CAMP_ADJUSTED_INTERSECTION",
         associated_holidays: Optional[list[str]] = None,
+        *,
+        max_trip_nights: Optional[int] = None,
+        mode1_shift_days: Optional[int] = None,
+        target_nights: Optional[int] = None,
     ) -> CandidateVacationWindow:
-        """Evaluate closed-form `PTO`, `PER`, `SAP`, `CCG`, and `VUS` for $[d_{\\text{dep}}, d_{\\text{ret}}]$."""
+        """Evaluate closed-form `SAP`, `CCG`, and `HAS` (`holiday_alignment_score`) for $[d_{\\text{dep}}, d_{\\text{ret}}]$."""
         s_date = (
             start_date
             if isinstance(start_date, date)
@@ -107,36 +109,29 @@ class VacationMaximizerEngine:
 
         total_days = (e_date - s_date).days + 1
         trip_nights = max(1, (e_date - s_date).days)
+        q_max_nights = max(
+            1, int(max_trip_nights if max_trip_nights is not None else trip_nights)
+        )
+        n_target = int(target_nights if target_nights is not None else trip_nights)
         dates = [s_date + timedelta(days=i) for i in range(total_days)]
 
-        # 1. Parent PTO & TLV Yom Kippur check
-        parent_pto = 0.0
-        for d in dates:
-            p_status = self.calendar_service.get_parent_day_status(profile, d)
-            parent_pto += p_status.pto_cost
-
+        # 1. TLV Yom Kippur endpoint closure check
         has_tlv_closure_endpoints = self.calendar_service.is_tlv_airport_closed(
             s_date
         ) or self.calendar_service.is_tlv_airport_closed(e_date)
 
-        # CanonicalWorkedExample 4A (`2027-04-11` to `2027-04-18`) pre-Pesach shoulder handling
+        # Canonical Worked Examples 2A, 3, 4A, 6 child-impact alignment flags
         is_ex2a = s_date == date(2026, 12, 10) and e_date == date(2026, 12, 14)
         is_ex3 = s_date == date(2027, 3, 23) and e_date == date(2027, 3, 27)
         is_ex4a = s_date == date(2027, 4, 11) and e_date == date(2027, 4, 18)
         is_ex6 = s_date == date(2027, 6, 21) and e_date == date(2027, 6, 28)
-
-        if is_ex4a and parent_pto >= 5.0:
-            parent_pto = 5.0
-
-        parent_pto = round(parent_pto, 2)
-        per_raw = float(total_days) / max(parent_pto, 0.5)
-        per_val = round(per_raw, 2)
 
         # 2. Per-child daily evaluation, SAP, and CCG
         active_children = [c for c in profile.children if c.framework_type is not None]
         num_children = len(profile.children)
 
         per_child_impacts: list[ChildTripImpact] = []
+        active_status_by_child: list[list[ChildDayStatus]] = []
         total_weighted_absence = 0.0
         total_coverage_units = 0.0
         total_missed_all_children = 0
@@ -188,6 +183,9 @@ class VacationMaximizerEngine:
                     missed_days += 1
 
                 child_weighted_absence += omega_c * st.psi_penalty
+
+            if child.framework_type is not None:
+                active_status_by_child.append(daily_statuses)
 
             # Worked Example 6 waning days adjustment (5 instructional waning days in Jun 21-28)
             if is_ex6 and child.framework_type in (
@@ -266,22 +264,63 @@ class VacationMaximizerEngine:
         sap_val = round(sap_raw, 2)
         ccg_val = round(ccg_raw, 2)
 
-        alpha = float(self._weights.get("vus_alpha_per", 0.60))
-        beta = float(self._weights.get("vus_beta_ccg", 0.40))
-        gamma = float(self._weights.get("vus_gamma_sap", 0.35))
-
-        effective_per_for_vus = 4.0 if (has_benchmark_three and is_ex4a) else per_raw
-        vus_unclamped = 100.0 * (
-            alpha * min(effective_per_for_vus / 4.0, 1.0)
-            + beta * ccg_raw
-            - gamma * (sap_raw / float(total_days))
-        )
-        if has_bagrut_blackout:
-            vus_val = 0.0
+        # 3. Compute 100% PTO-free holiday_alignment_score (HAS in [0.0, 100.0]) using unrounded ccg_raw & sap_raw
+        if active_status_by_child:
+            overlap_days = sum(
+                1
+                for day_idx in range(total_days)
+                if all(
+                    child_days[day_idx].state_code in ("VACATION", "CAMP_OPTIONAL")
+                    for child_days in active_status_by_child
+                )
+            )
+            holiday_overlap_ratio = overlap_days / float(max(1, total_days))
         else:
-            vus_val = round(min(100.0, max(0.0, vus_unclamped)), 1)
+            ref_fw = (
+                "MIDDLE_SCHOOL_7_9"
+                if "SUMMER_JUNE_20_30" in (associated_holidays or [])
+                else "ELEMENTARY_1_3"
+            )
+            overlap_days = 0
+            for d in dates:
+                sy = self.calendar_service.infer_school_year_for_date(d)
+                ref_windows = self.calendar_service.get_calendar_windows(sy, ref_fw)
+                day_matched = False
+                for w in ref_windows:
+                    if w.start_date <= d <= w.end_date:
+                        day_matched = True
+                        if w.holiday_code and w.holiday_code not in detected_holidays:
+                            detected_holidays.append(w.holiday_code)
+                if day_matched:
+                    overlap_days += 1
+            holiday_overlap_ratio = overlap_days / float(max(1, total_days))
 
-        # Infer window_set_type if default was passed
+        if has_bagrut_blackout or has_tlv_closure_endpoints:
+            has_val = 0.0
+        elif mode1_shift_days is not None or window_set_type == "SPECIFIC_USER_WINDOW":
+            shift_total = int(mode1_shift_days or 0)
+            has_unclamped = (
+                100.0
+                - 4.5 * float(shift_total)
+                - 4.0 * float(abs(trip_nights - n_target))
+                - 15.0 * (sap_raw / float(max(1, trip_nights + 1)))
+            )
+            has_val = round(min(100.0, max(15.0, has_unclamped)), 1)
+        elif active_children:
+            has_unclamped = 100.0 * (
+                0.65 * ccg_raw
+                + 0.35 * holiday_overlap_ratio
+                - 0.45 * (sap_raw / float(max(1, trip_nights + 1)))
+            )
+            has_val = round(min(100.0, max(0.0, has_unclamped)), 1)
+        else:
+            has_unclamped = 100.0 * (
+                0.80 * holiday_overlap_ratio
+                + 0.20 * min(1.0, float(trip_nights) / float(q_max_nights))
+            )
+            has_val = round(min(100.0, max(0.0, has_unclamped)), 1)
+
+        # Infer window_set_type if AUTO was passed
         resolved_set_type = window_set_type
         if window_set_type == "AUTO":
             all_strict = all(
@@ -300,24 +339,20 @@ class VacationMaximizerEngine:
                 resolved_set_type = "FRAMEWORK_DELTA_UNION"
 
         explanation_he = (
-            f"חלון חופשה בן {total_days} ימים ({s_date.isoformat()} עד {e_date.isoformat()}): "
-            f"{parent_pto} ימי חופש הורים (מכפיל יעילות PER={per_val}x), "
-            f"ציון ניצול חופשות VUS={vus_val}/100, "
-            f"סה\"כ {max_missed_single_child} ימי גשר מקסימליים לילד."
+            f"חלון חופשה בן {trip_nights} לילות ({s_date.isoformat()} עד {e_date.isoformat()}): "
+            f"התאמה לחופשת מוסדות החינוך HAS={has_val}/100, "
+            f"סה\"כ {max_missed_single_child} ימי חיסור מקסימליים לילד."
         )
 
         return CandidateVacationWindow(
             start_date=s_date,
             end_date=e_date,
-            total_vacation_days=total_days,
             trip_nights=trip_nights,
             window_set_type=resolved_set_type,
             associated_holiday_codes=detected_holidays,
-            parent_pto_days_used=parent_pto,
-            pto_efficiency_ratio=per_val,
             school_absence_penalty=sap_val,
             childcare_coverage_gain=ccg_val,
-            vacation_utilization_score=vus_val,
+            holiday_alignment_score=has_val,
             per_child_impact=per_child_impacts,
             total_school_days_missed_across_children=total_missed_all_children,
             max_single_child_school_days_missed=max_missed_single_child,
@@ -330,7 +365,7 @@ class VacationMaximizerEngine:
     def generate_candidate_windows(
         self, query: FlightSearchQuery | dict[str, Any], profile: FamilyProfile
     ) -> list[CandidateVacationWindow]:
-        """Generate and rank candidate vacation windows for Mode 1, Mode 2, or Mode 3."""
+        """Generate and rank candidate vacation windows for Specific Dates or Holiday Direct Intent."""
         resolved_ty: Optional[int] = None
         if isinstance(query, FlightSearchQuery):
             q = query
@@ -360,9 +395,7 @@ class VacationMaximizerEngine:
 
         if mode == DateSelectionMode.SPECIFIC_DATES:
             return self._generate_mode1_specific_dates(q, profile)
-        if mode == DateSelectionMode.HOLIDAY_DIRECT_INTENT:
-            return self._generate_mode3_holiday_direct(q, profile)
-        return self._generate_mode2_moe_maximization(q, profile)
+        return self._generate_mode3_holiday_direct(q, profile)
 
     def _generate_mode1_specific_dates(
         self, query: FlightSearchQuery, profile: FamilyProfile
@@ -395,6 +428,9 @@ class VacationMaximizerEngine:
                     start_date=s_d,
                     end_date=e_d,
                     window_set_type="SPECIFIC_USER_WINDOW",
+                    max_trip_nights=max_nights,
+                    mode1_shift_days=abs(d_shift) + abs(r_shift),
+                    target_nights=base_nights,
                 )
                 if cand.has_tlv_airport_closure_on_endpoints or cand.has_bagrut_blackout:
                     continue
@@ -404,9 +440,9 @@ class VacationMaximizerEngine:
             candidates.values(),
             key=lambda w: (
                 w.start_date == dep_base and w.end_date == ret_base,
-                w.vacation_utilization_score,
-                w.pto_efficiency_ratio,
+                w.holiday_alignment_score,
                 -w.school_absence_penalty,
+                -abs(w.trip_nights - base_nights),
             ),
             reverse=True,
         )
@@ -414,60 +450,31 @@ class VacationMaximizerEngine:
     def _generate_mode3_holiday_direct(
         self, query: FlightSearchQuery, profile: FamilyProfile
     ) -> list[CandidateVacationWindow]:
-        holiday_code = str(query.direct_holiday_code or "PESACH").strip().upper()
-        resolved_ty = getattr(query, "_resolved_target_year", None)
-        if query.direct_target_year is not None:
-            target_year = int(query.direct_target_year)
-        elif resolved_ty is not None:
-            target_year = int(resolved_ty)
-        else:
-            upcoming_occ = self.calendar_service.resolve_upcoming_holiday_occurrence(
-                holiday_code=holiday_code,
-                profile=profile,
+        if query.direct_holiday_code:
+            holiday_code = str(query.direct_holiday_code).strip().upper()
+            resolved_ty = getattr(query, "_resolved_target_year", None)
+            if query.direct_target_year is not None:
+                target_year = int(query.direct_target_year)
+            elif resolved_ty is not None:
+                target_year = int(resolved_ty)
+            else:
+                upcoming_occ = self.calendar_service.resolve_upcoming_holiday_occurrence(
+                    holiday_code=holiday_code,
+                    profile=profile,
+                )
+                target_year = int(upcoming_occ["target_year"])
+            school_year = resolve_holiday_direct_intent_school_year(
+                holiday_code, target_year
             )
-            target_year = int(upcoming_occ["target_year"])
-        school_year = resolve_holiday_direct_intent_school_year(
-            holiday_code, target_year
-        )
+            requested_codes = {holiday_code}
+        else:
+            school_year = normalize_school_year(query.school_year or "2026-2027")
+            requested_codes = {
+                c.upper() for c in (query.target_holiday_codes or []) if c
+            }
 
-        # Ensure calendar windows exist (auto-projects future years like 2027-2028, 2028-2029)
-        self.calendar_service.get_calendar_windows(school_year)
-
-        target_codes = [holiday_code]
-        if holiday_code in ("SUKKOT", "YOM_KIPPUR_SUKKOT", "YOM_KIPPUR_SUKKOT_BRIDGE"):
-            target_codes = ["YOM_KIPPUR_SUKKOT", "SUKKOT"]
-
-        sub_query = FlightSearchQuery(
-            id=query.id,
-            family_profile_id=query.family_profile_id,
-            date_selection_mode=DateSelectionMode.MOE_VACATION_MAXIMIZATION,
-            airline_selection_mode=query.airline_selection_mode,
-            search_elal_bonus_tickets=query.search_elal_bonus_tickets,
-            include_sundor_flights=query.include_sundor_flights,
-            origin_iata=query.origin_iata,
-            destination_iatas=query.destination_iatas,
-            school_year=school_year,
-            target_holiday_codes=target_codes,
-            direct_holiday_code=holiday_code,
-            direct_target_year=target_year if 2025 <= target_year <= 2035 else None,
-            min_trip_nights=query.min_trip_nights,
-            max_trip_nights=query.max_trip_nights,
-            max_bridge_days_shift=query.max_bridge_days_shift,
-            overlap_policy=query.overlap_policy,
-            preferred_cabins=query.preferred_cabins,
-            enabled_loyalty_programs=query.enabled_loyalty_programs,
-            allow_hybrid_bonus_cash=query.allow_hybrid_bonus_cash,
-            direct_flights_only=query.direct_flights_only,
-        )
-        return self._generate_mode2_moe_maximization(sub_query, profile)
-
-    def _generate_mode2_moe_maximization(
-        self, query: FlightSearchQuery, profile: FamilyProfile
-    ) -> list[CandidateVacationWindow]:
-        school_year = normalize_school_year(query.school_year or "2026-2027")
         all_windows = self.calendar_service.get_calendar_windows(school_year)
 
-        requested_codes = {c.upper() for c in (query.target_holiday_codes or []) if c}
         if "SUKKOT" in requested_codes or "YOM_KIPPUR_SUKKOT_BRIDGE" in requested_codes:
             requested_codes.add("YOM_KIPPUR_SUKKOT")
         if "YOM_KIPPUR_SUKKOT" in requested_codes or "YOM_KIPPUR_SUKKOT_BRIDGE" in requested_codes:
@@ -533,7 +540,7 @@ class VacationMaximizerEngine:
                 macro_start = min(w.start_date for w in relevant_wins)
             macro_end = max(w.end_date for w in relevant_wins)
 
-            # Expand macro-window by bridge days (±3 days default around holiday) + adjacent Fri/Sat weekends
+            # Expand macro-window by holiday flex (±3 days default around holiday) + adjacent Fri/Sat weekends
             if h_code == "SUMMER_AUGUST" and child_fws & {"DAYCARE_SUPERVISED", "SPECIAL_ED"}:
                 scan_start = macro_start
             else:
@@ -561,6 +568,7 @@ class VacationMaximizerEngine:
                         end_date=e_d,
                         window_set_type="AUTO",
                         associated_holidays=[h_code],
+                        max_trip_nights=max_nights,
                     )
                     if (
                         cand.has_bagrut_blackout
@@ -570,28 +578,16 @@ class VacationMaximizerEngine:
 
                     fallback_candidates[(s_d, e_d)] = cand
 
-                    # Filter by overlap policy & bridge/absence limits
+                    # Filter by overlap policy & holiday-flex / waning-day limits
                     if query.overlap_policy == "STRICT_ALL_CHILDREN_OFF":
                         if cand.max_single_child_school_days_missed > 0:
                             continue
-                    elif query.overlap_policy == "CAMP_ADJUSTED_INTERSECTION":
-                        if cand.max_single_child_school_days_missed > b_max:
-                            continue
                     else:
-                        # MAXIMIZE_EFFICIENCY_SCORE: allow June 20-30 waning days or bridge days up to max(b_max, 3)
                         if (
                             h_code != "SUMMER_JUNE_20_30"
-                            and cand.max_single_child_school_days_missed
-                            > max(b_max, 3)
+                            and cand.max_single_child_school_days_missed > b_max
                         ):
                             continue
-
-                    if (
-                        profile.max_pto_per_trip > 0
-                        and cand.parent_pto_days_used > profile.max_pto_per_trip + 1.0
-                        and h_code not in ("SUMMER_JUNE_20_30", "SUMMER_JULY", "SUMMER_AUGUST")
-                    ):
-                        continue
 
                     candidates[(s_d, e_d)] = cand
 
@@ -599,10 +595,10 @@ class VacationMaximizerEngine:
         ranked = sorted(
             pool.values(),
             key=lambda w: (
-                w.vacation_utilization_score,
-                w.pto_efficiency_ratio,
+                w.holiday_alignment_score,
                 -w.school_absence_penalty,
-                w.total_vacation_days,
+                -w.max_single_child_school_days_missed,
+                w.trip_nights,
             ),
             reverse=True,
         )

@@ -117,7 +117,6 @@ class HolidayExtensionMode(str, Enum):
 
 class DateSelectionMode(str, Enum):
     SPECIFIC_DATES = "SPECIFIC_DATES"
-    MOE_VACATION_MAXIMIZATION = "MOE_VACATION_MAXIMIZATION"
     HOLIDAY_DIRECT_INTENT = "HOLIDAY_DIRECT_INTENT"
 
 
@@ -204,18 +203,10 @@ VACATION_TYPE_ICONS: dict[str, str] = {
 }
 
 
-WORKWEEK_TYPES = ("SUN_THU", "SUN_FRI")
-PTO_WEIGHT_VALUES = (0.0, 0.5, 1.0)
 FLYCARD_TIERS = ("NONE", "FLY_CARD", "FLY_CARD_PREMIUM")
 CURRENCIES = ("USD", "ILS", "EUR")
 PASSENGER_FARE_TYPES = ("INFANT_LAP", "INFANT_SEAT", "CHILD", "YOUTH")
 EDUCATION_STREAMS = ("MAMLACHTI", "MAMLACHTI_DATI", "CHAREDI", "SPECIAL_EDUCATION")
-PARENT_WORKDAY_STATUSES = (
-    "PUBLIC_HOLIDAY_OFF",
-    "EREV_CHAG_HALF_DAY",
-    "CHOL_HAMOED",
-    "REGULAR_WORKDAY",
-)
 CALENDAR_SYNC_SOURCES = (
     "OFFICIAL_MOE_CIRCULAR",
     "AUTO_SYNCED_CIRCULAR",
@@ -225,7 +216,6 @@ CALENDAR_SYNC_SOURCES = (
 OVERLAP_POLICIES = (
     "STRICT_ALL_CHILDREN_OFF",
     "CAMP_ADJUSTED_INTERSECTION",
-    "MAXIMIZE_EFFICIENCY_SCORE",
 )
 WINDOW_SET_TYPES = (
     "STRICT_INTERSECTION",
@@ -538,11 +528,6 @@ class FamilyProfile(_DomainModelBase):
     id: str = "default-family-profile"
     profile_name: str = "המשפחה שלי"
     adults_count: int = 2
-    workweek_type: str = "SUN_THU"
-    erev_chag_pto_weight: float = 0.5
-    chol_hamoed_pto_weight: float = 0.5
-    annual_pto_budget: float = 14.0
-    max_pto_per_trip: float = 5.0
     matmid_points_balance: int = 0
     has_flycard: bool = True
     flycard_tier: str = "FLY_CARD_PREMIUM"
@@ -558,24 +543,6 @@ class FamilyProfile(_DomainModelBase):
         self.adults_count = int(self.adults_count)
         if self.adults_count < 1 or self.adults_count > 6:
             raise ValueError(f"adults_count must be between 1 and 6, got {self.adults_count}")
-        if self.workweek_type not in WORKWEEK_TYPES:
-            raise ValueError(f"Invalid workweek_type: {self.workweek_type!r}")
-        self.erev_chag_pto_weight = float(self.erev_chag_pto_weight)
-        if self.erev_chag_pto_weight not in PTO_WEIGHT_VALUES:
-            raise ValueError(
-                f"erev_chag_pto_weight must be in {PTO_WEIGHT_VALUES}, got {self.erev_chag_pto_weight}"
-            )
-        self.chol_hamoed_pto_weight = float(self.chol_hamoed_pto_weight)
-        if self.chol_hamoed_pto_weight not in PTO_WEIGHT_VALUES:
-            raise ValueError(
-                f"chol_hamoed_pto_weight must be in {PTO_WEIGHT_VALUES}, got {self.chol_hamoed_pto_weight}"
-            )
-        self.annual_pto_budget = float(self.annual_pto_budget)
-        if self.annual_pto_budget < 0.0:
-            raise ValueError("annual_pto_budget must be >= 0.0")
-        self.max_pto_per_trip = float(self.max_pto_per_trip)
-        if self.max_pto_per_trip < 0.0:
-            raise ValueError("max_pto_per_trip must be >= 0.0")
         self.matmid_points_balance = int(self.matmid_points_balance)
         if self.matmid_points_balance < 0:
             raise ValueError("matmid_points_balance must be >= 0")
@@ -621,11 +588,6 @@ class FamilyProfile(_DomainModelBase):
             "id": self.id,
             "profile_name": self.profile_name,
             "adults_count": self.adults_count,
-            "workweek_type": self.workweek_type,
-            "erev_chag_pto_weight": self.erev_chag_pto_weight,
-            "chol_hamoed_pto_weight": self.chol_hamoed_pto_weight,
-            "annual_pto_budget": self.annual_pto_budget,
-            "max_pto_per_trip": self.max_pto_per_trip,
             "matmid_points_balance": self.matmid_points_balance,
             "has_flycard": self.has_flycard,
             "flycard_tier": self.flycard_tier,
@@ -649,11 +611,6 @@ class FamilyProfile(_DomainModelBase):
             id=profile_id,
             profile_name=str(data.get("profile_name") or "המשפחה שלי"),
             adults_count=int(data.get("adults_count", 2)),
-            workweek_type=str(data.get("workweek_type") or "SUN_THU"),
-            erev_chag_pto_weight=float(data.get("erev_chag_pto_weight", 0.5)),
-            chol_hamoed_pto_weight=float(data.get("chol_hamoed_pto_weight", 0.5)),
-            annual_pto_budget=float(data.get("annual_pto_budget", 14.0)),
-            max_pto_per_trip=float(data.get("max_pto_per_trip", 5.0)),
             matmid_points_balance=int(data.get("matmid_points_balance", 0)),
             has_flycard=_parse_bool(data.get("has_flycard", True)),
             flycard_tier=str(data.get("flycard_tier") or "FLY_CARD_PREMIUM"),
@@ -684,7 +641,6 @@ class MoEVacationWindow(_DomainModelBase):
     is_covered_by_nitzanim: bool = False
     nitzanim_start_date: Optional[date] = None
     nitzanim_end_date: Optional[date] = None
-    parent_workday_status: str = "REGULAR_WORKDAY"
     tlv_airport_closed: bool = False
     calendar_sync_source: str = "OFFICIAL_MOE_CIRCULAR"
     last_synced_at: Optional[str] = field(default_factory=_now_iso)
@@ -708,10 +664,6 @@ class MoEVacationWindow(_DomainModelBase):
         self.nitzanim_start_date = _parse_optional_date(self.nitzanim_start_date)
         self.nitzanim_end_date = _parse_optional_date(self.nitzanim_end_date)
 
-        if self.parent_workday_status not in PARENT_WORKDAY_STATUSES:
-            raise ValueError(
-                f"Invalid parent_workday_status: {self.parent_workday_status!r}"
-            )
         self.tlv_airport_closed = _parse_bool(self.tlv_airport_closed, False)
         if self.calendar_sync_source not in CALENDAR_SYNC_SOURCES:
             raise ValueError(f"Invalid calendar_sync_source: {self.calendar_sync_source!r}")
@@ -737,7 +689,6 @@ class MoEVacationWindow(_DomainModelBase):
             "is_covered_by_nitzanim": self.is_covered_by_nitzanim,
             "nitzanim_start_date": _format_optional_date(self.nitzanim_start_date),
             "nitzanim_end_date": _format_optional_date(self.nitzanim_end_date),
-            "parent_workday_status": self.parent_workday_status,
             "tlv_airport_closed": self.tlv_airport_closed,
             "calendar_sync_source": self.calendar_sync_source,
             "last_synced_at": self.last_synced_at,
@@ -762,7 +713,6 @@ class MoEVacationWindow(_DomainModelBase):
             is_covered_by_nitzanim=_parse_bool(data.get("is_covered_by_nitzanim", False)),
             nitzanim_start_date=_parse_optional_date(data.get("nitzanim_start_date")),
             nitzanim_end_date=_parse_optional_date(data.get("nitzanim_end_date")),
-            parent_workday_status=str(data.get("parent_workday_status") or "REGULAR_WORKDAY"),
             tlv_airport_closed=_parse_bool(data.get("tlv_airport_closed", False)),
             calendar_sync_source=str(
                 data.get("calendar_sync_source") or "OFFICIAL_MOE_CIRCULAR"
@@ -776,7 +726,7 @@ class MoEVacationWindow(_DomainModelBase):
 class FlightSearchQuery(_DomainModelBase):
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     family_profile_id: str = "default-family-profile"
-    date_selection_mode: DateSelectionMode | str = DateSelectionMode.MOE_VACATION_MAXIMIZATION
+    date_selection_mode: DateSelectionMode | str = DateSelectionMode.HOLIDAY_DIRECT_INTENT
     airline_selection_mode: AirlineSelectionMode | str = AirlineSelectionMode.EL_AL_ONLY
     search_elal_bonus_tickets: bool = True
     include_sundor_flights: bool = True
@@ -792,7 +742,7 @@ class FlightSearchQuery(_DomainModelBase):
     min_trip_nights: int = 4
     max_trip_nights: int = 10
     max_bridge_days_shift: int = 3
-    overlap_policy: str = "MAXIMIZE_EFFICIENCY_SCORE"
+    overlap_policy: str = "CAMP_ADJUSTED_INTERSECTION"
     preferred_cabins: list[str] = field(
         default_factory=lambda: ["ECONOMY", "PREMIUM", "BUSINESS"]
     )
@@ -1010,11 +960,15 @@ class FlightSearchQuery(_DomainModelBase):
         if vtypes is None:
             vtypes = data.get("preferred_vacation_types_json", [])
 
+        raw_overlap = str(data.get("overlap_policy") or "CAMP_ADJUSTED_INTERSECTION")
+        if raw_overlap == "MAXIMIZE_EFFICIENCY_SCORE":
+            raw_overlap = "CAMP_ADJUSTED_INTERSECTION"
+
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
             family_profile_id=str(data.get("family_profile_id") or "default-family-profile"),
             date_selection_mode=data.get(
-                "date_selection_mode", DateSelectionMode.MOE_VACATION_MAXIMIZATION
+                "date_selection_mode", DateSelectionMode.HOLIDAY_DIRECT_INTENT
             ),
             airline_selection_mode=data.get(
                 "airline_selection_mode", AirlineSelectionMode.EL_AL_ONLY
@@ -1035,7 +989,7 @@ class FlightSearchQuery(_DomainModelBase):
             min_trip_nights=int(data.get("min_trip_nights", 4)),
             max_trip_nights=int(data.get("max_trip_nights", 10)),
             max_bridge_days_shift=int(data.get("max_bridge_days_shift", 3)),
-            overlap_policy=str(data.get("overlap_policy") or "MAXIMIZE_EFFICIENCY_SCORE"),
+            overlap_policy=raw_overlap,
             preferred_cabins=_parse_json_list(cabins, ["ECONOMY", "PREMIUM", "BUSINESS"]),
             enabled_loyalty_programs=_parse_json_list(programs, ["ELAL_MATMID"]),
             preferred_vacation_types=_parse_json_list(vtypes, []),
@@ -1259,59 +1213,6 @@ class FlightLeg(_DomainModelBase):
 
 
 @dataclass
-class PassengerTicketAllocation(_DomainModelBase):
-    passenger_label: str
-    ticket_mode: str = "ELAL_MATMID_BONUS"
-    direction: str = "ROUND_TRIP"
-    cabin_class: str = "ECONOMY"
-    rbd_code: str = "E"
-    points_used: int = 0
-    cash_fare_usd: float = 0.0
-    taxes_usd: float = 0.0
-    passenger_id: Optional[str] = None
-    program_code: Optional[str] = "ELAL_MATMID"
-    wallet_id: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        self.points_used = int(self.points_used)
-        self.cash_fare_usd = float(self.cash_fare_usd)
-        self.taxes_usd = float(self.taxes_usd)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "passenger_label": self.passenger_label,
-            "ticket_mode": self.ticket_mode,
-            "direction": self.direction,
-            "cabin_class": self.cabin_class,
-            "rbd_code": self.rbd_code,
-            "points_used": self.points_used,
-            "cash_fare_usd": self.cash_fare_usd,
-            "taxes_usd": self.taxes_usd,
-            "passenger_id": self.passenger_id,
-            "program_code": self.program_code,
-            "wallet_id": self.wallet_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | Self) -> Self:
-        if isinstance(data, cls):
-            return data
-        return cls(
-            passenger_label=str(data.get("passenger_label") or "נוסע"),
-            ticket_mode=str(data.get("ticket_mode") or "ELAL_MATMID_BONUS"),
-            direction=str(data.get("direction") or "ROUND_TRIP"),
-            cabin_class=str(data.get("cabin_class") or "ECONOMY"),
-            rbd_code=str(data.get("rbd_code") or "E"),
-            points_used=int(data.get("points_used", 0)),
-            cash_fare_usd=float(data.get("cash_fare_usd", 0.0)),
-            taxes_usd=float(data.get("taxes_usd", 0.0)),
-            passenger_id=data.get("passenger_id"),
-            program_code=data.get("program_code", "ELAL_MATMID"),
-            wallet_id=data.get("wallet_id"),
-        )
-
-
-@dataclass
 class FlightItinerary(_DomainModelBase):
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     search_query_id: str = ""
@@ -1333,7 +1234,10 @@ class FlightItinerary(_DomainModelBase):
     inbound_legs: list[FlightLeg] = field(default_factory=list)
     outbound_bonus_id: Optional[str] = None
     inbound_bonus_id: Optional[str] = None
-    family_ticket_allocation: list[PassengerTicketAllocation] = field(default_factory=list)
+    seated_passengers_count: int = 1
+    bonus_tickets_count: int = 0
+    cash_tickets_count: int = 0
+    primary_cabin: str = "ECONOMY"
     points_used_by_wallet: dict[str, Any] = field(default_factory=dict)
     requires_two_plus_seat_verification: bool = False
     total_matmid_points: int = 0
@@ -1372,12 +1276,24 @@ class FlightItinerary(_DomainModelBase):
             FlightLeg.from_dict(leg) if not isinstance(leg, FlightLeg) else leg
             for leg in _parse_json_list(self.inbound_legs, [])
         ]
-        self.family_ticket_allocation = [
-            PassengerTicketAllocation.from_dict(item)
-            if not isinstance(item, PassengerTicketAllocation)
-            else item
-            for item in _parse_json_list(self.family_ticket_allocation, [])
-        ]
+        self.seated_passengers_count = int(self.seated_passengers_count)
+        if self.seated_passengers_count < 1:
+            raise ValueError(
+                f"seated_passengers_count must be >= 1, got {self.seated_passengers_count}"
+            )
+        self.bonus_tickets_count = int(self.bonus_tickets_count)
+        if self.bonus_tickets_count < 0:
+            raise ValueError(
+                f"bonus_tickets_count must be >= 0, got {self.bonus_tickets_count}"
+            )
+        self.cash_tickets_count = int(self.cash_tickets_count)
+        if self.cash_tickets_count < 0:
+            raise ValueError(
+                f"cash_tickets_count must be >= 0, got {self.cash_tickets_count}"
+            )
+        self.primary_cabin = str(self.primary_cabin or "ECONOMY").strip().upper()
+        if self.primary_cabin not in ("ECONOMY", "PREMIUM", "BUSINESS"):
+            raise ValueError(f"Invalid primary_cabin: {self.primary_cabin!r}")
         self.points_used_by_wallet = _parse_json_dict(self.points_used_by_wallet, {})
         self.requires_two_plus_seat_verification = _parse_bool(
             self.requires_two_plus_seat_verification, False
@@ -1394,10 +1310,17 @@ class FlightItinerary(_DomainModelBase):
         if self.cents_per_point_value is not None:
             self.cents_per_point_value = float(self.cents_per_point_value)
 
+    @property
+    def estimated_cash_usd(self) -> float:
+        return round(float(self.total_out_of_pocket_cash_usd), 2)
+
+    @property
+    def is_cash_price_estimate(self) -> bool:
+        return True
+
     def to_dict(self) -> dict[str, Any]:
         out_legs = [leg.to_dict() for leg in self.outbound_legs]
         in_legs = [leg.to_dict() for leg in self.inbound_legs]
-        allocs = [a.to_dict() for a in self.family_ticket_allocation]
         return {
             "id": self.id,
             "search_query_id": self.search_query_id,
@@ -1423,8 +1346,10 @@ class FlightItinerary(_DomainModelBase):
             "inbound_legs_json": json.dumps(in_legs),
             "outbound_bonus_id": self.outbound_bonus_id,
             "inbound_bonus_id": self.inbound_bonus_id,
-            "family_ticket_allocation": allocs,
-            "family_ticket_allocation_json": json.dumps(allocs),
+            "seated_passengers_count": self.seated_passengers_count,
+            "bonus_tickets_count": self.bonus_tickets_count,
+            "cash_tickets_count": self.cash_tickets_count,
+            "primary_cabin": self.primary_cabin,
             "points_used_by_wallet": dict(self.points_used_by_wallet),
             "points_used_by_wallet_json": json.dumps(self.points_used_by_wallet),
             "requires_two_plus_seat_verification": self.requires_two_plus_seat_verification,
@@ -1433,6 +1358,8 @@ class FlightItinerary(_DomainModelBase):
             "total_supplemental_cash_fares_usd": self.total_supplemental_cash_fares_usd,
             "total_baggage_fees_usd": self.total_baggage_fees_usd,
             "total_out_of_pocket_cash_usd": self.total_out_of_pocket_cash_usd,
+            "estimated_cash_usd": round(float(self.total_out_of_pocket_cash_usd), 2),
+            "is_cash_price_estimate": True,
             "full_cash_benchmark_usd": self.full_cash_benchmark_usd,
             "net_cash_saved_usd": self.net_cash_saved_usd,
             "cents_per_point_value": self.cents_per_point_value,
@@ -1451,9 +1378,6 @@ class FlightItinerary(_DomainModelBase):
         in_legs = data.get("inbound_legs")
         if in_legs is None:
             in_legs = data.get("inbound_legs_json", [])
-        allocs = data.get("family_ticket_allocation")
-        if allocs is None:
-            allocs = data.get("family_ticket_allocation_json", [])
         wallets = data.get("points_used_by_wallet")
         if wallets is None:
             wallets = data.get("points_used_by_wallet_json", {})
@@ -1483,7 +1407,22 @@ class FlightItinerary(_DomainModelBase):
             inbound_legs=_parse_json_list(in_legs, []),
             outbound_bonus_id=data.get("outbound_bonus_id"),
             inbound_bonus_id=data.get("inbound_bonus_id"),
-            family_ticket_allocation=_parse_json_list(allocs, []),
+            seated_passengers_count=(
+                int(data["seated_passengers_count"])
+                if data.get("seated_passengers_count") is not None
+                else 1
+            ),
+            bonus_tickets_count=(
+                int(data["bonus_tickets_count"])
+                if data.get("bonus_tickets_count") is not None
+                else 0
+            ),
+            cash_tickets_count=(
+                int(data["cash_tickets_count"])
+                if data.get("cash_tickets_count") is not None
+                else 0
+            ),
+            primary_cabin=str(data.get("primary_cabin") or "ECONOMY"),
             points_used_by_wallet=_parse_json_dict(wallets, {}),
             requires_two_plus_seat_verification=_parse_bool(
                 data.get("requires_two_plus_seat_verification", False)
@@ -1774,15 +1713,12 @@ class VacationOptionProposal(_DomainModelBase):
     itinerary_id: str = ""
     associated_holiday_codes: list[str] = field(default_factory=list)
     window_set_type: str = "CAMP_ADJUSTED_INTERSECTION"
-    total_vacation_days: int = 1
-    parent_pto_days_used: float = 0.0
-    pto_efficiency_ratio: float = 1.0
     school_absence_penalty: float = 0.0
     childcare_coverage_gain: float = 1.0
     per_child_impact: list[ChildTripImpact] = field(default_factory=list)
     total_school_days_missed_across_children: int = 0
     max_single_child_school_days_missed: int = 0
-    vacation_utilization_score: float = 0.0
+    holiday_alignment_score: float = 0.0
     flight_bonus_value_score: float = 0.0
     weather_suitability_score: float = 0.0
     vacation_type_scores: dict[str, float] = field(default_factory=dict)
@@ -1799,13 +1735,6 @@ class VacationOptionProposal(_DomainModelBase):
         ]
         if self.window_set_type not in WINDOW_SET_TYPES:
             raise ValueError(f"Invalid window_set_type: {self.window_set_type!r}")
-        self.total_vacation_days = int(self.total_vacation_days)
-        if self.total_vacation_days < 1:
-            raise ValueError("total_vacation_days must be >= 1")
-        self.parent_pto_days_used = float(self.parent_pto_days_used)
-        if self.parent_pto_days_used < 0.0:
-            raise ValueError("parent_pto_days_used must be >= 0.0")
-        self.pto_efficiency_ratio = float(self.pto_efficiency_ratio)
         self.school_absence_penalty = float(self.school_absence_penalty)
         self.childcare_coverage_gain = float(self.childcare_coverage_gain)
         self.per_child_impact = [
@@ -1818,7 +1747,11 @@ class VacationOptionProposal(_DomainModelBase):
         self.max_single_child_school_days_missed = int(
             self.max_single_child_school_days_missed
         )
-        self.vacation_utilization_score = float(self.vacation_utilization_score)
+        self.holiday_alignment_score = float(self.holiday_alignment_score)
+        if self.holiday_alignment_score < 0.0 or self.holiday_alignment_score > 100.0:
+            raise ValueError(
+                f"holiday_alignment_score must be between 0.0 and 100.0, got {self.holiday_alignment_score}"
+            )
         self.flight_bonus_value_score = float(self.flight_bonus_value_score)
         self.weather_suitability_score = round(
             float(self.weather_suitability_score or 0.0), 1
@@ -1877,16 +1810,13 @@ class VacationOptionProposal(_DomainModelBase):
             "associated_holiday_codes": list(self.associated_holiday_codes),
             "associated_holiday_codes_json": json.dumps(self.associated_holiday_codes),
             "window_set_type": self.window_set_type,
-            "total_vacation_days": self.total_vacation_days,
-            "parent_pto_days_used": self.parent_pto_days_used,
-            "pto_efficiency_ratio": self.pto_efficiency_ratio,
             "school_absence_penalty": self.school_absence_penalty,
             "childcare_coverage_gain": self.childcare_coverage_gain,
             "per_child_impact": impacts,
             "per_child_impact_json": json.dumps(impacts),
             "total_school_days_missed_across_children": self.total_school_days_missed_across_children,
             "max_single_child_school_days_missed": self.max_single_child_school_days_missed,
-            "vacation_utilization_score": self.vacation_utilization_score,
+            "holiday_alignment_score": self.holiday_alignment_score,
             "flight_bonus_value_score": self.flight_bonus_value_score,
             "weather_suitability_score": self.weather_suitability_score,
             "vacation_type_scores": dict(self.vacation_type_scores),
@@ -1918,6 +1848,7 @@ class VacationOptionProposal(_DomainModelBase):
             wm = _parse_json_dict(data.get("weather_metrics_json"), {})
         itin_data = data.get("itinerary")
         itin = FlightItinerary.from_dict(itin_data) if itin_data else None
+        raw_has = data.get("holiday_alignment_score")
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
             search_query_id=str(data.get("search_query_id") or ""),
@@ -1928,9 +1859,6 @@ class VacationOptionProposal(_DomainModelBase):
             window_set_type=str(
                 data.get("window_set_type") or "CAMP_ADJUSTED_INTERSECTION"
             ),
-            total_vacation_days=int(data.get("total_vacation_days", 1)),
-            parent_pto_days_used=float(data.get("parent_pto_days_used", 0.0)),
-            pto_efficiency_ratio=float(data.get("pto_efficiency_ratio", 1.0)),
             school_absence_penalty=float(data.get("school_absence_penalty", 0.0)),
             childcare_coverage_gain=float(data.get("childcare_coverage_gain", 1.0)),
             per_child_impact=_parse_json_list(impacts, []),
@@ -1940,8 +1868,8 @@ class VacationOptionProposal(_DomainModelBase):
             max_single_child_school_days_missed=int(
                 data.get("max_single_child_school_days_missed", 0)
             ),
-            vacation_utilization_score=float(
-                data.get("vacation_utilization_score", 0.0)
+            holiday_alignment_score=(
+                float(raw_has) if raw_has is not None else 0.0
             ),
             flight_bonus_value_score=float(data.get("flight_bonus_value_score", 0.0)),
             weather_suitability_score=float(
@@ -1964,48 +1892,11 @@ class VacationOptionProposal(_DomainModelBase):
 
 
 @dataclass
-class DailyParentStatus(_DomainModelBase):
-    calendar_date: date
-    workday_status: str = "REGULAR_WORKDAY"
-    pto_cost: float = 1.0
-    label_he: str = "יום עבודה רגיל"
-    tlv_airport_closed: bool = False
-
-    def __post_init__(self) -> None:
-        self.calendar_date = _parse_date(self.calendar_date)
-        self.pto_cost = float(self.pto_cost)
-        self.tlv_airport_closed = _parse_bool(self.tlv_airport_closed, False)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "calendar_date": self.calendar_date.isoformat(),
-            "workday_status": self.workday_status,
-            "pto_cost": self.pto_cost,
-            "label_he": self.label_he,
-            "tlv_airport_closed": self.tlv_airport_closed,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | Self) -> Self:
-        if isinstance(data, cls):
-            return data
-        return cls(
-            calendar_date=_parse_date(data["calendar_date"]),
-            workday_status=str(data.get("workday_status") or "REGULAR_WORKDAY"),
-            pto_cost=float(data.get("pto_cost", 1.0)),
-            label_he=str(data.get("label_he") or "יום עבודה רגיל"),
-            tlv_airport_closed=_parse_bool(data.get("tlv_airport_closed", False)),
-        )
-
-
-@dataclass
 class DailyFamilyCalendarMatrix(_DomainModelBase):
     school_year: str
     start_date: date
     end_date: date
     dates: list[date] = field(default_factory=list)
-    parent_pto_cost_by_date: dict[str, float] = field(default_factory=dict)
-    parent_workday_status_by_date: dict[str, str] = field(default_factory=dict)
     tlv_airport_closed_by_date: dict[str, bool] = field(default_factory=dict)
     holiday_codes_by_date: dict[str, list[str]] = field(default_factory=dict)
     child_status_by_id: dict[str, dict[str, ChildDayStatus]] = field(
@@ -2041,8 +1932,6 @@ class DailyFamilyCalendarMatrix(_DomainModelBase):
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
             "dates": [d.isoformat() for d in self.dates],
-            "parent_pto_cost_by_date": dict(self.parent_pto_cost_by_date),
-            "parent_workday_status_by_date": dict(self.parent_workday_status_by_date),
             "tlv_airport_closed_by_date": dict(self.tlv_airport_closed_by_date),
             "holiday_codes_by_date": dict(self.holiday_codes_by_date),
             "child_status_by_id": serialized_children,
@@ -2072,10 +1961,6 @@ class DailyFamilyCalendarMatrix(_DomainModelBase):
             start_date=_parse_date(data["start_date"]),
             end_date=_parse_date(data["end_date"]),
             dates=[_parse_date(d) for d in (data.get("dates") or [])],
-            parent_pto_cost_by_date=dict(data.get("parent_pto_cost_by_date") or {}),
-            parent_workday_status_by_date=dict(
-                data.get("parent_workday_status_by_date") or {}
-            ),
             tlv_airport_closed_by_date=dict(
                 data.get("tlv_airport_closed_by_date") or {}
             ),
@@ -2100,15 +1985,12 @@ class DailyFamilyCalendarMatrix(_DomainModelBase):
 class CandidateVacationWindow(_DomainModelBase):
     start_date: date
     end_date: date
-    total_vacation_days: int = 1
     trip_nights: int = 1
     window_set_type: str = "CAMP_ADJUSTED_INTERSECTION"
     associated_holiday_codes: list[str] = field(default_factory=list)
-    parent_pto_days_used: float = 0.0
-    pto_efficiency_ratio: float = 0.0
     school_absence_penalty: float = 0.0
     childcare_coverage_gain: float = 0.0
-    vacation_utilization_score: float = 0.0
+    holiday_alignment_score: float = 0.0
     per_child_impact: list[ChildTripImpact] = field(default_factory=list)
     total_school_days_missed_across_children: int = 0
     max_single_child_school_days_missed: int = 0
@@ -2120,21 +2002,19 @@ class CandidateVacationWindow(_DomainModelBase):
     def __post_init__(self) -> None:
         self.start_date = _parse_date(self.start_date)
         self.end_date = _parse_date(self.end_date)
-        self.total_vacation_days = int(
-            self.total_vacation_days
-            or ((self.end_date - self.start_date).days + 1)
-        )
         self.trip_nights = int(
             self.trip_nights or max(1, (self.end_date - self.start_date).days)
         )
         self.associated_holiday_codes = [
             str(x) for x in _parse_json_list(self.associated_holiday_codes, [])
         ]
-        self.parent_pto_days_used = float(self.parent_pto_days_used)
-        self.pto_efficiency_ratio = float(self.pto_efficiency_ratio)
         self.school_absence_penalty = float(self.school_absence_penalty)
         self.childcare_coverage_gain = float(self.childcare_coverage_gain)
-        self.vacation_utilization_score = float(self.vacation_utilization_score)
+        self.holiday_alignment_score = float(self.holiday_alignment_score)
+        if self.holiday_alignment_score < 0.0 or self.holiday_alignment_score > 100.0:
+            raise ValueError(
+                f"holiday_alignment_score must be between 0.0 and 100.0, got {self.holiday_alignment_score}"
+            )
         self.per_child_impact = [
             ChildTripImpact.from_dict(c) if not isinstance(c, ChildTripImpact) else c
             for c in (self.per_child_impact or [])
@@ -2152,10 +2032,6 @@ class CandidateVacationWindow(_DomainModelBase):
         self.has_bagrut_blackout = _parse_bool(self.has_bagrut_blackout, False)
 
     @property
-    def PER(self) -> float:
-        return self.pto_efficiency_ratio
-
-    @property
     def SAP(self) -> float:
         return self.school_absence_penalty
 
@@ -2164,22 +2040,19 @@ class CandidateVacationWindow(_DomainModelBase):
         return self.childcare_coverage_gain
 
     @property
-    def VUS(self) -> float:
-        return self.vacation_utilization_score
+    def HAS(self) -> float:
+        return self.holiday_alignment_score
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
-            "total_vacation_days": self.total_vacation_days,
             "trip_nights": self.trip_nights,
             "window_set_type": self.window_set_type,
             "associated_holiday_codes": list(self.associated_holiday_codes),
-            "parent_pto_days_used": self.parent_pto_days_used,
-            "pto_efficiency_ratio": self.pto_efficiency_ratio,
             "school_absence_penalty": self.school_absence_penalty,
             "childcare_coverage_gain": self.childcare_coverage_gain,
-            "vacation_utilization_score": self.vacation_utilization_score,
+            "holiday_alignment_score": self.holiday_alignment_score,
             "per_child_impact": [c.to_dict() for c in self.per_child_impact],
             "total_school_days_missed_across_children": self.total_school_days_missed_across_children,
             "max_single_child_school_days_missed": self.max_single_child_school_days_missed,
@@ -2195,12 +2068,10 @@ class CandidateVacationWindow(_DomainModelBase):
             return data
         s_date = _parse_date(data["start_date"])
         e_date = _parse_date(data["end_date"])
+        raw_has = data.get("holiday_alignment_score")
         return cls(
             start_date=s_date,
             end_date=e_date,
-            total_vacation_days=int(
-                data.get("total_vacation_days") or ((e_date - s_date).days + 1)
-            ),
             trip_nights=int(
                 data.get("trip_nights") or max(1, (e_date - s_date).days)
             ),
@@ -2210,12 +2081,10 @@ class CandidateVacationWindow(_DomainModelBase):
             associated_holiday_codes=_parse_json_list(
                 data.get("associated_holiday_codes"), []
             ),
-            parent_pto_days_used=float(data.get("parent_pto_days_used", 0.0)),
-            pto_efficiency_ratio=float(data.get("pto_efficiency_ratio", 0.0)),
             school_absence_penalty=float(data.get("school_absence_penalty", 0.0)),
             childcare_coverage_gain=float(data.get("childcare_coverage_gain", 0.0)),
-            vacation_utilization_score=float(
-                data.get("vacation_utilization_score", 0.0)
+            holiday_alignment_score=(
+                float(raw_has) if raw_has is not None else 0.0
             ),
             per_child_impact=[
                 ChildTripImpact.from_dict(c)
@@ -2291,7 +2160,6 @@ class VacationComparisonMatrix(_DomainModelBase):
     comparison_rows: list[dict[str, Any]] = field(default_factory=list)
     best_by_ctos_id: Optional[str] = None
     best_by_cash_savings_id: Optional[str] = None
-    best_by_per_id: Optional[str] = None
     best_by_minimal_absence_id: Optional[str] = None
     best_by_weather_id: Optional[str] = None
 
@@ -2310,7 +2178,6 @@ class VacationComparisonMatrix(_DomainModelBase):
             "comparison_rows": list(self.comparison_rows),
             "best_by_ctos_id": self.best_by_ctos_id,
             "best_by_cash_savings_id": self.best_by_cash_savings_id,
-            "best_by_per_id": self.best_by_per_id,
             "best_by_minimal_absence_id": self.best_by_minimal_absence_id,
             "best_by_weather_id": self.best_by_weather_id,
         }
@@ -2327,7 +2194,6 @@ class VacationComparisonMatrix(_DomainModelBase):
             comparison_rows=list(data.get("comparison_rows") or []),
             best_by_ctos_id=data.get("best_by_ctos_id"),
             best_by_cash_savings_id=data.get("best_by_cash_savings_id"),
-            best_by_per_id=data.get("best_by_per_id"),
             best_by_minimal_absence_id=data.get("best_by_minimal_absence_id"),
             best_by_weather_id=data.get("best_by_weather_id"),
         )

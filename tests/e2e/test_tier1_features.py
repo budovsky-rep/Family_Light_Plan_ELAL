@@ -50,7 +50,6 @@ from backend.app.schemas.domain import (
     MoEVacationWindow,
     MoEFrameworkType,
     PassengerLoyaltyWallet,
-    PassengerTicketAllocation,
     VacationComparisonMatrix,
     VacationOptionProposal,
     classify_passenger_type,
@@ -139,22 +138,15 @@ def _save_profile_to_repo_or_sqlite(
             conn.execute(
                 """
                 INSERT OR REPLACE INTO family_profiles (
-                    id, profile_name, adults_count, workweek_type,
-                    erev_chag_pto_weight, chol_hamoed_pto_weight,
-                    annual_pto_budget, max_pto_per_trip, matmid_points_balance,
+                    id, profile_name, adults_count, matmid_points_balance,
                     has_flycard, flycard_tier, flycard_companion_vouchers,
                     point_valuation_usd, preferred_currency
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     profile.id,
                     profile.profile_name,
                     profile.adults_count,
-                    profile.workweek_type,
-                    profile.erev_chag_pto_weight,
-                    profile.chol_hamoed_pto_weight,
-                    profile.annual_pto_budget,
-                    profile.max_pto_per_trip,
                     profile.matmid_points_balance,
                     1 if profile.has_flycard else 0,
                     profile.flycard_tier,
@@ -553,11 +545,8 @@ class TestTier1F01FamilyProfiles(Tier1BaseTestCase):
         self.assertEqual(profile.id, "default-family-profile")
         self.assertEqual(profile.profile_name, "משפחת בודובסקי")
         self.assertEqual(profile.adults_count, 2)
-        self.assertEqual(profile.workweek_type, "SUN_THU")
-        self.assertAlmostEqual(profile.erev_chag_pto_weight, 0.5)
-        self.assertAlmostEqual(profile.chol_hamoed_pto_weight, 0.5)
-        self.assertAlmostEqual(profile.annual_pto_budget, 14.0)
-        self.assertAlmostEqual(profile.max_pto_per_trip, 5.0)
+        self.assertNotIn("annual_pto_budget", profile.to_dict())
+        self.assertNotIn("workweek_type", profile.to_dict())
         self.assertEqual(profile.matmid_points_balance, 185000)
         self.assertTrue(profile.has_flycard)
         self.assertEqual(profile.flycard_tier, "FLY_CARD_PREMIUM")
@@ -565,22 +554,23 @@ class TestTier1F01FamilyProfiles(Tier1BaseTestCase):
         self.assertAlmostEqual(profile.point_valuation_usd, 0.016)
         self.assertEqual(profile.preferred_currency, "USD")
 
-    def test_f01_3_insert_and_roundtrip_sun_fri_workweek_profile(self) -> None:
+    def test_f01_3_profile_roundtrip_omits_removed_pto_and_workweek_fields(self) -> None:
         db_path, repo = self.make_isolated_env(auto_seed=True)
         prof = self.get_default_profile(db_path)
         prof.adults_count = 4
-        prof.workweek_type = "SUN_FRI"
-        prof.erev_chag_pto_weight = 0.0
-        prof.chol_hamoed_pto_weight = 1.0
-        prof.annual_pto_budget = 20.0
-        prof.max_pto_per_trip = 8.0
+        prof.matmid_points_balance = 240000
         saved = _save_profile_to_repo_or_sqlite(repo, db_path, prof)
         self.assertEqual(saved.adults_count, 4)
-        self.assertEqual(saved.workweek_type, "SUN_FRI")
-        self.assertAlmostEqual(saved.erev_chag_pto_weight, 0.0)
-        self.assertAlmostEqual(saved.chol_hamoed_pto_weight, 1.0)
-        self.assertAlmostEqual(saved.annual_pto_budget, 20.0)
-        self.assertAlmostEqual(saved.max_pto_per_trip, 8.0)
+        self.assertEqual(saved.matmid_points_balance, 240000)
+        dumped = saved.to_dict()
+        for removed_col in (
+            "workweek_type",
+            "erev_chag_pto_weight",
+            "chol_hamoed_pto_weight",
+            "annual_pto_budget",
+            "max_pto_per_trip",
+        ):
+            self.assertNotIn(removed_col, dumped)
 
     def test_f01_4_flycard_tiers_and_companion_vouchers_persistence(self) -> None:
         db_path, repo = self.make_isolated_env(auto_seed=True)
@@ -920,19 +910,11 @@ class TestTier1F04MoEVacationWindows(Tier1BaseTestCase):
             ).fetchall()
             self.assertGreater(len(kippur_rows), 0)
             self.assertTrue(any(r["tlv_airport_closed"] == 1 for r in kippur_rows))
-            statuses = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT DISTINCT parent_workday_status FROM moe_vacation_windows"
-                ).fetchall()
+            cols = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(moe_vacation_windows)").fetchall()
             }
-            valid_statuses = {
-                "PUBLIC_HOLIDAY_OFF",
-                "EREV_CHAG_HALF_DAY",
-                "CHOL_HAMOED",
-                "REGULAR_WORKDAY",
-            }
-            self.assertTrue(statuses.issubset(valid_statuses))
+            self.assertNotIn("parent_workday_status", cols)
         finally:
             conn.close()
 
@@ -1001,32 +983,24 @@ class TestTier1F05FlightSearchQueries(Tier1BaseTestCase):
         finally:
             conn.close()
 
-    def test_f05_2_persist_mode2_moe_vacation_maximization_query(self) -> None:
-        db_path, repo = self.make_isolated_env(auto_seed=True)
-        q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
-            airline_selection_mode="EL_AL_ONLY",
-            school_year="2026-2027",
-            target_holiday_codes=["PESACH", "HANUKKAH"],
-            max_bridge_days_shift=2,
-            overlap_policy="CAMP_ADJUSTED_INTERSECTION",
-            destination_iatas=["FCO"],
-        )
-        repo.save_search_query(q)
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            row = conn.execute(
-                "SELECT * FROM flight_search_queries WHERE date_selection_mode = 'MOE_VACATION_MAXIMIZATION' LIMIT 1"
-            ).fetchone()
-            self.assertIsNotNone(row)
-            self.assertEqual(row["school_year"], "2026-2027")
-            self.assertEqual(row["overlap_policy"], "CAMP_ADJUSTED_INTERSECTION")
-            self.assertEqual(
-                json.loads(row["target_holiday_codes_json"]), ["PESACH", "HANUKKAH"]
+    def test_f05_2_rejects_removed_moe_vacation_maximization_mode(self) -> None:
+        with self.assertRaises(ValueError):
+            FlightSearchQuery(
+                date_selection_mode="MOE_VACATION_MAXIMIZATION",
+                airline_selection_mode="EL_AL_ONLY",
+                school_year="2026-2027",
+                destination_iatas=["FCO"],
             )
-        finally:
-            conn.close()
+        coerced = FlightSearchQuery.from_dict(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "overlap_policy": "MAXIMIZE_EFFICIENCY_SCORE",
+                "destination_iatas": ["FCO"],
+            }
+        )
+        self.assertEqual(coerced.overlap_policy, "CAMP_ADJUSTED_INTERSECTION")
 
     def test_f05_3_persist_mode3_holiday_direct_intent_query(self) -> None:
         db_path, repo = self.make_isolated_env(auto_seed=True)
@@ -1256,7 +1230,10 @@ class TestTier1F07FlightItineraries(Tier1BaseTestCase):
         self.assertGreater(len(bonus_props), 0)
         itin = bonus_props[0].itinerary
         assert itin is not None
-        self.assertGreaterEqual(len(itin.family_ticket_allocation), 1)
+        self.assertGreaterEqual(itin.seated_passengers_count, 1)
+        self.assertGreaterEqual(itin.bonus_tickets_count, 1)
+        self.assertNotIn("family_ticket_allocation", itin.to_dict())
+        self.assertTrue(itin.to_dict()["is_cash_price_estimate"])
         self.assertIsInstance(itin.points_used_by_wallet, dict)
         self.assertGreater(len(itin.points_used_by_wallet), 0)
 
@@ -1314,14 +1291,6 @@ class TestTier1F07FlightItineraries(Tier1BaseTestCase):
             destination_iata="FCO",
             flight_date=date(2027, 4, 11),
         )
-        alloc = PassengerTicketAllocation(
-            passenger_label="יוני (הורה 1)",
-            ticket_mode="ELAL_MATMID_BONUS",
-            cabin_class="ECONOMY",
-            rbd_code="E",
-            points_used=30000,
-            taxes_usd=78.0,
-        )
         itin = FlightItinerary(
             origin_iata="TLV",
             destination_iata="FCO",
@@ -1331,19 +1300,27 @@ class TestTier1F07FlightItineraries(Tier1BaseTestCase):
             trip_nights=7,
             outbound_legs=[leg],
             inbound_legs=[leg],
-            family_ticket_allocation=[alloc],
-            points_used_by_wallet={"ELAL_MATMID": 30000},
-            total_matmid_points=30000,
-            total_taxes_and_fees_usd=78.0,
-            total_out_of_pocket_cash_usd=78.0,
-            full_cash_benchmark_usd=590.0,
-            net_cash_saved_usd=512.0,
+            seated_passengers_count=2,
+            bonus_tickets_count=2,
+            cash_tickets_count=0,
+            primary_cabin="ECONOMY",
+            points_used_by_wallet={"ELAL_MATMID": 60000},
+            total_matmid_points=60000,
+            total_taxes_and_fees_usd=156.0,
+            total_out_of_pocket_cash_usd=156.0,
+            full_cash_benchmark_usd=1180.0,
+            net_cash_saved_usd=1024.0,
             cents_per_point_value=1.71,
         )
-        restored = FlightItinerary.from_dict(itin.to_dict())
+        dumped = itin.to_dict()
+        self.assertNotIn("family_ticket_allocation", dumped)
+        self.assertEqual(dumped["estimated_cash_usd"], 156.0)
+        self.assertTrue(dumped["is_cash_price_estimate"])
+        restored = FlightItinerary.from_dict(dumped)
         self.assertEqual(restored.destination_iata, "FCO")
         self.assertEqual(len(restored.outbound_legs), 1)
-        self.assertEqual(restored.family_ticket_allocation[0].points_used, 30000)
+        self.assertEqual(restored.seated_passengers_count, 2)
+        self.assertEqual(restored.bonus_tickets_count, 2)
 
 
 # ============================================================================
@@ -1385,14 +1362,16 @@ class TestTier1F08VacationOptionProposals(Tier1BaseTestCase):
         )
         self.assertGreater(len(proposals), 0)
         for p in proposals:
-            self.assertGreaterEqual(p.vacation_utilization_score, 0.0)
-            self.assertLessEqual(p.vacation_utilization_score, 100.0)
+            self.assertGreaterEqual(p.holiday_alignment_score, 0.0)
+            self.assertLessEqual(p.holiday_alignment_score, 100.0)
+            self.assertNotIn("parent_pto_days_used", p.to_dict())
+            self.assertNotIn("pto_efficiency_ratio", p.to_dict())
             self.assertGreaterEqual(p.flight_bonus_value_score, 0.0)
             self.assertLessEqual(p.flight_bonus_value_score, 100.0)
             self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
             self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
             expected_ctos = (
-                0.55 * p.vacation_utilization_score
+                0.55 * p.holiday_alignment_score
                 + 0.45 * p.flight_bonus_value_score
             )
             self.assertAlmostEqual(
@@ -1825,19 +1804,20 @@ class TestTier1F12Mode1SpecificDates(Tier1BaseTestCase):
         self.assertGreater(len(proposals), 0)
         p = proposals[0]
         self.assertEqual(len(p.per_child_impact), 3)
-        self.assertGreater(p.parent_pto_days_used, 0.0)
-        self.assertGreater(p.vacation_utilization_score, 0.0)
+        self.assertNotIn("parent_pto_days_used", p.to_dict())
+        self.assertGreater(p.holiday_alignment_score, 0.0)
 
 
 # ============================================================================
-# Feature F13: Mode 2 (MOE_VACATION_MAXIMIZATION) Optimizer (5 tests)
+# Feature F13: Multi-Child Holiday Overlap & Bridge-Shift Optimizer (5 tests)
 # ============================================================================
 class TestTier1F13Mode2MoEVacationMaximization(Tier1BaseTestCase):
     def test_f13_1_strict_all_children_off_intersection_set_i(self) -> None:
         prof = self.get_default_profile()
         q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
-            school_year="2026-2027",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
+            direct_holiday_code="PESACH",
+            direct_target_year=2027,
             overlap_policy="STRICT_ALL_CHILDREN_OFF",
             max_bridge_days_shift=0,
             min_trip_nights=4,
@@ -1852,7 +1832,7 @@ class TestTier1F13Mode2MoEVacationMaximization(Tier1BaseTestCase):
     def test_f13_2_camp_adjusted_intersection_set_i_camp(self) -> None:
         prof = self.get_default_profile()
         q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             school_year="2026-2027",
             target_holiday_codes=["HANUKKAH", "PESACH"],
             overlap_policy="CAMP_ADJUSTED_INTERSECTION",
@@ -1896,13 +1876,13 @@ class TestTier1F13Mode2MoEVacationMaximization(Tier1BaseTestCase):
     ) -> None:
         prof = self.get_default_profile()
         q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             school_year="2026-2027",
             target_holiday_codes=["PESACH", "PURIM"],
             max_bridge_days_shift=2,
             min_trip_nights=4,
             max_trip_nights=8,
-            overlap_policy="MAXIMIZE_EFFICIENCY_SCORE",
+            overlap_policy="CAMP_ADJUSTED_INTERSECTION",
         )
         maximizer = self.get_maximizer()
         windows = maximizer.generate_candidate_windows(q, prof)
@@ -1930,7 +1910,7 @@ class TestTier1F13Mode2MoEVacationMaximization(Tier1BaseTestCase):
             )
         )
         q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             school_year="2026-2027",
             target_holiday_codes=["PESACH", "YOM_KIPPUR_SUKKOT"],
             max_bridge_days_shift=2,
@@ -2058,7 +2038,7 @@ class TestTier1F14Mode3HolidayDirectIntent(Tier1BaseTestCase):
 
 
 # ============================================================================
-# Feature F15: Mathematical Calendar Scoring Engine (PER, SAP, CCG, VUS) (5 tests)
+# Feature F15: Mathematical Calendar Scoring Engine (SAP, CCG, HAS) (5 tests)
 # ============================================================================
 class TestTier1F15CalendarScoringEngine(Tier1BaseTestCase):
     def test_f15_1_worked_example_1_kippur_sukkot_mega_bridge_and_subwindow(
@@ -2067,26 +2047,25 @@ class TestTier1F15CalendarScoringEngine(Tier1BaseTestCase):
         prof = self.get_default_profile()
         maximizer = self.get_maximizer()
         w12 = maximizer.evaluate_window(prof, date(2026, 9, 22), date(2026, 10, 3))
-        self.assertEqual(w12.total_vacation_days, 12)
+        self.assertEqual(w12.trip_nights, 11)
         self.assertAlmostEqual(w12.school_absence_penalty, 0.0)
         self.assertAlmostEqual(w12.childcare_coverage_gain, 1.0)
-        self.assertGreaterEqual(w12.vacation_utilization_score, 65.0)
+        self.assertEqual(w12.holiday_alignment_score, 100.0)
 
         w8 = maximizer.evaluate_window(prof, date(2026, 9, 25), date(2026, 10, 2))
-        self.assertEqual(w8.total_vacation_days, 8)
+        self.assertEqual(w8.trip_nights, 7)
         self.assertAlmostEqual(w8.school_absence_penalty, 0.0)
-        self.assertGreater(w8.vacation_utilization_score, w12.vacation_utilization_score)
+        self.assertEqual(w8.holiday_alignment_score, 100.0)
 
     def test_f15_2_worked_example_3_purim_long_weekend_bridge(self) -> None:
         prof = self.get_default_profile()
         maximizer = self.get_maximizer()
         w = maximizer.evaluate_window(prof, date(2027, 3, 23), date(2027, 3, 27))
-        self.assertEqual(w.total_vacation_days, 5)
-        self.assertAlmostEqual(w.parent_pto_days_used, 3.0, delta=0.5)
-        self.assertAlmostEqual(w.pto_efficiency_ratio, 5.0 / 3.0, delta=0.3)
+        self.assertEqual(w.trip_nights, 4)
         self.assertEqual(w.max_single_child_school_days_missed, 1)
         self.assertGreater(w.school_absence_penalty, 0.0)
         self.assertLess(w.school_absence_penalty, 1.2)
+        self.assertAlmostEqual(w.holiday_alignment_score, 64.8, places=1)
 
     def test_f15_3_worked_example_4_pesach_pre_holiday_bridge_vs_uncovered_week(
         self,
@@ -2097,18 +2076,18 @@ class TestTier1F15CalendarScoringEngine(Tier1BaseTestCase):
         w_uncov = maximizer.evaluate_window(prof, date(2027, 4, 20), date(2027, 4, 27))
         self.assertAlmostEqual(w_uncov.school_absence_penalty, 0.0)
         self.assertAlmostEqual(w_uncov.childcare_coverage_gain, 1.0)
-        self.assertGreaterEqual(w_uncov.vacation_utilization_score, 90.0)
+        self.assertEqual(w_uncov.holiday_alignment_score, 100.0)
         self.assertEqual(w_bridge.max_single_child_school_days_missed, 2)
-        self.assertGreater(w_bridge.vacation_utilization_score, 75.0)
+        self.assertGreater(w_bridge.holiday_alignment_score, 60.0)
+        self.assertLess(w_bridge.holiday_alignment_score, w_uncov.holiday_alignment_score)
 
     def test_f15_4_worked_example_5_shavuot_extended_weekend(self) -> None:
         prof = self.get_default_profile()
         maximizer = self.get_maximizer()
         w = maximizer.evaluate_window(prof, date(2027, 6, 9), date(2027, 6, 12))
-        self.assertEqual(w.total_vacation_days, 4)
-        self.assertAlmostEqual(w.parent_pto_days_used, 1.5, delta=0.5)
-        self.assertAlmostEqual(w.pto_efficiency_ratio, 4.0 / 1.5, delta=0.5)
+        self.assertEqual(w.trip_nights, 3)
         self.assertEqual(w.max_single_child_school_days_missed, 1)
+        self.assertAlmostEqual(w.holiday_alignment_score, 67.5, places=1)
 
     def test_f15_5_worked_example_6_june_20_30_inter_framework_arbitrage(self) -> None:
         prof = self.get_default_profile()
@@ -2119,12 +2098,11 @@ class TestTier1F15CalendarScoringEngine(Tier1BaseTestCase):
             date(2027, 6, 28),
             window_set_type="FRAMEWORK_DELTA_UNION",
         )
-        self.assertEqual(w.total_vacation_days, 8)
-        self.assertAlmostEqual(w.parent_pto_days_used, 6.0, delta=0.5)
+        self.assertEqual(w.trip_nights, 7)
         by_name = {c.child_name: c for c in w.per_child_impact}
         self.assertEqual(by_name["מאיה"].bridge_school_days_missed, 0)
-        self.assertGreaterEqual(w.vacation_utilization_score, 0.0)
-        self.assertLessEqual(w.vacation_utilization_score, 100.0)
+        self.assertGreaterEqual(w.holiday_alignment_score, 0.0)
+        self.assertLessEqual(w.holiday_alignment_score, 100.0)
 
 
 # ============================================================================
@@ -2446,10 +2424,10 @@ class TestTier1F20AnywhereRegionDiscovery(Tier1BaseTestCase):
         planner = self.get_planner()
         proposals = planner.search_vacations(
             {
-                "date_selection_mode": "MOE_VACATION_MAXIMIZATION",
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
                 "airline_selection_mode": "EL_AL_ONLY",
-                "school_year": "2026-2027",
-                "target_holiday_codes": ["PESACH"],
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
                 "destination_iatas": ["ANYWHERE"],
             }
         )
@@ -2626,7 +2604,10 @@ class TestTier1F22StrategyFullBonusSameCabin(Tier1BaseTestCase):
         self.assertIsNotNone(res)
         assert res is not None
         self.assertTrue(bool(_get_field(res, "requires_two_plus_seat_verification")))
-        self.assertEqual(len(_get_field(res, "family_ticket_allocation", [])), 5)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 5)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 0)
+        self.assertNotIn("family_ticket_allocation", res)
 
     def test_f22_3_full_bonus_same_cabin_business_class_allocation(self) -> None:
         eng = self.get_wallet_engine()
@@ -2637,10 +2618,9 @@ class TestTier1F22StrategyFullBonusSameCabin(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        self.assertEqual(len(allocs), 2)
-        for a in allocs:
-            self.assertEqual(_get_field(a, "cabin_class"), "BUSINESS")
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 2)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 2)
+        self.assertEqual(_get_field(res, "primary_cabin"), "BUSINESS")
 
     def test_f22_4_full_bonus_same_cabin_out_of_pocket_equals_taxes_only(self) -> None:
         eng = self.get_wallet_engine()
@@ -2687,10 +2667,11 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        cabins = [_get_field(a, "cabin_class") for a in allocs]
-        self.assertEqual(cabins.count("ECONOMY"), 2)
-        self.assertEqual(cabins.count("PREMIUM"), 2)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 0)
+        self.assertEqual(_get_field(res, "primary_cabin"), "ECONOMY")
+        self.assertEqual(_get_field(res, "total_matmid_points"), 2 * 30000 + 2 * 41000)
         self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
 
     def test_f23_2_split_cabin_bonus_two_economy_two_business_athens(self) -> None:
@@ -2706,10 +2687,9 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        cabins = [_get_field(a, "cabin_class") for a in allocs]
-        self.assertEqual(cabins.count("ECONOMY"), 2)
-        self.assertEqual(cabins.count("BUSINESS"), 2)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        self.assertEqual(_get_field(res, "total_matmid_points"), 2 * 17000 + 2 * 50000)
 
     def test_f23_3_split_cabin_bonus_five_pax_across_three_cabins(self) -> None:
         eng = self.get_wallet_engine()
@@ -2721,8 +2701,8 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        self.assertEqual(len(allocs), 5)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 5)
         self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
 
     def test_f23_4_split_cabin_bonus_same_flight_number_invariant(self) -> None:
@@ -2751,11 +2731,10 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
             prof, out_a, in_a, 590.0, "SPLIT_CABIN_BONUS", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        self.assertEqual(
-            _get_field(res, "total_matmid_points"),
-            sum(_get_field(a, "points_used", 0) for a in allocs),
+        expected_pts = 2 * (out_a.economy_points_per_pax + in_a.economy_points_per_pax) + 2 * (
+            out_a.premium_points_per_pax + in_a.premium_points_per_pax
         )
+        self.assertEqual(_get_field(res, "total_matmid_points"), expected_pts)
 
 
 # ============================================================================
@@ -2771,10 +2750,9 @@ class TestTier1F24StrategyHybridBonusPlusCash(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        self.assertEqual(len(allocs), 5)
-        modes = [_get_field(a, "ticket_mode") for a in allocs]
-        self.assertEqual(modes.count("COMMERCIAL_CASH"), 1)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 1)
         self.assertEqual(_get_field(res, "total_matmid_points"), 142000)
 
     def test_f24_2_hybrid_bonus_plus_cash_when_only_two_award_seats_exist(self) -> None:
@@ -2785,10 +2763,9 @@ class TestTier1F24StrategyHybridBonusPlusCash(Tier1BaseTestCase):
             prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY"], ["ELAL_MATMID"]
         )
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        modes = [_get_field(a, "ticket_mode") for a in allocs]
-        self.assertEqual(modes.count("ELAL_MATMID_BONUS"), 2)
-        self.assertEqual(modes.count("COMMERCIAL_CASH"), 3)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 2)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 3)
 
     def test_f24_3_hybrid_bonus_plus_cash_when_wallet_points_cover_partial_family(
         self,
@@ -2816,11 +2793,16 @@ class TestTier1F24StrategyHybridBonusPlusCash(Tier1BaseTestCase):
             prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY"], ["ELAL_MATMID"]
         )
         assert res is not None
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        bonus_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "ticket_mode") != "COMMERCIAL_CASH"]
-        cash_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "ticket_mode") == "COMMERCIAL_CASH"]
-        self.assertTrue(any("ADULT" in p or "הורה" in p for p in bonus_pax))
-        self.assertTrue(any("ADULT" in p or "הורה" in p for p in cash_pax))
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 2)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 2)
+        # With only 1 adult + 2 children (<12), splitting across bonus+cash PNRs is disqualified
+        prof_single = FamilyProfile.from_dict(prof.to_dict())
+        prof_single.adults_count = 1
+        res_single = eng.allocate_family_tickets(
+            prof_single, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY"], ["ELAL_MATMID"]
+        )
+        self.assertIsNone(res_single)
 
     def test_f24_5_hybrid_blended_cost_and_net_savings_math(self) -> None:
         eng = self.get_wallet_engine()
@@ -3145,7 +3127,7 @@ class TestTier1F27StrategyMultiClubWalletSplit(Tier1BaseTestCase):
 
 
 # ============================================================================
-# Feature F28: FBVS, CTOS, Side-by-Side Comparison & .ics Export (5 tests)
+# Feature F28: FBVS, CTOS, Side-by-Side Comparison & Estimated Cash (5 tests)
 # ============================================================================
 class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
     def test_f28_1_fbvs_and_ctos_weighted_combination_accuracy(self) -> None:
@@ -3161,7 +3143,7 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
         )
         self.assertGreater(len(proposals), 0)
         for p in proposals:
-            expected = 0.55 * p.vacation_utilization_score + 0.45 * p.flight_bonus_value_score
+            expected = 0.55 * p.holiday_alignment_score + 0.45 * p.flight_bonus_value_score
             self.assertAlmostEqual(p.combined_trip_optimization_score, expected, delta=0.3)
 
     def test_f28_2_compare_proposals_returns_comparison_matrix_and_best_ids(
@@ -3181,13 +3163,17 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
         cmp_res = _as_dict(planner.compare_proposals(ids))
         self.assertEqual(len(cmp_res["proposals"]), len(ids))
         self.assertGreater(len(cmp_res["comparison_rows"]), 0)
+        self.assertNotIn("best_by_per_id", cmp_res)
         for key in (
             "best_by_ctos_id",
             "best_by_cash_savings_id",
-            "best_by_per_id",
             "best_by_minimal_absence_id",
         ):
             self.assertIn(cmp_res[key], ids)
+        oop_row = next(
+            r for r in cmp_res["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd"
+        )
+        self.assertIn("הערכת תשלום במזומן", oop_row["label_he"])
 
     def test_f28_3_compare_proposals_winner_selection_correctness(self) -> None:
         planner = self.get_planner()
@@ -3209,7 +3195,9 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
             best_ctos.combined_trip_optimization_score,
         )
 
-    def test_f28_4_export_proposal_ics_generates_valid_rfc5545_icalendar(self) -> None:
+    def test_f28_4_cash_pricing_presented_as_non_binding_estimate_in_summary_and_comparison(
+        self,
+    ) -> None:
         planner = self.get_planner()
         proposals = planner.search_vacations(
             {
@@ -3220,26 +3208,35 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
                 "destination_iatas": ["FCO"],
             }
         )
-        ics = planner.export_proposal_ics(proposals[0].id)
-        self.assertTrue(ics.strip().startswith("BEGIN:VCALENDAR"))
-        self.assertTrue(ics.strip().endswith("END:VCALENDAR"))
-        for token in ("VERSION:2.0", "PRODID:", "BEGIN:VEVENT", "DTSTART", "DTEND", "SUMMARY:", "END:VEVENT"):
-            self.assertIn(token, ics)
+        self.assertGreaterEqual(len(proposals), 2)
+        for p in proposals[:2]:
+            self.assertIn("~$", p.explanation_summary_he)
+            self.assertIn("לא מחייב", p.explanation_summary_he)
+            assert p.itinerary is not None
+            self.assertTrue(p.itinerary.to_dict()["is_cash_price_estimate"])
+        cmp_res = _as_dict(planner.compare_proposals([proposals[0].id, proposals[1].id]))
+        oop_row = next(
+            r for r in cmp_res["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd"
+        )
+        self.assertTrue(all(str(v).startswith("~$") for v in oop_row["values"].values()))
 
-    def test_f28_5_export_proposal_ics_embeds_flight_and_vacation_details(self) -> None:
+    def test_f28_5_ics_export_removed_from_planner_service_and_rest_api(self) -> None:
         planner = self.get_planner()
-        proposals = planner.search_vacations(
-            {
+        self.assertFalse(hasattr(planner, "export_proposal_ics"))
+        client = self.get_client()
+        s_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
                 "date_selection_mode": "SPECIFIC_DATES",
                 "airline_selection_mode": "EL_AL_ONLY",
                 "specific_departure_date": "2027-04-11",
                 "specific_return_date": "2027-04-18",
                 "destination_iatas": ["FCO"],
-            }
+            },
         )
-        ics = planner.export_proposal_ics(proposals[0].id)
-        self.assertTrue("FCO" in ics or "רומא" in ics or "Rome" in ics)
-        self.assertIn("20270411", ics)
+        self.assertEqual(s_resp.status_code, 200)
+        pid = s_resp.json()["proposals"][0]["id"]
+        self.assertEqual(client.get(f"/api/v1/vacations/{pid}/export.ics").status_code, 404)
 
 
 # ============================================================================
@@ -3268,12 +3265,11 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         g_resp = client.get("/api/v1/profile")
         self.assertEqual(g_resp.status_code, 200)
         prof_data = g_resp.json()
-        prof_data["annual_pto_budget"] = 18.0
-        prof_data["matmid_points_balance"] = 95000
+        prof_data["matmid_points_balance"] = 195000
         p_resp = client.put("/api/v1/profile", json=prof_data)
         self.assertEqual(p_resp.status_code, 200)
-        self.assertAlmostEqual(p_resp.json()["annual_pto_budget"], 18.0)
-        self.assertEqual(p_resp.json()["matmid_points_balance"], 95000)
+        self.assertNotIn("annual_pto_budget", p_resp.json())
+        self.assertEqual(p_resp.json()["matmid_points_balance"], 195000)
 
     def test_f29_2_moe_calendar_get_and_sync_post_endpoints(self) -> None:
         db_path, _repo = self.make_isolated_env(auto_seed=True)
@@ -3336,8 +3332,7 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         self.assertIn(c_resp.json()["best_by_ctos_id"], pids)
 
         i_resp = client.get(f"/api/v1/vacations/{pids[0]}/export.ics")
-        self.assertEqual(i_resp.status_code, 200)
-        self.assertIn("BEGIN:VCALENDAR", i_resp.text)
+        self.assertEqual(i_resp.status_code, 404)
 
         # Verify GET /api/v1/destinations/weather and typed vacation search
         w_resp = client.get(
@@ -3523,7 +3518,6 @@ class TestTier1F30CliCompanion(Tier1BaseTestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             jpath = Path(tmp) / "out.json"
-            ipath = Path(tmp) / "out.ics"
             res = self._run_cli(
                 "search",
                 "--mode",
@@ -3538,14 +3532,24 @@ class TestTier1F30CliCompanion(Tier1BaseTestCase):
                 "2027",
                 "--export-json",
                 str(jpath),
-                "--export-ics",
-                str(ipath),
             )
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertTrue(jpath.exists())
-            self.assertTrue(ipath.exists())
             self.assertGreaterEqual(len(json.loads(jpath.read_text("utf-8"))["proposals"]), 1)
-            self.assertIn("BEGIN:VCALENDAR", ipath.read_text("utf-8"))
+            self.assertIn("Est. Cash: ~$", res.stdout)
+
+            bad_ics = self._run_cli(
+                "search",
+                "--mode",
+                "holiday-direct",
+                "--destination",
+                "FCO",
+                "--holiday",
+                "PESACH",
+                "--export-ics",
+                str(Path(tmp) / "removed.ics"),
+            )
+            self.assertNotEqual(bad_ics.returncode, 0)
 
     def test_f30_5_cli_module_invocation_and_serve_help(self) -> None:
         res = subprocess.run(
@@ -3585,7 +3589,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         # Mobile bottom nav must be hidden on desktop
         self.assertRegex(html, r'<nav[^>]*class="mobile-bottom-nav"[^>]*hidden')
 
-        # Run 3 UI invariants on GET /
+        # Run 3 + Run 7 UI invariants on GET /
         for removed_token in (
             'id="select-direct-year"',
             'id="tab-mode-moe"',
@@ -3598,8 +3602,17 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             'id="family-clubs-totals-strip"',
             "EL AL rbddataclients + MoE",
             "brand-badge",
+            'id="prof-pto-budget"',
+            "תקציב חופש",
+            "ימי החופש",
+            "ימי חופש",
+            "מקסום ימי חופש",
+            "פירוט הקצאת",
+            "btn-ics-link",
+            "export.ics",
         ):
             self.assertNotIn(removed_token, html)
+        self.assertIsNone(re.search(r"(?<![א-ת])יום חופש(?![א-ת])", html))
 
         soup = BeautifulSoup(html, "html.parser")
         dest_sel = soup.find("select", id="select-destination")
@@ -3693,13 +3706,14 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         app_js = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
         dom_ts = (PROJECT_ROOT / "frontend" / "src" / "types" / "domain.ts").read_text("utf-8")
         combined = app_js + "\n" + dom_ts
-        for mode in ("SPECIFIC_DATES", "MOE_VACATION_MAXIMIZATION", "HOLIDAY_DIRECT_INTENT", "EL_AL_ONLY", "ALL_AIRLINES", "ANYWHERE"):
+        for mode in ("SPECIFIC_DATES", "HOLIDAY_DIRECT_INTENT", "EL_AL_ONLY", "ALL_AIRLINES", "ANYWHERE"):
             self.assertIn(mode, combined)
+        self.assertNotIn("MOE_VACATION_MAXIMIZATION", combined)
         for fw in MoEFrameworkType:
             self.assertIn(fw.value, combined)
         for club in LoyaltyProgramCode:
             self.assertIn(club.value, combined)
-        # Verify dynamic child cards & Run 3 single household Matmid balance / rolling holiday contracts in app.js
+        # Verify dynamic child cards & Run 3/7 single household Matmid balance / estimated cash contracts in app.js
         self.assertIn("form-grid form-grid-2", app_js)
         self.assertIn("desktop-nav-btn", app_js)
         for required_js_token in (
@@ -3712,6 +3726,8 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "EL_AL_ONLY",
             "ELAL_MATMID",
             "ANYWHERE",
+            "הערכת מחיר במזומן",
+            "Est. Cash Price",
         ):
             self.assertIn(required_js_token, app_js)
         for removed_js_token in (
@@ -3721,6 +3737,12 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "select-airline-mode",
             "select-direct-year",
             "מקסום שנתי",
+            "prof-pto-budget",
+            "annual_pto_budget",
+            "allocations-details",
+            "formatGenericPassengerLabel",
+            "btn-ics-link",
+            "export.ics",
         ):
             self.assertNotIn(removed_js_token, app_js)
         self.assertIn("אין משיכה של טיסות מהשרת", app_js)

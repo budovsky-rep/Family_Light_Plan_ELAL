@@ -1,9 +1,8 @@
 """REST API v1 Endpoints & Dispatcher (`F29`) for family_vacation_planner.
 
-Implements all 8 core REST API endpoints + `.ics` calendar export using Python
-3.13 standard library + project domain services, with zero external runtime
-dependencies so it operates both in-process (`VacationPlannerTestClient`) and
-over live HTTP (`ThreadingHTTPServer`).
+Implements all core REST API endpoints using Python 3.13 standard library +
+project domain services, with zero external runtime dependencies so it operates
+both in-process (`VacationPlannerTestClient`) and over live HTTP (`ThreadingHTTPServer`).
 
 Endpoints:
 1. `GET  /api/v1/health`
@@ -15,7 +14,6 @@ Endpoints:
 7. `GET  /api/v1/elal-bonus/availability`
 8. `POST /api/v1/vacations/search`
 9. `POST /api/v1/vacations/compare`
-10. `GET /api/v1/vacations/{proposal_id}/export.ics`
 """
 
 from __future__ import annotations
@@ -70,7 +68,6 @@ from backend.app.schemas.domain import (
     VACATION_TYPE_LABELS_EN,
     VACATION_TYPE_LABELS_HE,
     WEATHER_FILTER_MODES,
-    WORKWEEK_TYPES,
 )
 from backend.app.storage_cache.repository import SQLiteRepository
 from backend.app.storage_cache.seed_data import (
@@ -102,6 +99,47 @@ _SQLITE_INT64_MAX = (1 << 63) - 1
 _MAX_POINTS_BALANCE = 10**9
 _MAX_VOUCHERS_COUNT = 10**6
 _MAX_FLOAT_MAGNITUDE = 1e12
+
+_VALID_PROFILE_TOP_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "profile_name",
+        "adults_count",
+        "matmid_points_balance",
+        "has_flycard",
+        "flycard_tier",
+        "flycard_companion_vouchers",
+        "point_valuation_usd",
+        "preferred_currency",
+        "children",
+        "passenger_loyalty_wallets",
+        "created_at",
+        "updated_at",
+        "is_persisted",
+        "notifications_enabled",
+        "profile_id",
+        "user_id",
+        "email",
+    }
+)
+
+_REMOVED_PTO_SEARCH_KEYS: frozenset[str] = frozenset(
+    {
+        "workweek_type",
+        "erev_chag_pto_weight",
+        "chol_hamoed_pto_weight",
+        "annual_pto_budget",
+        "annual_pto_days_budget",
+        "max_pto_per_trip",
+    }
+)
+
+_CASH_PRICING_DISCLAIMER_HE = (
+    "סכומי המזומן, המסים והחיסכון מוצגים כהערכה לא מחייבת בלבד; המחיר הסופי נקבע בעת בחירת הטיסה."
+)
+_CASH_PRICING_DISCLAIMER_EN = (
+    "Cash, tax, and savings figures are non-binding estimates only; final pricing is determined at flight selection."
+)
 
 
 def _validate_optional_str(
@@ -404,6 +442,10 @@ def _validate_profile_payload_strict(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Profile payload must be a JSON object")
 
+    unknown_keys = sorted(set(payload.keys()) - _VALID_PROFILE_TOP_KEYS)
+    if unknown_keys:
+        raise ValueError(f"Unsupported or removed profile fields: {unknown_keys}")
+
     for str_key, max_l in (
         ("id", 128),
         ("profile_id", 128),
@@ -415,6 +457,10 @@ def _validate_profile_payload_strict(payload: dict[str, Any]) -> None:
     ):
         if str_key in payload:
             _validate_optional_str(payload[str_key], str_key, max_len=max_l)
+
+    if "is_persisted" in payload and payload["is_persisted"] is not None:
+        if not isinstance(payload["is_persisted"], bool):
+            raise ValueError("is_persisted must be a boolean")
 
     if "notifications_enabled" in payload and payload["notifications_enabled"] is not None:
         if not isinstance(payload["notifications_enabled"], bool):
@@ -430,11 +476,6 @@ def _validate_profile_payload_strict(payload: dict[str, Any]) -> None:
         )
         payload["adults_count"] = adults
 
-    if "workweek_type" in payload:
-        workweek = payload["workweek_type"]
-        if not isinstance(workweek, str) or workweek not in WORKWEEK_TYPES:
-            raise ValueError(f"Invalid workweek_type: {workweek!r}")
-
     if "flycard_tier" in payload:
         fc_tier = payload["flycard_tier"]
         if not isinstance(fc_tier, str) or fc_tier not in FLYCARD_TIERS:
@@ -444,32 +485,6 @@ def _validate_profile_payload_strict(payload: dict[str, Any]) -> None:
         curr = payload["preferred_currency"]
         if not isinstance(curr, str) or curr not in CURRENCIES:
             raise ValueError(f"Invalid preferred_currency: {curr!r}")
-
-    for weight_key in ("erev_chag_pto_weight", "chol_hamoed_pto_weight"):
-        if weight_key in payload:
-            w = _parse_strict_float(payload[weight_key], weight_key)
-            if w not in (0.0, 0.5, 1.0):
-                raise ValueError(f"{weight_key} must be one of (0.0, 0.5, 1.0)")
-            payload[weight_key] = w
-
-    for non_neg_float_key in (
-        "annual_pto_budget",
-        "annual_pto_days_budget",
-        "max_pto_per_trip",
-    ):
-        if non_neg_float_key in payload:
-            f_val = _parse_strict_float(
-                payload[non_neg_float_key],
-                non_neg_float_key,
-                min_val=0.0,
-                max_val=1e6,
-            )
-            payload[non_neg_float_key] = f_val
-            if (
-                non_neg_float_key == "annual_pto_days_budget"
-                and "annual_pto_budget" not in payload
-            ):
-                payload["annual_pto_budget"] = f_val
 
     if "matmid_points_balance" in payload:
         payload["matmid_points_balance"] = _parse_strict_int(
@@ -791,6 +806,12 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Search payload must be a JSON object")
 
+    bad_pto_keys = sorted(set(payload.keys()) & _REMOVED_PTO_SEARCH_KEYS)
+    if bad_pto_keys:
+        raise ValueError(
+            f"Removed PTO/workweek fields are no longer supported: {bad_pto_keys}"
+        )
+
     for str_key in ("id", "family_profile_id", "profile_id", "created_at"):
         if str_key in payload:
             _validate_optional_str(payload[str_key], str_key, max_len=128)
@@ -906,7 +927,7 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
         if not isinstance(d_mode, str) or d_mode not in _VALID_DATE_MODES:
             raise ValueError(f"Invalid date_selection_mode: {d_mode!r}")
     else:
-        d_mode = "MOE_VACATION_MAXIMIZATION"
+        d_mode = "HOLIDAY_DIRECT_INTENT"
 
     if "airline_selection_mode" in payload:
         a_mode = payload["airline_selection_mode"]
@@ -1089,12 +1110,6 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
 
     inline_top_keys = (
         "adults_count",
-        "workweek_type",
-        "erev_chag_pto_weight",
-        "chol_hamoed_pto_weight",
-        "annual_pto_budget",
-        "annual_pto_days_budget",
-        "max_pto_per_trip",
         "has_flycard",
         "flycard_tier",
         "flycard_companion_vouchers",
@@ -1158,11 +1173,6 @@ class VacationPlannerAPIRouter:
         prof_dict = base_prof.to_dict()
         override_keys = (
             "adults_count",
-            "workweek_type",
-            "erev_chag_pto_weight",
-            "chol_hamoed_pto_weight",
-            "annual_pto_budget",
-            "max_pto_per_trip",
             "has_flycard",
             "flycard_tier",
             "flycard_companion_vouchers",
@@ -1262,11 +1272,7 @@ class VacationPlannerAPIRouter:
                 method_u == "GET"
                 and path.startswith("/api/v1/moe-calendar/")
             )
-            or path in ("/api/v1/vacations/search", "/api/v1/vacations/compare")
-            or (
-                path.startswith("/api/v1/vacations/")
-                and path.endswith("/export.ics")
-            )
+            or path.startswith("/api/v1/vacations/")
         )
         json_headers: dict[str, Any] = {"Content-Type": "application/json; charset=utf-8"}
         private_json_headers: dict[str, Any] = {
@@ -1448,7 +1454,7 @@ class VacationPlannerAPIRouter:
                     if "notifications_enabled" in body
                     else None
                 )
-                for untrusted_key in ("id", "profile_id", "user_id", "email"):
+                for untrusted_key in ("id", "profile_id", "user_id", "email", "is_persisted"):
                     body.pop(untrusted_key, None)
 
                 # Minimize children PII: default generic child_name, default birth_date to None
@@ -1585,7 +1591,7 @@ class VacationPlannerAPIRouter:
                 )
                 candidates = self.maximizer_engine.generate_candidate_windows(
                     FlightSearchQuery(
-                        date_selection_mode="MOE_VACATION_MAXIMIZATION",
+                        date_selection_mode="HOLIDAY_DIRECT_INTENT",
                         school_year=norm_year,
                         min_trip_nights=4,
                         max_trip_nights=10,
@@ -1845,10 +1851,11 @@ class VacationPlannerAPIRouter:
                     raise ValueError("Request body must be a JSON object")
                 body = dict(json_body)
                 _validate_search_payload_strict(body)
-                if body.get("overlap_policy") == "CAMP_AWARE_ALL_CHILDREN_OFF":
+                if body.get("overlap_policy") in (
+                    "CAMP_AWARE_ALL_CHILDREN_OFF",
+                    "WEIGHTED_MIN_ABSENCE",
+                ):
                     body["overlap_policy"] = "CAMP_ADJUSTED_INTERSECTION"
-                elif body.get("overlap_policy") == "WEIGHTED_MIN_ABSENCE":
-                    body["overlap_policy"] = "MAXIMIZE_EFFICIENCY_SCORE"
 
                 resolved_ty: Optional[int] = None
                 raw_ty = body.get("direct_target_year")
@@ -1912,6 +1919,9 @@ class VacationPlannerAPIRouter:
                     "expanded_destinations": expanded_dests,
                     "count": len(proposals),
                     "live_fetch_mode": live_mode,
+                    "is_cash_price_estimate": True,
+                    "cash_pricing_disclaimer_he": _CASH_PRICING_DISCLAIMER_HE,
+                    "cash_pricing_disclaimer_en": _CASH_PRICING_DISCLAIMER_EN,
                     "status_message_he": status_msg_he,
                     "status_message_en": status_msg_en,
                     "weather_fallback_message_he": weather_fallback_he,
@@ -2059,52 +2069,14 @@ class VacationPlannerAPIRouter:
                 matrix_dict = (
                     matrix.to_dict() if hasattr(matrix, "to_dict") else dict(matrix)
                 )
+                matrix_dict["is_cash_price_estimate"] = True
+                matrix_dict["cash_pricing_disclaimer_he"] = _CASH_PRICING_DISCLAIMER_HE
+                matrix_dict["cash_pricing_disclaimer_en"] = _CASH_PRICING_DISCLAIMER_EN
                 return (
                     200,
                     private_json_headers,
                     json.dumps(matrix_dict, ensure_ascii=False),
                 )
-
-            # 10. GET /api/v1/vacations/{proposal_id}/export.ics
-            if (
-                method_u == "GET"
-                and path.startswith("/api/v1/vacations/")
-                and path.endswith("/export.ics")
-            ):
-                middle = path[len("/api/v1/vacations/") : -len("/export.ics")].strip("/")
-                if (
-                    not middle
-                    or "/" in middle
-                    or "\r" in middle
-                    or "\n" in middle
-                    or "\x00" in middle
-                    or len(middle) > 128
-                ):
-                    return (
-                        400,
-                        private_json_headers,
-                        json.dumps({"error": "Invalid or missing proposal_id"}),
-                    )
-                session = self.auth_service.resolve_session(request_headers)
-                try:
-                    ics_text = self.planner_service.export_proposal_ics(
-                        middle,
-                        requester_user_id=session["user_id"] if session else None,
-                        enforce_owner=True,
-                    )
-                except (LookupError, KeyError, ValueError) as exc:
-                    return (
-                        404,
-                        private_json_headers,
-                        json.dumps({"error": redact_pii(str(exc))}, ensure_ascii=False),
-                    )
-                ics_headers = {
-                    "Content-Type": "text/calendar; charset=utf-8",
-                    "Content-Disposition": f'attachment; filename="vacation-{middle}.ics"',
-                    "Cache-Control": "no-store, private",
-                    "Vary": "Cookie",
-                }
-                return 200, ics_headers, ics_text
 
             return (
                 404,

@@ -44,9 +44,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
     },
     "optimization_weights": {
-        "vus_alpha_per": 0.60,
-        "vus_beta_ccg": 0.40,
-        "vus_gamma_sap": 0.35,
         "ctos_calendar_weight": 0.55,
         "ctos_flight_weight": 0.45,
         "ctos_filtered_weather_weight": 0.35,

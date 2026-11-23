@@ -1,7 +1,7 @@
 """Tier 4 Opaque-Box End-to-End Real-World Application Scenario Test Suite.
 
-Contains 18 comprehensive end-to-end family vacation planning workflow tests
-(test_scenario_01_* .. test_scenario_18_*, >= 16) verifying full-stack integration
+Contains 22 comprehensive end-to-end family vacation planning workflow tests
+(test_scenario_01_* .. test_scenario_22_*, >= 16) verifying full-stack integration
 across SQLite WAL storage, MoE Calendar & Auto-Updater, Vacation Maximizer,
 El Al rbddataclients & All-Airlines Adapters, Multi-Club Wallets, 6 Fulfillment
 Strategies, REST API, CLI companion, and Mobile/Desktop BiDi/RTL Web UI & PWA.
@@ -117,15 +117,17 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertAlmostEqual(it["total_supplemental_cash_fares_usd"], 460.0, delta=30.0)
         self.assertAlmostEqual(it["net_cash_saved_usd"], 2100.0, delta=100.0)
         self.assertAlmostEqual(it["cents_per_point_value"], 1.48, delta=0.10)
-        self.assertGreater(flagship["vacation_utilization_score"], 75.0)
-        self.assertGreater(flagship["combined_trip_optimization_score"], 85.0)
+        self.assertTrue(it["is_cash_price_estimate"])
+        self.assertIn("~$", flagship["explanation_summary_he"])
+        self.assertAlmostEqual(flagship["holiday_alignment_score"], 68.4, places=1)
+        self.assertGreater(flagship["combined_trip_optimization_score"], 80.0)
 
         maximizer = self.get_maximizer(self.get_calendar_service(repo))
         prof_obj = self.get_default_profile(db_path)
         w_uncov = maximizer.evaluate_window(prof_obj, date(2027, 4, 20), date(2027, 4, 27))
         self.assertAlmostEqual(w_uncov.school_absence_penalty, 0.0)
         self.assertAlmostEqual(w_uncov.childcare_coverage_gain, 1.0)
-        self.assertGreaterEqual(w_uncov.vacation_utilization_score, 90.0)
+        self.assertGreaterEqual(w_uncov.holiday_alignment_score, 90.0)
 
     def test_scenario_02_hanukkah_2026_athens_nitzanim_camp_toggle_comparison(self) -> None:
         _db_path, repo, client = self.create_authenticated_client_env("scen02@gmail.com")
@@ -190,7 +192,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
     def test_scenario_04_yom_kippur_sukkot_mega_bridge_avoiding_tlv_shutdown(self) -> None:
         db_path, repo, client = self.create_authenticated_client_env("scen04@gmail.com")
         prof = self.get_default_profile(db_path)
-        prof.max_pto_per_trip = 8.0
         prof.children.append(ChildFramework(id="c-hs-4", child_name="תומר", child_age_years=16, framework_type="HIGH_SCHOOL_10_12", school_week_days=5))
         self.assertEqual(client.put("/api/v1/profile", json=prof.to_dict()).status_code, 200)
 
@@ -264,8 +265,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertGreater(len(proposals), 0)
         self.assertTrue(any(len(p["itinerary"]["points_used_by_wallet"]) > 0 for p in proposals))
         for p in proposals:
-            allocs = p["itinerary"]["family_ticket_allocation"]
-            self.assertEqual(len(allocs), 5)
+            it = p["itinerary"]
+            self.assertNotIn("family_ticket_allocation", it)
+            self.assertEqual(it["seated_passengers_count"], 5)
+            self.assertGreaterEqual(it["bonus_tickets_count"], 0)
+            self.assertTrue(it["is_cash_price_estimate"])
 
     def test_scenario_07_mode1_specific_dates_without_frameworks_and_age_classification(self) -> None:
         self.assertEqual(classify_passenger_type(1, infant_seat=False), "INFANT_LAP")
@@ -318,15 +322,12 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         cmp_resp = client.post("/api/v1/vacations/compare", json={"proposal_ids": top_ids})
         self.assertEqual(cmp_resp.status_code, 200)
         cmp_body = cmp_resp.json()
-        for key in ("proposals", "comparison_rows", "best_by_ctos_id", "best_by_cash_savings_id", "best_by_per_id", "best_by_minimal_absence_id"):
+        for key in ("proposals", "comparison_rows", "best_by_ctos_id", "best_by_cash_savings_id", "best_by_minimal_absence_id"):
             self.assertIn(key, cmp_body)
+        self.assertNotIn("best_by_per_id", cmp_body)
 
         ics_resp = client.get(f"/api/v1/vacations/{top_ids[0]}/export.ics")
-        self.assertEqual(ics_resp.status_code, 200)
-        self.assertIn("text/calendar", ics_resp.headers.get("Content-Type", ""))
-        self.assertIn("BEGIN:VCALENDAR", ics_resp.text)
-        self.assertIn("BEGIN:VEVENT", ics_resp.text)
-        self.assertIn("END:VCALENDAR", ics_resp.text)
+        self.assertEqual(ics_resp.status_code, 404)
 
     def test_scenario_09_all_airlines_multi_carrier_baggage_cost_normalization(self) -> None:
         db_path, repo, client = self.create_isolated_client_env()
@@ -454,7 +455,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         tmpdir = tempfile.TemporaryDirectory(prefix="tier4_cli_")
         self.addCleanup(tmpdir.cleanup)
         json_out = Path(tmpdir.name) / "proposals.json"
-        ics_out = Path(tmpdir.name) / "trip.ics"
         cli_bin = PROJECT_ROOT / "plan-vacation"
         env = dict(os.environ, VACATION_PLANNER_DB_PATH=str(db_path))
 
@@ -477,13 +477,22 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         r_srch = run_cli([
             "search", "--mode", "holiday-direct", "--airline", "elal-only",
             "--destination", "ROM", "--holiday", "PESACH", "--year", "2027",
-            "--export-json", str(json_out), "--export-ics", str(ics_out),
+            "--export-json", str(json_out),
         ])
         self.assertEqual(r_srch.returncode, 0, r_srch.stderr)
         self.assertTrue(json_out.exists() and json_out.stat().st_size > 50)
-        self.assertTrue(ics_out.exists() and "BEGIN:VCALENDAR" in ics_out.read_text(encoding="utf-8"))
+        self.assertIn("HAS=", r_srch.stdout)
+        self.assertIn("~$", r_srch.stdout)
+
+        r_bad_ics = run_cli([
+            "search", "--mode", "holiday-direct", "--holiday", "PESACH", "--year", "2027",
+            "--export-ics", str(Path(tmpdir.name) / "trip.ics"),
+        ])
+        self.assertNotEqual(r_bad_ics.returncode, 0)
 
     def test_scenario_14_live_http_server_full_stack_rest_and_ics_workflow(self) -> None:
+        import urllib.error
+
         db_path, _repo = self.make_isolated_env(auto_seed=True)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
@@ -534,8 +543,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertGreater(s_data["count"], 0)
             pid = s_data["proposals"][0]["id"]
             i_resp = client.get(f"/api/v1/vacations/{pid}/export.ics")
-            self.assertEqual(i_resp.status_code, 200)
-            self.assertIn("BEGIN:VCALENDAR", i_resp.text)
+            self.assertEqual(i_resp.status_code, 404)
             return
 
         self.assertIsNotNone(health, "Live HTTP server failed to start on ephemeral port")
@@ -555,9 +563,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertGreater(s_data["count"], 0)
             pid = s_data["proposals"][0]["id"]
 
-        with urllib.request.urlopen(f"{base_url}/api/v1/vacations/{pid}/export.ics", timeout=5.0) as ir:
-            self.assertEqual(ir.status, 200)
-            self.assertIn("BEGIN:VCALENDAR", ir.read().decode("utf-8"))
+        with self.assertRaises(urllib.error.HTTPError) as ics_err:
+            urllib.request.urlopen(f"{base_url}/api/v1/vacations/{pid}/export.ics", timeout=5.0)
+        self.assertEqual(ics_err.exception.code, 404)
 
     def test_scenario_15_mobile_390x844_and_desktop_1440x900_bidi_rtl_ltr_ui_and_pwa(self) -> None:
         from bs4 import BeautifulSoup
@@ -815,16 +823,14 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         maximizer = self.get_maximizer(self.get_calendar_service(repo))
 
         w_purim = maximizer.evaluate_window(prof, date(2027, 3, 23), date(2027, 3, 27))
-        self.assertEqual(w_purim.total_vacation_days, 5)
-        self.assertAlmostEqual(w_purim.parent_pto_days_used, 3.0, delta=0.5)
+        self.assertEqual(w_purim.trip_nights, 4)
         self.assertEqual(w_purim.max_single_child_school_days_missed, 1)
-        self.assertGreater(w_purim.vacation_utilization_score, 40.0)
+        self.assertGreater(w_purim.holiday_alignment_score, 40.0)
 
         w_shavuot = maximizer.evaluate_window(prof, date(2027, 6, 9), date(2027, 6, 12))
-        self.assertEqual(w_shavuot.total_vacation_days, 4)
-        self.assertAlmostEqual(w_shavuot.parent_pto_days_used, 1.5, delta=0.5)
+        self.assertEqual(w_shavuot.trip_nights, 3)
         self.assertEqual(w_shavuot.max_single_child_school_days_missed, 1)
-        self.assertGreater(w_shavuot.vacation_utilization_score, 55.0)
+        self.assertGreater(w_shavuot.holiday_alignment_score, 55.0)
 
     def test_scenario_18_flycard_tuesday_promo_and_london_lhr_vs_ltn_apd_tax_optimization(self) -> None:
         _db_path, repo = self.make_isolated_env(auto_seed=True)
@@ -917,7 +923,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 "matmid_points_balance": 190000,
                 "inline_profile": {
                     "adults_count": 2,
-                    "workweek_type": "SUN_THU",
                     "children": [
                         {"child_age_years": 4, "framework_type": "MUNICIPAL_GAN"},
                         {"child_age_years": 10, "framework_type": "ELEMENTARY_4_6"},
@@ -933,13 +938,12 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             any(p["itinerary"]["utilizes_elal_bonus"] for p in inline_props)
         )
 
-        # Compare and export .ics work seamlessly for ephemeral guest proposals
+        # Compare works seamlessly for ephemeral guest proposals while removed .ics route returns 404
         pids = [clean_props[0]["id"], inline_props[0]["id"]]
         cmp_r = guest_client.post("/api/v1/vacations/compare", json={"proposal_ids": pids})
         self.assertEqual(cmp_r.status_code, 200)
         ics_r = guest_client.get(f"/api/v1/vacations/{inline_props[0]['id']}/export.ics")
-        self.assertEqual(ics_r.status_code, 200)
-        self.assertIn("BEGIN:VCALENDAR", ics_r.text)
+        self.assertEqual(ics_r.status_code, 404)
 
         # Zero SQLite writes occurred during guest searches
         with repo.connection() as conn:
@@ -1045,7 +1049,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(search_a.status_code, 200)
         props_a = search_a.json()["proposals"]
         self.assertGreater(len(props_a), 0)
-        self.assertEqual(len(props_a[0]["itinerary"]["family_ticket_allocation"]), 4)
+        self.assertNotIn("family_ticket_allocation", props_a[0]["itinerary"])
+        self.assertEqual(props_a[0]["itinerary"]["seated_passengers_count"], 4)
 
         search_b = user_b_client.post(
             "/api/v1/vacations/search",
@@ -1059,8 +1064,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(search_b.status_code, 200)
         props_b = search_b.json()["proposals"]
         self.assertGreater(len(props_b), 0)
-        # user_b has 1 adult + 1 lap infant (age 1) + 1 youth (age 14) = 3 passenger ticket allocations
-        self.assertEqual(len(props_b[0]["itinerary"]["family_ticket_allocation"]), 3)
+        # user_b has 1 adult + 1 lap infant (age 1, 0 seats) + 1 youth (age 14, 1 seat) = 2 seated passengers
+        self.assertNotIn("family_ticket_allocation", props_b[0]["itinerary"])
+        self.assertEqual(props_b[0]["itinerary"]["seated_passengers_count"], 2)
 
         # Cross-user proposal compare & .ics export IDOR rejection (404)
         self.assertEqual(
@@ -1595,18 +1601,26 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   mInput.dispatchEvent(new Event('change', { bubbles: true }));
                   const googleBtn = document.getElementById('btn-google-signin');
                   const btnTextBefore = googleBtn ? googleBtn.textContent : '';
+                  const removedCount = document.querySelectorAll('.allocations-details, .allocations-table, .btn-ics-link, #prof-pto-budget').length;
+                  const bodyTxt = document.body.innerText || '';
                   googleBtn.click();
                   return {
                     saveBtnHiddenOnGuest,
                     zeroAlertText,
                     awardNoteText,
                     btnTextBefore,
+                    removedCount,
+                    bodyTxt,
                     assignedUrl: window.__fvpLastAssignedUrl,
                     ssDump: window.sessionStorage._dump()
                   };
                 })()"""
             )
             self.assertTrue(guest_draft_state["saveBtnHiddenOnGuest"])
+            self.assertEqual(guest_draft_state["removedCount"], 0)
+            for removed_tok in ("פירוט הקצאת", "ימי החופש", "ימי חופש", "ייצוא .ics"):
+                self.assertNotIn(removed_tok, guest_draft_state["bodyTxt"])
+            self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", guest_draft_state["bodyTxt"]))
             self.assertIn("יתרת מתמיד 0", guest_draft_state["zeroAlertText"])
             self.assertIn("מאגר כרטיסי הבונוס של אל על", guest_draft_state["awardNoteText"])
             self.assertNotIn("rbddataclients", guest_draft_state["awardNoteText"].lower())
@@ -1637,6 +1651,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   matmid: document.getElementById('prof-matmid-points').value,
                   saveBtnHiddenAfterLogin: document.getElementById('btn-save-profile').hasAttribute('hidden'),
                   hasZeroAlertAfterLogin: Boolean(document.getElementById('zero-points-search-alert')),
+                  firstCardText: (document.querySelector('.proposal-card') || {}).textContent || '',
                   feedback: document.getElementById('auth-save-feedback').textContent,
                   feedbackHidden: document.getElementById('auth-save-feedback').hasAttribute('hidden'),
                   ssRemaining: window.sessionStorage._dump(),
@@ -1648,6 +1663,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(post_login_state["matmid"], "150000")
             self.assertFalse(post_login_state["saveBtnHiddenAfterLogin"])
             self.assertFalse(post_login_state["hasZeroAlertAfterLogin"])
+            self.assertIn("~$", post_login_state["firstCardText"])
+            self.assertIn("הערכת מחיר במזומן", post_login_state["firstCardText"])
             self.assertFalse(post_login_state["feedbackHidden"])
             self.assertIn("נשמר", post_login_state["feedback"])
             self.assertNotIn("fvp_pending_oauth_draft", post_login_state["ssRemaining"])
@@ -1672,7 +1689,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             conflicting_draft = {
                 "ts": int(time.time() * 1000),
                 "adults_count": 2,
-                "annual_pto_budget": 18,
                 "matmid_points_balance": 10000,
                 "children": [
                     {
@@ -1748,6 +1764,659 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 signout_state["cachesDump"]["family-vacation-planner-v3"],
                 ["https://breezyflights.com/src/app.js"],
             )
+
+    def test_scenario_22_run7_r1_r3_r4_and_mobile_thumb_dock_e2e(self) -> None:
+        import base64 as _b64
+        import re as _re
+        import shutil as _shutil
+        import signal as _signal
+        import struct as _struct
+        import urllib.parse as _urlparse
+
+        db_path, _repo, client = self.create_authenticated_client_env("scen22@gmail.com")
+
+        # 1. Static & PWA contracts (R1–R3 + B5)
+        html_text = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        css_text = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        js_text = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+        self.assertIsNone(_re.search(r"(?i)(left|right)", css_text))
+        self.assertNotIn("ellipsis", css_text.lower())
+        for removed_asset_tok in (
+            "prof-pto-budget",
+            "allocations-details",
+            "allocations-table",
+            "btn-ics-link",
+            "פירוט הקצאת",
+            "ימי החופש",
+            "ימי חופש",
+            "ייצוא .ics",
+            "export.ics",
+        ):
+            self.assertNotIn(removed_asset_tok, html_text)
+            self.assertNotIn(removed_asset_tok, js_text)
+        self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", html_text))
+        self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", js_text))
+
+        manifest = client.get("/manifest.webmanifest").json()
+        self.assertEqual(manifest["theme_color"], "#0B1F3A")
+        self.assertEqual(manifest["background_color"], "#F2F5F9")
+        self.assertNotIn("מקסום ימי חופש", json.dumps(manifest, ensure_ascii=False))
+        self.assertNotIn("ימי החופש", json.dumps(manifest, ensure_ascii=False))
+
+        # 2. REST & CLI contracts (R1–R3)
+        for pto_field, bad_val in (
+            ("annual_pto_budget", 18),
+            ("max_pto_per_trip", 5),
+            ("workweek_type", "SUN_THU"),
+            ("erev_chag_pto_weight", 0.5),
+            ("chol_hamoed_pto_weight", 0.5),
+        ):
+            r_pto = client.put("/api/v1/profile", json={"adults_count": 2, pto_field: bad_val})
+            self.assertEqual(r_pto.status_code, 422, f"Expected 422 for {pto_field}")
+
+        s_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO", "ATH"],
+            },
+        )
+        self.assertEqual(s_resp.status_code, 200)
+        s_body = s_resp.json()
+        self.assertIn("cash_pricing_disclaimer_he", s_body)
+        self.assertIn("cash_pricing_disclaimer_en", s_body)
+        self.assertGreaterEqual(len(s_body["proposals"]), 2)
+        p0 = s_body["proposals"][0]
+        it0 = p0["itinerary"]
+        for req_it_key in (
+            "seated_passengers_count",
+            "bonus_tickets_count",
+            "cash_tickets_count",
+            "primary_cabin",
+            "estimated_cash_usd",
+            "is_cash_price_estimate",
+        ):
+            self.assertIn(req_it_key, it0)
+        self.assertTrue(it0["is_cash_price_estimate"])
+        self.assertNotIn("family_ticket_allocation", it0)
+        self.assertIn("holiday_alignment_score", p0)
+        for removed_prop_key in (
+            "total_vacation_days",
+            "parent_pto_days_used",
+            "pto_efficiency_ratio",
+            "vacation_utilization_score",
+        ):
+            self.assertNotIn(removed_prop_key, p0)
+        self.assertEqual(client.get(f"/api/v1/vacations/{p0['id']}/export.ics").status_code, 404)
+
+        cmp_resp = client.post(
+            "/api/v1/vacations/compare",
+            json={"proposal_ids": [s_body["proposals"][0]["id"], s_body["proposals"][1]["id"]]},
+        )
+        self.assertEqual(cmp_resp.status_code, 200)
+        cmp_body = cmp_resp.json()
+        self.assertNotIn("best_by_per_id", cmp_body)
+        oop_row = next(r for r in cmp_body["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd")
+        self.assertTrue(all(str(v).startswith("~$") for v in oop_row["values"].values()))
+
+        # 3. Real Headless Chrome Multi-Viewport (390x844 Mobile & 1440x900 Desktop, he RTL & en LTR)
+        chrome_bin = Path("/usr/bin/google-chrome")
+        if not chrome_bin.exists():
+            return
+
+        chrome_tmp = tempfile.TemporaryDirectory(
+            prefix="tier4_scen22_chrome_", ignore_cleanup_errors=True
+        )
+        self.addCleanup(lambda: _shutil.rmtree(chrome_tmp.name, ignore_errors=True))
+        self.addCleanup(chrome_tmp.cleanup)
+        guest_browser_client = self.get_client(db_path)
+        active_browser_client = guest_browser_client
+
+        inlined_html = _re.sub(
+            r'<link[^>]+(?:fonts\.googleapis\.com|fonts\.gstatic\.com|manifest\.webmanifest)[^>]*>',
+            "",
+            html_text,
+        )
+        inlined_html = inlined_html.replace(
+            '<link rel="stylesheet" href="/src/styles/app.css" />',
+            f"<style>{css_text}</style>",
+        )
+        inlined_html = _re.sub(
+            r'<script[^>]+src="/src/app\.js"[^>]*></script>',
+            "",
+            inlined_html,
+        )
+        bridge_preamble = """<script>
+(function() {
+  window.__fvpJsErrors = [];
+  window.addEventListener('error', function(e) { window.__fvpJsErrors.push(String(e.message || e)); });
+  window.addEventListener('unhandledrejection', function(e) { window.__fvpJsErrors.push(String(e.reason || e)); });
+  const _ss = {};
+  const _ls = {};
+  function _mkStore(backing) {
+    return {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(backing, k) ? backing[k] : null; },
+      setItem(k, v) { backing[String(k)] = String(v); },
+      removeItem(k) { delete backing[String(k)]; },
+      clear() { Object.keys(backing).forEach((k) => delete backing[k]); },
+      get length() { return Object.keys(backing).length; }
+    };
+  }
+  Object.defineProperty(window, 'sessionStorage', { value: _mkStore(_ss), configurable: true });
+  Object.defineProperty(window, 'localStorage', { value: _mkStore(_ls), configurable: true });
+  let _reqSeq = 0;
+  const _pending = new Map();
+  window.__fvpResolveFetch = function(id, status, headersObj, bodyText) {
+    const p = _pending.get(id);
+    if (!p) return;
+    _pending.delete(id);
+    p.resolve(new Response(bodyText, { status: status, headers: headersObj || {} }));
+  };
+  window.fetch = function(input, init) {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    if (urlStr.endsWith('/sw.js')) {
+      return Promise.resolve(new Response('', { status: 200, headers: { 'Content-Type': 'application/javascript' } }));
+    }
+    const opts = init || {};
+    const id = ++_reqSeq;
+    return new Promise((resolve, reject) => {
+      _pending.set(id, { resolve, reject });
+      window.__fvpHostFetch(JSON.stringify({
+        id: id,
+        method: opts.method || 'GET',
+        url: urlStr,
+        headers: opts.headers || {},
+        body: opts.body || null
+      }));
+    });
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register = function() { return Promise.resolve({}); };
+  }
+})();
+</script>"""
+        mounted_doc = inlined_html.replace("<head>", "<head>" + bridge_preamble, 1).replace(
+            "</body>", f"<script>{js_text}</script></body>", 1
+        )
+
+        proc_c = subprocess.Popen(
+            [
+                str(chrome_bin),
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={chrome_tmp.name}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        def _kill_chrome() -> None:
+            try:
+                os.killpg(proc_c.pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc_c.wait(timeout=3.0)
+            except Exception:
+                pass
+
+        self.addCleanup(_kill_chrome)
+
+        active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
+        deadline = time.time() + 12.0
+        while time.time() < deadline and not active_port_file.exists():
+            time.sleep(0.05)
+        self.assertTrue(active_port_file.exists(), "Headless Chrome DevToolsActivePort did not appear")
+        cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5.0) as r_list:
+            targets = json.loads(r_list.read().decode("utf-8"))
+        page_target = next(t for t in targets if t.get("type") == "page")
+        ws_parsed = _urlparse.urlsplit(page_target["webSocketDebuggerUrl"])
+
+        sock = socket.create_connection(("127.0.0.1", cdp_port), timeout=10.0)
+        self.addCleanup(sock.close)
+        ws_key = _b64.b64encode(os.urandom(16)).decode("ascii")
+        sock.sendall(
+            (
+                f"GET {ws_parsed.path} HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{cdp_port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {ws_key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("ascii")
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        ws_leftover = bytearray(buf[buf.index(b"\r\n\r\n") + 4 :])
+
+        def _ws_send_json(obj: dict[str, Any]) -> None:
+            raw_b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            mask = os.urandom(4)
+            ln = len(raw_b)
+            if ln < 126:
+                hdr = bytes([0x81, 0x80 | ln]) + mask
+            elif ln < 65536:
+                hdr = bytes([0x81, 0x80 | 126]) + _struct.pack("!H", ln) + mask
+            else:
+                hdr = bytes([0x81, 0x80 | 127]) + _struct.pack("!Q", ln) + mask
+            sock.sendall(hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(raw_b)))
+
+        def _ws_recv_exact(n: int) -> bytes:
+            while len(ws_leftover) < n:
+                more = sock.recv(65536)
+                if not more:
+                    raise EOFError("CDP WebSocket closed unexpectedly")
+                ws_leftover.extend(more)
+            out_b = bytes(ws_leftover[:n])
+            del ws_leftover[:n]
+            return out_b
+
+        def _ws_recv_msg() -> dict[str, Any]:
+            fragments: list[bytes] = []
+            while True:
+                b0, b1 = _ws_recv_exact(2)
+                fin = bool(b0 & 0x80)
+                opcode = b0 & 0x0F
+                masked_flag = bool(b1 & 0x80)
+                ln = b1 & 0x7F
+                if ln == 126:
+                    ln = _struct.unpack("!H", _ws_recv_exact(2))[0]
+                elif ln == 127:
+                    ln = _struct.unpack("!Q", _ws_recv_exact(8))[0]
+                mkey = _ws_recv_exact(4) if masked_flag else b""
+                payload_b = _ws_recv_exact(ln)
+                if masked_flag:
+                    payload_b = bytes(b ^ mkey[i % 4] for i, b in enumerate(payload_b))
+                if opcode == 0x9:
+                    mask_p = os.urandom(4)
+                    sock.sendall(
+                        bytes([0x8A, 0x80 | len(payload_b)])
+                        + mask_p
+                        + bytes(b ^ mask_p[i % 4] for i, b in enumerate(payload_b))
+                    )
+                    continue
+                fragments.append(payload_b)
+                if fin:
+                    return json.loads(b"".join(fragments).decode("utf-8"))
+
+        msg_counter = 0
+
+        def _handle_binding_event(ev_msg: dict[str, Any]) -> None:
+            if (
+                ev_msg.get("method") == "Runtime.bindingCalled"
+                and ev_msg.get("params", {}).get("name") == "__fvpHostFetch"
+            ):
+                req_info = json.loads(ev_msg["params"]["payload"])
+                parsed_u = _urlparse.urlsplit(req_info["url"])
+                path_qs = parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")
+                j_body = json.loads(req_info["body"]) if req_info.get("body") else None
+                resp_obj = active_browser_client.request(
+                    req_info["method"],
+                    path_qs,
+                    json_body=j_body,
+                    headers=req_info.get("headers") or {},
+                )
+                nonlocal msg_counter
+                msg_counter += 1
+                expr = (
+                    f"window.__fvpResolveFetch({int(req_info['id'])}, "
+                    f"{int(resp_obj.status_code)}, {json.dumps(dict(resp_obj.headers))}, {json.dumps(resp_obj.text)});"
+                )
+                _ws_send_json({"id": msg_counter, "method": "Runtime.evaluate", "params": {"expression": expr}})
+
+        def _cdp_call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            nonlocal msg_counter
+            msg_counter += 1
+            target_id = msg_counter
+            _ws_send_json({"id": target_id, "method": method, "params": params or {}})
+            while True:
+                incoming = _ws_recv_msg()
+                if "method" in incoming:
+                    _handle_binding_event(incoming)
+                    continue
+                if incoming.get("id") == target_id:
+                    return incoming
+
+        def _cdp_eval(js_expr: str) -> Any:
+            res = _cdp_call(
+                "Runtime.evaluate",
+                {"expression": js_expr, "awaitPromise": True, "returnByValue": True},
+            )
+            inner = res.get("result", {})
+            if "exceptionDetails" in inner:
+                raise AssertionError(f"CDP JS exception: {inner['exceptionDetails']}")
+            return inner.get("result", {}).get("value")
+
+        _cdp_call("Page.enable")
+        _cdp_call("Runtime.enable")
+        _cdp_call("Runtime.addBinding", {"name": "__fvpHostFetch"})
+        frame_id = _cdp_call("Page.getFrameTree")["result"]["frameTree"]["frame"]["id"]
+
+        # Emulate 390x844 mobile first before mounting so boot runs at mobile viewport
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True},
+        )
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 2), 40))"
+            ):
+                break
+
+        for target_dir in ("rtl", "ltr"):
+            if target_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+            mob = _cdp_eval(
+                """(() => {
+                  window.scrollTo(0, 0);
+                  const docEl = document.documentElement;
+                  const dock = document.getElementById('mobile-thumb-dock');
+                  const dockR = dock.getBoundingClientRect();
+                  const hhBar = document.getElementById('household-summary-bar');
+                  const profZone = document.getElementById('zone-profile');
+                  const drawer = document.getElementById('search-secondary-drawer');
+                  const firstCard = document.querySelector('.proposal-card');
+                  return {
+                    dir: docEl.getAttribute('dir'),
+                    scrollWidth: docEl.scrollWidth,
+                    clientWidth: docEl.clientWidth,
+                    dockDisplay: getComputedStyle(dock).display,
+                    dockHeight: dockR.height,
+                    hhBarDisplay: getComputedStyle(hhBar).display,
+                    profDisplayCollapsed: getComputedStyle(profZone).display,
+                    drawerDisplayCollapsed: getComputedStyle(drawer).display,
+                    firstCardY: firstCard ? firstCard.getBoundingClientRect().top : 9999,
+                    jsErrors: window.__fvpJsErrors
+                  };
+                })()"""
+            )
+            self.assertEqual(mob["jsErrors"], [])
+            self.assertEqual(mob["dir"], target_dir)
+            self.assertLessEqual(mob["scrollWidth"], mob["clientWidth"])
+            self.assertNotEqual(mob["dockDisplay"], "none")
+            self.assertGreaterEqual(mob["dockHeight"], 56)
+            self.assertNotEqual(mob["hhBarDisplay"], "none")
+            self.assertEqual(mob["profDisplayCollapsed"], "none")
+            self.assertEqual(mob["drawerDisplayCollapsed"], "none")
+            self.assertLess(mob["firstCardY"], 900)
+
+        # Switch back to Hebrew RTL on 390x844 and test interactive mobile overlays & stacking
+        _cdp_eval("if (document.documentElement.getAttribute('dir') !== 'rtl') document.getElementById('btn-toggle-locale').click(); true;")
+
+        # (a) Secondary search filter drawer toggle
+        drawer_open_display = _cdp_eval(
+            """(() => {
+              document.getElementById('btn-toggle-search-filters').click();
+              const d = getComputedStyle(document.getElementById('search-secondary-drawer')).display;
+              document.getElementById('btn-toggle-search-filters').click();
+              return d;
+            })()"""
+        )
+        self.assertNotEqual(drawer_open_display, "none")
+
+        # (b) Tapping `[data-focus-matmid="true"]` (and dock Family button) opens `#zone-profile.is-sheet-open` (z-index 60), locks body, hides dock, focuses `#prof-matmid-points`
+        sheet_check = _cdp_eval(
+            """(async () => {
+              const focusBtn = document.querySelector('[data-focus-matmid="true"]');
+              if (focusBtn) focusBtn.click();
+              else document.querySelector('[data-dock-zone="zone-profile"]').click();
+              await new Promise((r) => setTimeout(r, 120));
+              const prof = document.getElementById('zone-profile');
+              const dock = document.getElementById('mobile-thumb-dock');
+              const openState = {
+                isSheetOpen: prof.classList.contains('is-sheet-open'),
+                zIndex: getComputedStyle(prof).zIndex,
+                bodyLocked: document.body.classList.contains('is-sheet-locked'),
+                dockDisplayWhileOpen: getComputedStyle(dock).display,
+                activeId: document.activeElement ? document.activeElement.id : ''
+              };
+              document.getElementById('btn-close-profile-sheet').click();
+              const dockAfterClose = getComputedStyle(dock).display;
+              return { ...openState, dockAfterClose };
+            })()"""
+        )
+        self.assertTrue(sheet_check["isSheetOpen"])
+        self.assertEqual(sheet_check["zIndex"], "60")
+        self.assertTrue(sheet_check["bodyLocked"])
+        self.assertEqual(sheet_check["dockDisplayWhileOpen"], "none")
+        self.assertEqual(sheet_check["activeId"], "prof-matmid-points")
+        self.assertNotEqual(sheet_check["dockAfterClose"], "none")
+
+        # (c) Keyboard viewport guard: focusin on `#input-min-nights` hides `#mobile-thumb-dock`, focusout restores it
+        kb_check = _cdp_eval(
+            """(() => {
+              document.getElementById('btn-toggle-search-filters').click();
+              const inp = document.getElementById('input-min-nights');
+              const dock = document.getElementById('mobile-thumb-dock');
+              inp.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+              const kbOpen = document.body.classList.contains('is-keyboard-open');
+              const dockDuringKb = getComputedStyle(dock).display;
+              inp.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+              const dockAfterKb = getComputedStyle(dock).display;
+              document.getElementById('btn-toggle-search-filters').click();
+              return { kbOpen, dockDuringKb, dockAfterKb };
+            })()"""
+        )
+        self.assertTrue(kb_check["kbOpen"])
+        self.assertEqual(kb_check["dockDuringKb"], "none")
+        self.assertNotEqual(kb_check["dockAfterKb"], "none")
+
+        # (d) Checking 2 `[data-compare-id]` checkboxes shows `#sticky-compare-bar` strictly above `#mobile-thumb-dock` without overlap
+        cmp_bar_check = _cdp_eval(
+            """(async () => {
+              const cbs = Array.from(document.querySelectorAll('[data-compare-id]')).slice(0, 2);
+              cbs.forEach((cb) => {
+                cb.checked = true;
+                cb.dispatchEvent(new Event('change', { bubbles: true }));
+              });
+              const bar = document.getElementById('sticky-compare-bar');
+              const dock = document.getElementById('mobile-thumb-dock');
+              const barR = bar.getBoundingClientRect();
+              const dockR = dock.getBoundingClientRect();
+              document.getElementById('btn-sticky-compare-run').click();
+              for (let i = 0; i < 60; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                if (document.querySelectorAll('.comparison-col-card').length >= 2) break;
+              }
+              const cmpCards = document.querySelectorAll('.comparison-col-card').length;
+              document.getElementById('btn-sticky-compare-clear').click();
+              return {
+                barDisplay: barR.height > 0,
+                barBottom: barR.bottom,
+                dockTop: dockR.top,
+                cmpCards
+              };
+            })()"""
+        )
+        self.assertTrue(cmp_bar_check["barDisplay"])
+        self.assertLessEqual(cmp_bar_check["barBottom"], cmp_bar_check["dockTop"] - 4)
+        self.assertGreaterEqual(cmp_bar_check["cmpCards"], 2)
+
+        # (e) Tapping `#btn-mobile-dock-calendar` opens `#zone-calendar` in <768px card-stack layout without overflow
+        mob_cal = _cdp_eval(
+            """(() => {
+              document.getElementById('btn-mobile-dock-calendar').click();
+              const tbl = document.getElementById('moe-calendar-table');
+              const docEl = document.documentElement;
+              const res = {
+                calHidden: document.getElementById('zone-calendar').hasAttribute('hidden'),
+                tblDisplay: getComputedStyle(tbl).display,
+                scrollWidth: docEl.scrollWidth,
+                clientWidth: docEl.clientWidth
+              };
+              document.getElementById('btn-close-calendar').click();
+              return res;
+            })()"""
+        )
+        self.assertFalse(mob_cal["calHidden"])
+        self.assertEqual(mob_cal["tblDisplay"], "block")
+        self.assertLessEqual(mob_cal["scrollWidth"], mob_cal["clientWidth"])
+
+        # (f) Opening `#zone-profile` sheet at <1180px (`390x844`) with 2 cards checked, then resizing to 1440x900 (`>=1180px`) unlocks body & restores `#sticky-compare-bar`
+        resize_pre = _cdp_eval(
+            """(() => {
+              const cbs = Array.from(document.querySelectorAll('[data-compare-id]')).slice(0, 2);
+              cbs.forEach((cb) => {
+                cb.checked = true;
+                cb.dispatchEvent(new Event('change', { bubbles: true }));
+              });
+              document.querySelector('[data-dock-zone="zone-profile"]').click();
+              return {
+                bodyLockedBefore: document.body.classList.contains('is-sheet-locked'),
+                sheetOpenBefore: document.getElementById('zone-profile').classList.contains('is-sheet-open'),
+                dockProfActiveBefore: document.querySelector('[data-dock-zone="zone-profile"]').classList.contains('active')
+              };
+            })()"""
+        )
+        self.assertTrue(resize_pre["bodyLockedBefore"])
+        self.assertTrue(resize_pre["sheetOpenBefore"])
+        self.assertTrue(resize_pre["dockProfActiveBefore"])
+
+        # 4. Switch to 1440x900 Desktop (both he RTL & en LTR)
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False},
+        )
+        resize_post = _cdp_eval(
+            """(async () => {
+              await new Promise((r) => setTimeout(r, 60));
+              const out = {
+                bodyLockedAfter: document.body.classList.contains('is-sheet-locked'),
+                sheetOpenAfter: document.getElementById('zone-profile').classList.contains('is-sheet-open'),
+                dockProfActiveAfter: document.querySelector('[data-dock-zone="zone-profile"]').classList.contains('active'),
+                hhAriaExpandedAfter: document.getElementById('btn-header-household').getAttribute('aria-expanded'),
+                bodyOverflowAfter: getComputedStyle(document.body).overflow,
+                compareBarDisplayAfter: getComputedStyle(document.getElementById('sticky-compare-bar')).display
+              };
+              document.getElementById('btn-sticky-compare-clear').click();
+              return out;
+            })()"""
+        )
+        self.assertFalse(resize_post["bodyLockedAfter"])
+        self.assertFalse(resize_post["sheetOpenAfter"])
+        self.assertFalse(resize_post["dockProfActiveAfter"])
+        self.assertEqual(resize_post["hhAriaExpandedAfter"], "false")
+        self.assertNotEqual(resize_post["bodyOverflowAfter"], "hidden")
+        self.assertEqual(resize_post["compareBarDisplayAfter"], "flex")
+
+        for target_dir in ("rtl", "ltr"):
+            if target_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+            desk = _cdp_eval(
+                """(() => {
+                  const calBtn = document.getElementById('btn-toggle-calendar');
+                  calBtn.click();
+                  const calBtnActiveWhenOpen = calBtn.classList.contains('active');
+                  const docEl = document.documentElement;
+                  const dock = document.getElementById('mobile-thumb-dock');
+                  const deskNav = document.querySelector('.desktop-zone-nav');
+                  const prof = document.getElementById('zone-profile');
+                  const bookBtn = document.querySelector('a[data-elal-book-link="true"]');
+                  const tbl = document.getElementById('moe-calendar-table');
+                  document.getElementById('btn-close-calendar').click();
+                  const calBtnActiveAfterClose = calBtn.classList.contains('active');
+                  return {
+                    dir: docEl.getAttribute('dir'),
+                    scrollWidth: docEl.scrollWidth,
+                    clientWidth: docEl.clientWidth,
+                    dockDisplay: getComputedStyle(dock).display,
+                    deskNavDisplay: getComputedStyle(deskNav).display,
+                    profPosition: getComputedStyle(prof).position,
+                    bookHeight: bookBtn ? bookBtn.getBoundingClientRect().height : 0,
+                    tblDisplay: getComputedStyle(tbl).display,
+                    calBtnActiveWhenOpen,
+                    calBtnActiveAfterClose,
+                    jsErrors: window.__fvpJsErrors
+                  };
+                })()"""
+            )
+            self.assertEqual(desk["jsErrors"], [])
+            self.assertEqual(desk["dir"], target_dir)
+            self.assertLessEqual(desk["scrollWidth"], desk["clientWidth"])
+            self.assertEqual(desk["dockDisplay"], "none")
+            self.assertEqual(desk["deskNavDisplay"], "flex")
+            self.assertEqual(desk["profPosition"], "static")
+            self.assertGreater(desk["bookHeight"], 0)
+            self.assertLessEqual(desk["bookHeight"], 42)
+            self.assertEqual(desk["tblDisplay"], "table")
+            self.assertTrue(desk["calBtnActiveWhenOpen"])
+            self.assertFalse(desk["calBtnActiveAfterClose"])
+
+        # 5. Signed-in `#btn-save-profile` HTTP 422 error clears `#sticky-compare-bar`, `body.has-compare-bar`, and `#btn-compare-selected` `(2)` badge
+        active_browser_client = client
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 2 && !document.getElementById('btn-save-profile').hasAttribute('hidden')), 40))"
+            ):
+                break
+
+        save_err_check = _cdp_eval(
+            """(async () => {
+              const cbs = Array.from(document.querySelectorAll('[data-compare-id]')).slice(0, 2);
+              cbs.forEach((cb) => {
+                cb.checked = true;
+                cb.dispatchEvent(new Event('change', { bubbles: true }));
+              });
+              const bar = document.getElementById('sticky-compare-bar');
+              const topCompareBtn = document.getElementById('btn-compare-selected');
+              const barDisplayBefore = getComputedStyle(bar).display;
+              const hasCompareBodyBefore = document.body.classList.contains('has-compare-bar');
+              const topBtnBefore = topCompareBtn.textContent;
+
+              const adultsEl = document.getElementById('prof-adults-count');
+              adultsEl.value = '99';
+              adultsEl.dispatchEvent(new Event('input', { bubbles: true }));
+              adultsEl.dispatchEvent(new Event('change', { bubbles: true }));
+              document.getElementById('btn-save-profile').click();
+              for (let i = 0; i < 60; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                if (document.querySelector('.status-banner-card')) break;
+              }
+              return {
+                barDisplayBefore,
+                hasCompareBodyBefore,
+                topBtnBefore,
+                proposalsCountAfter: document.querySelectorAll('.proposal-card').length,
+                hasErrorBanner: Boolean(document.querySelector('.status-banner-card')),
+                barDisplayAfter: getComputedStyle(bar).display,
+                barHiddenAfter: bar.hasAttribute('hidden'),
+                hasCompareBodyAfter: document.body.classList.contains('has-compare-bar'),
+                topBtnAfter: topCompareBtn.textContent,
+                jsErrors: window.__fvpJsErrors
+              };
+            })()"""
+        )
+        self.assertEqual(save_err_check["jsErrors"], [])
+        self.assertEqual(save_err_check["barDisplayBefore"], "flex")
+        self.assertTrue(save_err_check["hasCompareBodyBefore"])
+        self.assertIn("(2)", save_err_check["topBtnBefore"])
+        self.assertEqual(save_err_check["proposalsCountAfter"], 0)
+        self.assertTrue(save_err_check["hasErrorBanner"])
+        self.assertEqual(save_err_check["barDisplayAfter"], "none")
+        self.assertTrue(save_err_check["barHiddenAfter"])
+        self.assertFalse(save_err_check["hasCompareBodyAfter"])
+        self.assertNotIn("(2)", save_err_check["topBtnAfter"])
 
 
 if __name__ == "__main__":

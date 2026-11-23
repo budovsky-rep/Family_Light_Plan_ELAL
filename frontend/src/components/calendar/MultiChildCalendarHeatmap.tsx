@@ -2,7 +2,7 @@
  * MultiChildCalendarHeatmap Component (`frontend/src/components/calendar/MultiChildCalendarHeatmap.tsx`)
  * Implements Zone 3: Multi-child MoE vacation intersection heatmap with sticky RTL
  * first column (`position: sticky; inset-inline-start: 0`), Nitzanim camp badges,
- * parent PTO cost row, and El Al `rbddataclients` bonus seat availability overlay.
+ * and El Al `rbddataclients` bonus seat availability overlay.
  */
 
 export interface CalendarWindowRow {

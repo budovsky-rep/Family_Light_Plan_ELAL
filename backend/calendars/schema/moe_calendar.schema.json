@@ -43,10 +43,6 @@
           "start_date": { "type": "string", "format": "date" },
           "end_date": { "type": "string", "format": "date" },
           "resume_date": { "type": "string", "format": "date" },
-          "parent_workday_status": {
-            "type": "string",
-            "enum": ["PUBLIC_HOLIDAY_OFF", "EREV_CHAG_HALF_DAY", "CHOL_HAMOED", "REGULAR_WORKDAY"]
-          },
           "applies_to_frameworks": {
             "type": "array",
             "items": {

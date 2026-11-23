@@ -14,5 +14,5 @@ export interface CommercialBaggageBreakdown {
 }
 
 export function formatNormalizedBaggageLabel(breakdown: CommercialBaggageBreakdown): string {
-  return `${breakdown.carrier_name} (${breakdown.carrier_code}) — סה"כ משפחתי כולל כבודה: $${breakdown.total_normalized_family_usd.toFixed(0)}`;
+  return `${breakdown.carrier_name} (${breakdown.carrier_code}) — הערכת מחיר משפחתי כולל כבודה (לא מחייב): ~$${breakdown.total_normalized_family_usd.toFixed(0)}`;
 }

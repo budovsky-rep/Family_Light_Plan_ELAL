@@ -2523,11 +2523,6 @@ def build_clean_guest_profile() -> FamilyProfile:
         id="guest-ephemeral",
         profile_name="",
         adults_count=2,
-        workweek_type="SUN_THU",
-        erev_chag_pto_weight=0.5,
-        chol_hamoed_pto_weight=0.5,
-        annual_pto_budget=18.0,
-        max_pto_per_trip=5.0,
         matmid_points_balance=0,
         has_flycard=False,
         flycard_tier="NONE",
@@ -2685,11 +2680,6 @@ def build_default_family_profile() -> FamilyProfile:
         id="default-family-profile",
         profile_name="משפחת בודובסקי",
         adults_count=2,
-        workweek_type="SUN_THU",
-        erev_chag_pto_weight=0.5,
-        chol_hamoed_pto_weight=0.5,
-        annual_pto_budget=14.0,
-        max_pto_per_trip=5.0,
         matmid_points_balance=185000,
         has_flycard=True,
         flycard_tier="FLY_CARD_PREMIUM",
@@ -2719,7 +2709,6 @@ def expand_calendar_json_to_windows(calendar_doc: dict[str, Any]) -> list[MoEVac
         base_start = str(period["start_date"])
         base_end = str(period["end_date"])
         base_resume = str(period["resume_date"])
-        parent_status = str(period.get("parent_workday_status") or "REGULAR_WORKDAY")
         overrides = period.get("framework_overrides") or {}
         nitzanim = period.get("nitzanim_window")
         tlv_restrictions = period.get("tlv_airport_restrictions") or []
@@ -2754,7 +2743,6 @@ def expand_calendar_json_to_windows(calendar_doc: dict[str, Any]) -> list[MoEVac
                     is_covered_by_nitzanim=is_nitz,
                     nitzanim_start_date=date.fromisoformat(nitz_start) if nitz_start else None,
                     nitzanim_end_date=date.fromisoformat(nitz_end) if nitz_end else None,
-                    parent_workday_status=parent_status,
                     tlv_airport_closed=tlv_closed,
                     calendar_sync_source=sync_source,
                     source_reference=f"MoE Circular {circ} ({school_year})",

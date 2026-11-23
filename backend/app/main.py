@@ -42,7 +42,6 @@ _MIME_OVERRIDES: dict[str, str] = {
     ".jpeg": "image/jpeg",
     ".png": "image/png",
     ".webp": "image/webp",
-    ".ics": "text/calendar; charset=utf-8",
     ".ts": "text/plain; charset=utf-8",
     ".tsx": "text/plain; charset=utf-8",
 }

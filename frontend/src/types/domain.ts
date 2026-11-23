@@ -20,7 +20,6 @@ export type HolidayExtensionMode =
 
 export type DateSelectionMode =
   | 'SPECIFIC_DATES'
-  | 'MOE_VACATION_MAXIMIZATION'
   | 'HOLIDAY_DIRECT_INTENT';
 
 export type DirectHolidayCode =
@@ -124,11 +123,6 @@ export interface FamilyProfile {
   id: string;
   profile_name: string;
   adults_count: number;
-  workweek_type: 'SUN_THU' | 'SUN_FRI';
-  erev_chag_pto_weight: 0.0 | 0.5 | 1.0;
-  chol_hamoed_pto_weight: 0.0 | 0.5 | 1.0;
-  annual_pto_budget: number;
-  max_pto_per_trip: number;
   matmid_points_balance: number;
   has_flycard: boolean;
   flycard_tier: 'NONE' | 'FLYCARD' | 'FLYCARD_PREMIUM';

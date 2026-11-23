@@ -1,10 +1,9 @@
 /**
  * SearchControlPanel Component (`frontend/src/components/search/SearchControlPanel.tsx`)
  * Implements Zone 2:
- * - 3 Flight Date Selection Modes:
+ * - 2 Flight Date Selection Modes:
  *   1. `SPECIFIC_DATES` (תאריכים ספציפיים)
- *   2. `MOE_VACATION_MAXIMIZATION` (מקסום חופשות משרד החינוך — שנתי)
- *   3. `HOLIDAY_DIRECT_INTENT` (מקסום לפי חג/חופשה ספציפיים ושנה — לדוגמה פסח 2027)
+ *   2. `HOLIDAY_DIRECT_INTENT` (תכנון לפי חג/חופשה ספציפיים ושנה — לדוגמה פסח 2027)
  * - 2 Airline Selection Modes:
  *   1. `EL_AL_ONLY` (התמקדות באל על + חיפוש כרטיסי בונוס ב-rbddataclients)
  *   2. `ALL_AIRLINES` (כל חברות התעופה + נרמול עלויות כבודה משפחתית)
@@ -18,7 +17,6 @@ import type {
 
 export const DATE_MODE_LABELS_HE: Record<DateSelectionMode, string> = {
   SPECIFIC_DATES: 'בחירת תאריכים ספציפיים (± ימי גמישות)',
-  MOE_VACATION_MAXIMIZATION: 'מקסום חופשות שנתי (לפי משרד החינוך)',
   HOLIDAY_DIRECT_INTENT: 'חיפוש ממוקד לפי חג / חופשה ושנה (למשל פסח 2027)',
 };
 

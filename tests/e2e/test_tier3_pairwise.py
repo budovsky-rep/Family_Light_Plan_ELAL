@@ -1,7 +1,7 @@
 """Tier 3 Opaque-Box Pairwise Combinatorial Test Suite for family_vacation_planner.
 
 Contains 36 pairwise combinatorial tests (test_pw01_* .. test_pw36_*) crossing:
-- Date Selection Modes: SPECIFIC_DATES, MOE_VACATION_MAXIMIZATION, HOLIDAY_DIRECT_INTENT
+- Date Selection Modes: SPECIFIC_DATES, HOLIDAY_DIRECT_INTENT
 - Airline Selection Modes: EL_AL_ONLY, ALL_AIRLINES
 - All 8 MoE Frameworks + None (optional in Mode 1) + 5/6-day school weeks + Nitzanim
 - All 10 LoyaltyProgramCode programs (pooled and un-pooled per-passenger wallets)
@@ -46,7 +46,6 @@ class Tier3PairwiseTestBase(Tier1BaseTestCase):
         wallets: list[PassengerLoyaltyWallet],
         matmid_balance: int = 185000,
         has_flycard: bool = True,
-        max_pto: float = 12.0,
     ) -> tuple[Path, Any, FamilyProfile]:
         tmpdir = tempfile.TemporaryDirectory(prefix="tier3_pw_")
         self.addCleanup(tmpdir.cleanup)
@@ -58,11 +57,6 @@ class Tier3PairwiseTestBase(Tier1BaseTestCase):
             id=profile_id,
             profile_name=f"פרופיל {profile_id}",
             adults_count=2,
-            workweek_type="SUN_THU",
-            erev_chag_pto_weight=0.5,
-            chol_hamoed_pto_weight=0.5,
-            annual_pto_budget=22.0,
-            max_pto_per_trip=max_pto,
             matmid_points_balance=matmid_balance,
             has_flycard=has_flycard,
             flycard_tier="FLY_CARD_PREMIUM" if has_flycard else "NONE",
@@ -82,13 +76,17 @@ class Tier3PairwiseTestBase(Tier1BaseTestCase):
         proposals = planner.search_vacations(payload, profile=prof)
         self.assertGreater(len(proposals), 0, f"Expected proposals for {payload}")
         for p in proposals:
-            self.assertGreaterEqual(p.vacation_utilization_score, 0.0)
-            self.assertLessEqual(p.vacation_utilization_score, 100.0)
+            self.assertGreaterEqual(p.holiday_alignment_score, 0.0)
+            self.assertLessEqual(p.holiday_alignment_score, 100.0)
+            self.assertFalse(hasattr(p, "parent_pto_days_used"))
+            self.assertFalse(hasattr(p, "vacation_utilization_score"))
+            self.assertIn("~$", p.explanation_summary_he)
             self.assertGreaterEqual(p.flight_bonus_value_score, 0.0)
             self.assertLessEqual(p.flight_bonus_value_score, 100.0)
             self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
             self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
             self.assertIsNotNone(p.itinerary)
+            self.assertTrue(p.itinerary.is_cash_price_estimate)
         return proposals
 
 
@@ -256,8 +254,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         wallets = [PassengerLoyaltyWallet(passenger_id="ADULT_1", program_code="ELAL_MATMID", available_points=250000)]
         _db, repo, prof = self.build_profile("pw11", children, wallets, matmid_balance=250000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["SUMMER_AUGUST", "PESACH"], "destination_iatas": ["LCA"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "PESACH", "direct_target_year": 2027, "destination_iatas": ["LCA"],
         })
         self.assertTrue(any(_get_field(p.itinerary, "fulfillment_strategy") == "FULL_BONUS_SAME_CABIN" for p in proposals))
 
@@ -269,8 +267,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw12", children, wallets, matmid_balance=80000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2026-2027", "target_holiday_codes": ["SUMMER_AUGUST"], "destination_iatas": ["LHR"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "SUMMER_AUGUST", "direct_target_year": 2027, "destination_iatas": ["LHR"],
         })
         self.assertTrue(any(p.itinerary.departure_date >= date(2027, 8, 9) for p in proposals))
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("MULTI_CLUB_PER_PASSENGER_SPLIT", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH", "SPLIT_CABIN_BONUS", "COMMERCIAL_CASH_ONLY"))
@@ -283,8 +281,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw13", children, wallets, matmid_balance=200000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["HANUKKAH", "PESACH"], "destination_iatas": ["ATH"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "PESACH", "direct_target_year": 2027, "destination_iatas": ["ATH"],
         })
         self.assertTrue(any(_get_field(p.itinerary, "fulfillment_strategy") in ("SPLIT_CABIN_BONUS", "FULL_BONUS_SAME_CABIN") for p in proposals))
 
@@ -295,10 +293,10 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         maximizer = self.get_maximizer(self.get_calendar_service(repo))
         w_camp = maximizer.evaluate_window(prof, date(2027, 4, 13), date(2027, 4, 19))
         w_uncov = maximizer.evaluate_window(prof, date(2027, 4, 20), date(2027, 4, 27))
-        self.assertGreater(w_uncov.vacation_utilization_score, w_camp.vacation_utilization_score)
+        self.assertGreater(w_uncov.holiday_alignment_score, w_camp.holiday_alignment_score)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2026-2027", "target_holiday_codes": ["PESACH"], "destination_iatas": ["FCO"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "PESACH", "direct_target_year": 2027, "destination_iatas": ["FCO"],
         })
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("COMMERCIAL_CASH_ONLY", "MULTI_CLUB_PER_PASSENGER_SPLIT", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH"))
 
@@ -314,8 +312,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw15", children, wallets, matmid_balance=142000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["PESACH"], "destination_iatas": ["FCO"], "max_bridge_days_shift": 2,
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "PESACH", "direct_target_year": 2027, "destination_iatas": ["FCO"], "max_bridge_days_shift": 2,
         })
         self.assertTrue(any(_get_field(p.itinerary, "fulfillment_strategy") == "HYBRID_BONUS_PLUS_CASH" for p in proposals))
 
@@ -327,8 +325,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw16", children, wallets, matmid_balance=80000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2026-2027", "target_holiday_codes": ["HANUKKAH"], "destination_iatas": ["CDG"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "HANUKKAH", "direct_target_year": 2026, "destination_iatas": ["CDG"],
         })
         self.assertGreater(len(proposals), 0)
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("MULTI_CLUB_PER_PASSENGER_SPLIT", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH", "SPLIT_CABIN_BONUS", "COMMERCIAL_CASH_ONLY"))
@@ -341,8 +339,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw17", children, wallets, matmid_balance=95000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["SUKKOT"], "destination_iatas": ["MIL"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "SUKKOT", "direct_target_year": 2026, "destination_iatas": ["MIL"],
         })
         self.assertTrue(all(p.itinerary.destination_iata == "MXP" for p in proposals))
         self.assertEqual(proposals[0].per_child_impact[0].nitzanim_days_overlapped, 0)
@@ -356,8 +354,9 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         wallets = [PassengerLoyaltyWallet(passenger_id="ADULT_1", program_code="AEGEAN_MILES_BONUS", available_points=90000)]
         _db, repo, prof = self.build_profile("pw18", children, wallets, matmid_balance=0)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2025-2026", "target_holiday_codes": ["ROSH_HASHANAH", "PURIM"], "destination_iatas": ["ATH", "RHO"], "max_bridge_days_shift": 2,
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "PURIM", "direct_target_year": 2026, "destination_iatas": ["ATH", "RHO"],
+            "min_trip_nights": 3, "max_trip_nights": 6, "max_bridge_days_shift": 2,
         })
         self.assertGreater(len(proposals), 0)
 
@@ -369,8 +368,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw19", children, wallets, matmid_balance=230000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["SUMMER_JUNE_20_30"], "destination_iatas": ["MAD"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "SUMMER_JUNE_20_30", "direct_target_year": 2027, "destination_iatas": ["MAD"],
         })
         self.assertTrue(any(p.itinerary.departure_date >= date(2027, 6, 21) and p.per_child_impact[0].bridge_school_days_missed == 0 for p in proposals))
 
@@ -384,8 +383,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         cal = self.get_calendar_service(repo)
         self.assertEqual(cal.get_child_day_status(children[0], date(2026, 6, 21)).state_code, "VACATION")
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2025-2026", "target_holiday_codes": ["SUMMER_JUNE_20_30"], "destination_iatas": ["AMS"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "SUMMER_JUNE_20_30", "direct_target_year": 2026, "destination_iatas": ["AMS"],
         })
         self.assertGreater(len(proposals), 0)
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("MULTI_CLUB_PER_PASSENGER_SPLIT", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH", "SPLIT_CABIN_BONUS", "COMMERCIAL_CASH_ONLY"))
@@ -398,13 +397,13 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         self.assertEqual(cal.get_child_day_status(children[0], date(2026, 10, 4)).state_code, "VACATION")
         maximizer = self.get_maximizer(cal)
         wins = maximizer.generate_candidate_windows(FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION", school_year="2026-2027", target_holiday_codes=["YOM_KIPPUR_SUKKOT"], min_trip_nights=3, max_trip_nights=6
+            date_selection_mode="HOLIDAY_DIRECT_INTENT", direct_holiday_code="YOM_KIPPUR_SUKKOT", direct_target_year=2026, min_trip_nights=3, max_trip_nights=6
         ), prof)
         for w in wins:
             self.assertFalse(w.start_date <= date(2026, 9, 28) <= w.end_date)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["YOM_KIPPUR_SUKKOT"], "destination_iatas": ["ATH"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "YOM_KIPPUR_SUKKOT", "direct_target_year": 2026, "destination_iatas": ["ATH"],
             "min_trip_nights": 3, "max_trip_nights": 6,
         })
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("CASH_AND_POINTS", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH", "SPLIT_CABIN_BONUS", "COMMERCIAL_CASH_ONLY"))
@@ -416,8 +415,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         cal = self.get_calendar_service(repo)
         self.assertEqual(cal.get_child_day_status(children[0], date(2026, 5, 5)).state_code, "VACATION")
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2025-2026", "target_holiday_codes": ["SHAVUOT", "PESACH"], "destination_iatas": ["LCA"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "PESACH", "direct_target_year": 2026, "destination_iatas": ["LCA"],
         })
         self.assertGreater(len(proposals), 0)
 
@@ -429,8 +428,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw23", children, wallets, matmid_balance=190000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "EL_AL_ONLY",
-            "school_year": "2026-2027", "target_holiday_codes": ["SUMMER_AUGUST"], "destination_iatas": ["ATH"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "EL_AL_ONLY",
+            "direct_holiday_code": "SUMMER_AUGUST", "direct_target_year": 2027, "destination_iatas": ["ATH"],
         })
         self.assertTrue(any(p.itinerary.departure_date >= date(2027, 8, 16) for p in proposals))
 
@@ -442,8 +441,8 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         ]
         _db, repo, prof = self.build_profile("pw24", children, wallets, matmid_balance=80000)
         proposals = self.execute_search(repo, prof, {
-            "date_selection_mode": "MOE_VACATION_MAXIMIZATION", "airline_selection_mode": "ALL_AIRLINES",
-            "school_year": "2026-2027", "target_holiday_codes": ["PESACH", "SUKKOT"], "destination_iatas": ["VIE"],
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT", "airline_selection_mode": "ALL_AIRLINES",
+            "direct_holiday_code": "PESACH", "direct_target_year": 2027, "destination_iatas": ["VIE"],
         })
         self.assertGreater(len(proposals), 0)
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("MULTI_CLUB_PER_PASSENGER_SPLIT", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH", "SPLIT_CABIN_BONUS", "COMMERCIAL_CASH_ONLY"))

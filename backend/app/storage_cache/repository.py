@@ -1,9 +1,9 @@
 """SQLite 3.53 WAL repository and two-tier TTL cache for family_vacation_planner.
 
 Enforces `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;` on every
-connection, initializes all 8 normalized tables and 4 indexes from
-`schema.sql`, and idempotently seeds the default household profile,
-MoE vacation calendars (`2025-2028`), and El Al `rbddataclients` Classic Award
+connection, initializes all 11 normalized tables and indexes from
+`schema.sql`, runs idempotent M5/M6 schema migrations, and seeds
+MoE vacation calendars (`2025-2028`) and El Al `rbddataclients` Classic Award
 inventory (`2025-2028`).
 """
 
@@ -231,7 +231,33 @@ class SQLiteRepository:
                     "UPDATE family_profiles SET is_legacy_quarantined = 1 WHERE user_id IS NULL AND is_legacy_quarantined = 0"
                 )
 
-            # Idempotent column migration for existing SQLite DBs
+            # Drop removed R2 parent PTO / workweek columns from family_profiles & moe_vacation_windows
+            fp_cols_cur = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(family_profiles)").fetchall()
+            }
+            for legacy_fp_col in (
+                "workweek_type",
+                "erev_chag_pto_weight",
+                "chol_hamoed_pto_weight",
+                "annual_pto_budget",
+                "max_pto_per_trip",
+            ):
+                if legacy_fp_col in fp_cols_cur:
+                    conn.execute(
+                        f"ALTER TABLE family_profiles DROP COLUMN {legacy_fp_col}"
+                    )
+
+            moe_cols_cur = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(moe_vacation_windows)").fetchall()
+            }
+            if "parent_workday_status" in moe_cols_cur:
+                conn.execute(
+                    "ALTER TABLE moe_vacation_windows DROP COLUMN parent_workday_status"
+                )
+
+            # Idempotent column & CHECK enum migration for flight_search_queries
             q_info = conn.execute("PRAGMA table_info(flight_search_queries)").fetchall()
             q_cols = {str(r["name"]) for r in q_info}
             if "preferred_vacation_types_json" not in q_cols:
@@ -247,24 +273,30 @@ class SQLiteRepository:
                     "ALTER TABLE flight_search_queries ADD COLUMN min_weather_suitability_score REAL"
                 )
 
-            # Migrate flight_search_queries.family_profile_id to nullable if an existing DB has notnull == 1
             q_info_refreshed = conn.execute("PRAGMA table_info(flight_search_queries)").fetchall()
             fp_fk_notnull = any(
                 str(r["name"]) == "family_profile_id" and int(r["notnull"]) == 1
                 for r in q_info_refreshed
             )
-            if fp_fk_notnull:
+            fsq_master_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'flight_search_queries'"
+            ).fetchone()
+            fsq_sql = str(fsq_master_row["sql"] or "") if fsq_master_row is not None else ""
+            if (
+                fp_fk_notnull
+                or "MOE_VACATION_MAXIMIZATION" in fsq_sql
+                or "MAXIMIZE_EFFICIENCY_SCORE" in fsq_sql
+            ):
                 conn.commit()
                 conn.execute("PRAGMA foreign_keys = OFF;")
                 conn.executescript(
                     """
-                    DROP TABLE IF EXISTS flight_search_queries__m5_mig;
-                    CREATE TABLE flight_search_queries__m5_mig (
+                    DROP TABLE IF EXISTS flight_search_queries__m6_mig;
+                    CREATE TABLE flight_search_queries__m6_mig (
                         id TEXT PRIMARY KEY,
                         family_profile_id TEXT REFERENCES family_profiles(id) ON DELETE CASCADE,
                         date_selection_mode TEXT NOT NULL CHECK (date_selection_mode IN (
                             'SPECIFIC_DATES',
-                            'MOE_VACATION_MAXIMIZATION',
                             'HOLIDAY_DIRECT_INTENT'
                         )),
                         airline_selection_mode TEXT NOT NULL CHECK (airline_selection_mode IN (
@@ -285,10 +317,9 @@ class SQLiteRepository:
                         min_trip_nights INTEGER NOT NULL DEFAULT 4 CHECK (min_trip_nights >= 1),
                         max_trip_nights INTEGER NOT NULL DEFAULT 10 CHECK (max_trip_nights >= min_trip_nights),
                         max_bridge_days_shift INTEGER NOT NULL DEFAULT 3 CHECK (max_bridge_days_shift BETWEEN 0 AND 5),
-                        overlap_policy TEXT NOT NULL DEFAULT 'MAXIMIZE_EFFICIENCY_SCORE' CHECK (overlap_policy IN (
+                        overlap_policy TEXT NOT NULL DEFAULT 'CAMP_ADJUSTED_INTERSECTION' CHECK (overlap_policy IN (
                             'STRICT_ALL_CHILDREN_OFF',
-                            'CAMP_ADJUSTED_INTERSECTION',
-                            'MAXIMIZE_EFFICIENCY_SCORE'
+                            'CAMP_ADJUSTED_INTERSECTION'
                         )),
                         preferred_cabins_json TEXT NOT NULL DEFAULT '["ECONOMY","PREMIUM","BUSINESS"]',
                         enabled_loyalty_programs_json TEXT NOT NULL DEFAULT '["ELAL_MATMID"]',
@@ -299,7 +330,7 @@ class SQLiteRepository:
                         direct_flights_only INTEGER NOT NULL DEFAULT 1 CHECK (direct_flights_only IN (0, 1)),
                         created_at TEXT NOT NULL DEFAULT (datetime('now'))
                     );
-                    INSERT INTO flight_search_queries__m5_mig (
+                    INSERT INTO flight_search_queries__m6_mig (
                         id, family_profile_id, date_selection_mode, airline_selection_mode,
                         search_elal_bonus_tickets, include_sundor_flights, origin_iata,
                         destination_iatas_json, specific_departure_date, specific_return_date,
@@ -312,23 +343,93 @@ class SQLiteRepository:
                         direct_flights_only, created_at
                     )
                     SELECT
-                        id, family_profile_id, date_selection_mode, airline_selection_mode,
+                        id,
+                        family_profile_id,
+                        CASE WHEN date_selection_mode = 'SPECIFIC_DATES' THEN 'SPECIFIC_DATES' ELSE 'HOLIDAY_DIRECT_INTENT' END,
+                        airline_selection_mode,
                         search_elal_bonus_tickets, include_sundor_flights, origin_iata,
                         destination_iatas_json, specific_departure_date, specific_return_date,
                         flex_days_plus_minus, school_year, target_holiday_codes_json,
                         direct_holiday_code, direct_target_year, min_trip_nights,
-                        max_trip_nights, max_bridge_days_shift, overlap_policy,
+                        max_trip_nights, max_bridge_days_shift,
+                        CASE WHEN overlap_policy = 'STRICT_ALL_CHILDREN_OFF' THEN 'STRICT_ALL_CHILDREN_OFF' ELSE 'CAMP_ADJUSTED_INTERSECTION' END,
                         preferred_cabins_json, enabled_loyalty_programs_json,
                         preferred_vacation_types_json, weather_filter_mode,
                         min_weather_suitability_score, allow_hybrid_bonus_cash,
                         direct_flights_only, created_at
                     FROM flight_search_queries;
                     DROP TABLE flight_search_queries;
-                    ALTER TABLE flight_search_queries__m5_mig RENAME TO flight_search_queries;
+                    ALTER TABLE flight_search_queries__m6_mig RENAME TO flight_search_queries;
                     """
                 )
                 conn.execute("PRAGMA foreign_keys = ON;")
 
+            # R1 migration on flight_itineraries: add aggregate household columns, backfill, drop per-passenger JSON
+            i_cols = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(flight_itineraries)").fetchall()
+            }
+            if "seated_passengers_count" not in i_cols:
+                conn.execute(
+                    "ALTER TABLE flight_itineraries ADD COLUMN seated_passengers_count INTEGER NOT NULL DEFAULT 1 CHECK (seated_passengers_count >= 1)"
+                )
+            if "bonus_tickets_count" not in i_cols:
+                conn.execute(
+                    "ALTER TABLE flight_itineraries ADD COLUMN bonus_tickets_count INTEGER NOT NULL DEFAULT 0 CHECK (bonus_tickets_count >= 0)"
+                )
+            if "cash_tickets_count" not in i_cols:
+                conn.execute(
+                    "ALTER TABLE flight_itineraries ADD COLUMN cash_tickets_count INTEGER NOT NULL DEFAULT 0 CHECK (cash_tickets_count >= 0)"
+                )
+            if "primary_cabin" not in i_cols:
+                conn.execute(
+                    "ALTER TABLE flight_itineraries ADD COLUMN primary_cabin TEXT NOT NULL DEFAULT 'ECONOMY' CHECK (primary_cabin IN ('ECONOMY', 'PREMIUM', 'BUSINESS'))"
+                )
+            if "family_ticket_allocation_json" in i_cols:
+                legacy_i_rows = conn.execute(
+                    "SELECT id, family_ticket_allocation_json FROM flight_itineraries"
+                ).fetchall()
+                for i_row in legacy_i_rows:
+                    raw_alloc_json = i_row["family_ticket_allocation_json"]
+                    try:
+                        alloc_items = json.loads(raw_alloc_json) if raw_alloc_json else []
+                    except Exception:
+                        alloc_items = []
+                    if not isinstance(alloc_items, list):
+                        alloc_items = []
+                    seated_items = [
+                        a
+                        for a in alloc_items
+                        if isinstance(a, dict)
+                        and str(a.get("rbd_code") or "").upper() != "INF"
+                    ]
+                    seated_cnt = max(1, len(seated_items))
+                    bonus_cnt = sum(
+                        1
+                        for a in seated_items
+                        if "BONUS" in str(a.get("ticket_mode") or "").upper()
+                        or "POINTS" in str(a.get("ticket_mode") or "").upper()
+                        or int(a.get("points_used") or 0) > 0
+                    )
+                    cash_cnt = max(0, seated_cnt - bonus_cnt)
+                    cabins_set = {
+                        str(a.get("cabin_class") or "ECONOMY").upper()
+                        for a in seated_items
+                        if str(a.get("cabin_class") or "ECONOMY").upper()
+                        in ("ECONOMY", "PREMIUM", "BUSINESS")
+                    }
+                    prim_cabin = (
+                        next(iter(cabins_set)) if len(cabins_set) == 1 else "ECONOMY"
+                    )
+                    conn.execute(
+                        "UPDATE flight_itineraries SET seated_passengers_count = ?, bonus_tickets_count = ?, cash_tickets_count = ?, primary_cabin = ? WHERE id = ?",
+                        (seated_cnt, bonus_cnt, cash_cnt, prim_cabin, str(i_row["id"])),
+                    )
+                conn.execute(
+                    "ALTER TABLE flight_itineraries DROP COLUMN family_ticket_allocation_json"
+                )
+
+            # R2 + weather migration on vacation_option_proposals
             p_cols = {
                 str(r["name"])
                 for r in conn.execute("PRAGMA table_info(vacation_option_proposals)").fetchall()
@@ -345,6 +446,24 @@ class SQLiteRepository:
                 conn.execute(
                     "ALTER TABLE vacation_option_proposals ADD COLUMN weather_metrics_json TEXT"
                 )
+            if "holiday_alignment_score" not in p_cols:
+                conn.execute(
+                    "ALTER TABLE vacation_option_proposals ADD COLUMN holiday_alignment_score REAL NOT NULL DEFAULT 0.0 CHECK (holiday_alignment_score >= 0.0 AND holiday_alignment_score <= 100.0)"
+                )
+            if "vacation_utilization_score" in p_cols:
+                conn.execute(
+                    "UPDATE vacation_option_proposals SET holiday_alignment_score = MIN(100.0, MAX(0.0, COALESCE(vacation_utilization_score, 0.0)))"
+                )
+            for legacy_p_col in (
+                "total_vacation_days",
+                "parent_pto_days_used",
+                "pto_efficiency_ratio",
+                "vacation_utilization_score",
+            ):
+                if legacy_p_col in p_cols:
+                    conn.execute(
+                        f"ALTER TABLE vacation_option_proposals DROP COLUMN {legacy_p_col}"
+                    )
 
             conn.execute("PRAGMA journal_mode = WAL;")
             conn.execute("PRAGMA foreign_keys = ON;")
@@ -554,23 +673,16 @@ class SQLiteRepository:
             conn.execute(
                 """
                 INSERT INTO family_profiles (
-                    id, user_id, is_legacy_quarantined, profile_name, adults_count, workweek_type,
-                    erev_chag_pto_weight, chol_hamoed_pto_weight,
-                    annual_pto_budget, max_pto_per_trip,
+                    id, user_id, is_legacy_quarantined, profile_name, adults_count,
                     matmid_points_balance, has_flycard, flycard_tier,
                     flycard_companion_vouchers, point_valuation_usd,
                     preferred_currency, created_at, updated_at
-                ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     user_id = COALESCE(excluded.user_id, family_profiles.user_id),
                     is_legacy_quarantined = 0,
                     profile_name = excluded.profile_name,
                     adults_count = excluded.adults_count,
-                    workweek_type = excluded.workweek_type,
-                    erev_chag_pto_weight = excluded.erev_chag_pto_weight,
-                    chol_hamoed_pto_weight = excluded.chol_hamoed_pto_weight,
-                    annual_pto_budget = excluded.annual_pto_budget,
-                    max_pto_per_trip = excluded.max_pto_per_trip,
                     matmid_points_balance = excluded.matmid_points_balance,
                     has_flycard = excluded.has_flycard,
                     flycard_tier = excluded.flycard_tier,
@@ -584,11 +696,6 @@ class SQLiteRepository:
                     user_id,
                     prof.profile_name,
                     prof.adults_count,
-                    prof.workweek_type,
-                    prof.erev_chag_pto_weight,
-                    prof.chol_hamoed_pto_weight,
-                    prof.annual_pto_budget,
-                    prof.max_pto_per_trip,
                     prof.matmid_points_balance,
                     1 if prof.has_flycard else 0,
                     prof.flycard_tier,
@@ -769,9 +876,9 @@ class SQLiteRepository:
                         holiday_name_he, holiday_name_en, framework_type,
                         start_date, end_date, resumes_on_date,
                         is_covered_by_nitzanim, nitzanim_start_date, nitzanim_end_date,
-                        parent_workday_status, tlv_airport_closed,
+                        tlv_airport_closed,
                         calendar_sync_source, last_synced_at, source_reference
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         wd["id"],
@@ -787,7 +894,6 @@ class SQLiteRepository:
                         1 if w.is_covered_by_nitzanim else 0,
                         wd["nitzanim_start_date"],
                         wd["nitzanim_end_date"],
-                        wd["parent_workday_status"],
                         1 if w.tlv_airport_closed else 0,
                         wd["calendar_sync_source"],
                         wd["last_synced_at"],
@@ -1202,14 +1308,15 @@ class SQLiteRepository:
                 destination_city_he, destination_city_en, departure_date, return_date,
                 trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                 fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                outbound_bonus_id, inbound_bonus_id, family_ticket_allocation_json,
+                outbound_bonus_id, inbound_bonus_id,
+                seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
                 points_used_by_wallet_json, requires_two_plus_seat_verification,
                 total_matmid_points, total_taxes_and_fees_usd,
                 total_supplemental_cash_fares_usd, total_baggage_fees_usd,
                 total_out_of_pocket_cash_usd, full_cash_benchmark_usd,
                 net_cash_saved_usd, cents_per_point_value,
                 rbddataclients_verify_url, booking_deep_link_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 it_dict["id"],
@@ -1230,7 +1337,10 @@ class SQLiteRepository:
                 it_dict["inbound_legs_json"],
                 it_dict["outbound_bonus_id"],
                 it_dict["inbound_bonus_id"],
-                it_dict["family_ticket_allocation_json"],
+                itin.seated_passengers_count,
+                itin.bonus_tickets_count,
+                itin.cash_tickets_count,
+                itin.primary_cabin,
                 it_dict["points_used_by_wallet_json"],
                 1 if itin.requires_two_plus_seat_verification else 0,
                 itin.total_matmid_points,
@@ -1275,15 +1385,14 @@ class SQLiteRepository:
             """
             INSERT OR REPLACE INTO vacation_option_proposals (
                 id, search_query_id, itinerary_id, associated_holiday_codes_json,
-                window_set_type, total_vacation_days, parent_pto_days_used,
-                pto_efficiency_ratio, school_absence_penalty, childcare_coverage_gain,
+                window_set_type, school_absence_penalty, childcare_coverage_gain,
                 per_child_impact_json, total_school_days_missed_across_children,
-                max_single_child_school_days_missed, vacation_utilization_score,
+                max_single_child_school_days_missed, holiday_alignment_score,
                 flight_bonus_value_score, weather_suitability_score,
                 vacation_type_scores_json, weather_metrics_json,
                 combined_trip_optimization_score,
                 explanation_summary_he, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 pd["id"],
@@ -1291,15 +1400,12 @@ class SQLiteRepository:
                 pd["itinerary_id"],
                 pd["associated_holiday_codes_json"],
                 pd["window_set_type"],
-                prop.total_vacation_days,
-                prop.parent_pto_days_used,
-                prop.pto_efficiency_ratio,
                 prop.school_absence_penalty,
                 prop.childcare_coverage_gain,
                 pd["per_child_impact_json"],
                 prop.total_school_days_missed_across_children,
                 prop.max_single_child_school_days_missed,
-                prop.vacation_utilization_score,
+                prop.holiday_alignment_score,
                 prop.flight_bonus_value_score,
                 prop.weather_suitability_score,
                 pd["vacation_type_scores_json"],

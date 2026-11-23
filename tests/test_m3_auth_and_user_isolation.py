@@ -261,7 +261,6 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                     "destination_iatas": ["FCO"],
                     "inline_profile": {
                         "adults_count": 2,
-                        "annual_pto_budget": 18.0,
                         "matmid_points_balance": 150000,
                         "children": [
                             {"child_age_years": 1, "framework_type": None},
@@ -273,16 +272,18 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             self.assertEqual(r2.status_code, 200)
             props_2 = r2.json()["proposals"]
             self.assertGreater(len(props_2), 0)
-            allocs = props_2[0]["itinerary"]["family_ticket_allocation"]
-            self.assertEqual(len(allocs), 4)  # 2 adults + 1 child + 1 infant_lap
+            it_2 = props_2[0]["itinerary"]
+            self.assertEqual(it_2["seated_passengers_count"], 3)  # 2 adults + 1 child (1 infant_lap = 0 seats)
+            self.assertNotIn("family_ticket_allocation", it_2)
+            self.assertIn("estimated_cash_usd", it_2)
+            self.assertTrue(it_2["is_cash_price_estimate"])
 
-            # Guest compare & .ics export work cleanly from in-memory ephemeral cache
+            # Guest compare works cleanly from in-memory ephemeral cache; removed .ics export returns 404
             pids = [props_1[0]["id"], props_2[0]["id"]]
             cmp_r = guest.post("/api/v1/vacations/compare", json={"proposal_ids": pids})
             self.assertEqual(cmp_r.status_code, 200)
             ics_r = guest.get(f"/api/v1/vacations/{pids[0]}/export.ics")
-            self.assertEqual(ics_r.status_code, 200)
-            self.assertIn("BEGIN:VCALENDAR", ics_r.text)
+            self.assertEqual(ics_r.status_code, 404)
 
             # Verify ZERO rows were written to family_profiles, child_frameworks, or flight_search_queries!
             conn = sqlite3.connect(str(db_path))
@@ -552,7 +553,6 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 "/api/v1/profile",
                 json={
                     "adults_count": 2,
-                    "annual_pto_budget": 20.0,
                     "matmid_points_balance": 240000,
                     "children": [
                         {"child_age_years": 1, "framework_type": "DAYCARE_SUPERVISED"},
@@ -572,7 +572,8 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             reloaded = client.get("/api/v1/profile").json()
             self.assertTrue(reloaded["is_persisted"])
             self.assertEqual(reloaded["matmid_points_balance"], 240000)
-            self.assertAlmostEqual(reloaded["annual_pto_budget"], 20.0)
+            self.assertNotIn("annual_pto_budget", reloaded)
+            self.assertNotIn("workweek_type", reloaded)
             ages_and_types = [
                 (c["child_age_years"], c["passenger_Current_type"], c["framework_type"])
                 for c in reloaded["children"]
@@ -678,9 +679,15 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             )
             self.assertEqual(s_a.status_code, 200)
             prop_a = s_a.json()["proposals"][0]
-            self.assertEqual(len(prop_a["itinerary"]["family_ticket_allocation"]), 4)
+            self.assertEqual(prop_a["itinerary"]["seated_passengers_count"], 4)
 
-            # User B cannot export or compare User A's persisted proposal_id (404)
+            # User A can compare their own persisted proposal (200), while User B gets 404 (IDOR guard)
+            self.assertEqual(
+                client_a.post(
+                    "/api/v1/vacations/compare", json={"proposal_ids": [prop_a["id"]]}
+                ).status_code,
+                200,
+            )
             self.assertEqual(
                 client_b.get(f"/api/v1/vacations/{prop_a['id']}/export.ics").status_code,
                 404,
@@ -1297,13 +1304,17 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             self.assertEqual(prof_after["children"], [])
             self.assertEqual(prof_after["matmid_points_balance"], 0)
 
-            # Both User A's persisted AND ephemeral proposals were purged (404)
+            # Both User A's persisted AND ephemeral proposals were purged (404 on /compare)
             self.assertEqual(
-                client_a.get(f"/api/v1/vacations/{persisted_a_pid}/export.ics").status_code,
+                client_a.post(
+                    "/api/v1/vacations/compare", json={"proposal_ids": [persisted_a_pid]}
+                ).status_code,
                 404,
             )
             self.assertEqual(
-                client_a.get(f"/api/v1/vacations/{eph_pid}/export.ics").status_code,
+                client_a.post(
+                    "/api/v1/vacations/compare", json={"proposal_ids": [eph_pid]}
+                ).status_code,
                 404,
             )
 
@@ -1315,7 +1326,9 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 [c["child_age_years"] for c in b_prof["children"]], [7]
             )
             self.assertEqual(
-                client_b.get(f"/api/v1/vacations/{persisted_b_pid}/export.ics").status_code,
+                client_b.post(
+                    "/api/v1/vacations/compare", json={"proposal_ids": [persisted_b_pid]}
+                ).status_code,
                 200,
             )
 
@@ -1782,26 +1795,20 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             )
             self.assertEqual(u1_search.status_code, 200)
             u1_eph_id = u1_search.json()["proposals"][0]["id"]
-            # Owner accesses ephemeral proposal cleanly (200), Guest & User 2 get 404 on shared router
+            # Owner accesses ephemeral proposal cleanly via /compare (200), Guest & User 2 get 404 on shared router
             self.assertEqual(
-                unsaved_u1.get(f"/api/v1/vacations/{u1_eph_id}/export.ics").status_code,
+                unsaved_u1.post(
+                    "/api/v1/vacations/compare", json={"proposal_ids": [u1_eph_id]}
+                ).status_code,
                 200,
             )
             # Share the same router instance to test in-memory _ephemeral_proposals cross-requester IDOR directly
             guest_c.router = unsaved_u1.router
             other_u2.router = unsaved_u1.router
             self.assertEqual(
-                guest_c.get(f"/api/v1/vacations/{u1_eph_id}/export.ics").status_code,
-                404,
-            )
-            self.assertEqual(
                 guest_c.post(
                     "/api/v1/vacations/compare", json={"proposal_ids": [u1_eph_id]}
                 ).status_code,
-                404,
-            )
-            self.assertEqual(
-                other_u2.get(f"/api/v1/vacations/{u1_eph_id}/export.ics").status_code,
                 404,
             )
             self.assertEqual(
@@ -1859,7 +1866,6 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                         "/api/v1/vacations/compare",
                         json.dumps({"proposal_ids": [live_pid]}),
                     ),
-                    ("GET", f"/api/v1/vacations/{live_pid}/export.ics", None),
                 ):
                     hc = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
                     try:

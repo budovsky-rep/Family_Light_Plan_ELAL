@@ -206,24 +206,31 @@ class TestTier2F01FamilyProfilesBoundaries(Tier2BoundaryTestBase):
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("INSERT INTO family_profiles (id, adults_count) VALUES (?, ?)", (f"bad_{invalid_adults}", invalid_adults))
 
-    def test_f01_02_pto_weights_discrete_set_and_invalid_weight_check(self) -> None:
+    def test_f01_02_family_profiles_schema_excludes_removed_pto_and_workweek_columns(self) -> None:
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
-        for idx, w in enumerate((0.0, 0.5, 1.0)):
-            conn.execute("INSERT INTO family_profiles (id, erev_chag_pto_weight, chol_hamoed_pto_weight) VALUES (?, ?, ?)", (f"w_{idx}", w, w))
-        for bad_w in (0.25, -0.5, 1.5):
-            with self.assertRaises(sqlite3.IntegrityError):
-                conn.execute("INSERT INTO family_profiles (id, erev_chag_pto_weight) VALUES (?, ?)", (f"be_{bad_w}", bad_w))
-            with self.assertRaises(sqlite3.IntegrityError):
-                conn.execute("INSERT INTO family_profiles (id, chol_hamoed_pto_weight) VALUES (?, ?)", (f"bc_{bad_w}", bad_w))
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(family_profiles)").fetchall()}
+        for removed_col in (
+            "annual_pto_budget",
+            "max_pto_per_trip",
+            "workweek_type",
+            "erev_chag_pto_weight",
+            "chol_hamoed_pto_weight",
+        ):
+            self.assertNotIn(removed_col, cols)
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute(
+                    f"INSERT INTO family_profiles (id, {removed_col}) VALUES (?, 1)",
+                    (f"rm_{removed_col}",),
+                )
 
     def test_f01_03_zero_budgets_and_negative_budget_points_vouchers_check(self) -> None:
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
         conn.execute(
-            "INSERT INTO family_profiles (id, annual_pto_budget, max_pto_per_trip, matmid_points_balance, flycard_companion_vouchers) VALUES ('z', 0.0, 0.0, 0, 0)"
+            "INSERT INTO family_profiles (id, matmid_points_balance, flycard_companion_vouchers) VALUES ('z', 0, 0)"
         )
-        for col, bad_val in (("annual_pto_budget", -0.1), ("max_pto_per_trip", -1.0), ("matmid_points_balance", -1), ("flycard_companion_vouchers", -1)):
+        for col, bad_val in (("matmid_points_balance", -1), ("flycard_companion_vouchers", -1)):
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(f"INSERT INTO family_profiles (id, {col}) VALUES (?, ?)", (f"neg_{col}", bad_val))
 
@@ -238,7 +245,7 @@ class TestTier2F01FamilyProfilesBoundaries(Tier2BoundaryTestBase):
     def test_f01_05_enum_checks_workweek_flycard_tier_currency(self) -> None:
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
-        for col, bad_val in (("workweek_type", "MON_FRI"), ("has_flycard", 2), ("flycard_tier", "GOLD"), ("preferred_currency", "GBP")):
+        for col, bad_val in (("has_flycard", 2), ("flycard_tier", "GOLD"), ("preferred_currency", "GBP")):
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(f"INSERT INTO family_profiles (id, {col}) VALUES (?, ?)", (f"enum_{col}", bad_val))
 
@@ -426,15 +433,15 @@ class TestTier2F04MoEVacationWindowsBoundaries(Tier2BoundaryTestBase):
     def test_f04_02_parent_workday_status_and_sync_source_enum_checks(self) -> None:
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
-        for col, bad_val in (("parent_workday_status", "WEEKEND_OFF"), ("calendar_sync_source", "MANUAL_CSV")):
-            with self.assertRaises(sqlite3.IntegrityError):
-                conn.execute(
-                    f"""INSERT INTO moe_vacation_windows (
-                        id, school_year, circular_id, holiday_code, holiday_name_he, holiday_name_en,
-                        framework_type, start_date, end_date, resumes_on_date, {col}, source_reference
-                    ) VALUES (?, '2026-2027', '0363', 'PESACH', 'פסח', 'Pesach', 'ELEMENTARY_1_3', '2027-04-13', '2027-04-28', '2027-04-29', ?, 'ref')""",
-                    (f"bad_{col}", bad_val),
-                )
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(moe_vacation_windows)").fetchall()}
+        self.assertNotIn("parent_workday_status", cols)
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO moe_vacation_windows (
+                    id, school_year, circular_id, holiday_code, holiday_name_he, holiday_name_en,
+                    framework_type, start_date, end_date, resumes_on_date, calendar_sync_source, source_reference
+                ) VALUES ('bad_sync', '2026-2027', '0363', 'PESACH', 'פסח', 'Pesach', 'ELEMENTARY_1_3', '2027-04-13', '2027-04-28', '2027-04-29', 'MANUAL_CSV', 'ref')"""
+            )
 
     def test_f04_03_tlv_airport_closed_and_nitzanim_boolean_checks(self) -> None:
         _, db_path = self.create_temp_repo(auto_seed=False)
@@ -512,7 +519,7 @@ class TestTier2F05FlightSearchQueriesBoundaries(Tier2BoundaryTestBase):
                     """INSERT INTO flight_search_queries (
                         id, family_profile_id, date_selection_mode, airline_selection_mode,
                         destination_iatas_json, max_bridge_days_shift
-                    ) VALUES (?, 'p1', 'MOE_VACATION_MAXIMIZATION', 'EL_AL_ONLY', '["FCO"]', ?)""",
+                    ) VALUES (?, 'p1', 'HOLIDAY_DIRECT_INTENT', 'EL_AL_ONLY', '["FCO"]', ?)""",
                     (f"bb_{bad_bridge}", bad_bridge),
                 )
 
@@ -562,15 +569,17 @@ class TestTier2F05FlightSearchQueriesBoundaries(Tier2BoundaryTestBase):
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
         conn.execute("INSERT INTO family_profiles (id) VALUES ('p1')")
-        for col, bad_val in (
+        for idx, (col, bad_val) in enumerate((
             ("date_selection_mode", "FREE_TEXT"),
+            ("date_selection_mode", "MOE_VACATION_MAXIMIZATION"),
             ("airline_selection_mode", "LCC_ONLY"),
             ("overlap_policy", "IGNORE_SCHOOL"),
-        ):
+            ("overlap_policy", "MAXIMIZE_EFFICIENCY_SCORE"),
+        )):
             vals = {
                 "date_selection_mode": "SPECIFIC_DATES",
                 "airline_selection_mode": "EL_AL_ONLY",
-                "overlap_policy": "MAXIMIZE_EFFICIENCY_SCORE",
+                "overlap_policy": "CAMP_ADJUSTED_INTERSECTION",
             }
             vals[col] = bad_val
             with self.assertRaises(sqlite3.IntegrityError):
@@ -579,7 +588,7 @@ class TestTier2F05FlightSearchQueriesBoundaries(Tier2BoundaryTestBase):
                         id, family_profile_id, date_selection_mode, airline_selection_mode,
                         destination_iatas_json, overlap_policy
                     ) VALUES (?, 'p1', ?, ?, '["FCO"]', ?)""",
-                    (f"bad_{col}", vals["date_selection_mode"], vals["airline_selection_mode"], vals["overlap_policy"]),
+                    (f"bad_{idx}_{col}", vals["date_selection_mode"], vals["airline_selection_mode"], vals["overlap_policy"]),
                 )
 
     def test_f05_05_foreign_key_cascade_delete_from_family_profiles(self) -> None:
@@ -710,6 +719,10 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
         self._seed_parent_query(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(flight_itineraries)").fetchall()}
+        self.assertNotIn("family_ticket_allocation_json", cols)
+        for expected_col in ("seated_passengers_count", "bonus_tickets_count", "cash_tickets_count", "primary_cabin"):
+            self.assertIn(expected_col, cols)
         valid_strategies = (
             "FULL_BONUS_SAME_CABIN",
             "SPLIT_CABIN_BONUS",
@@ -726,9 +739,9 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                     destination_city_he, destination_city_en, departure_date, return_date,
                     trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                     fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                    family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                    full_cash_benchmark_usd, booking_deep_link_url
-                ) VALUES (?, 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 1, ?, '[]', '[]', '[]', 500.0, 2000.0, 'https://elal.com')""",
+                    seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                    total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+                ) VALUES (?, 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 1, ?, '[]', '[]', 2, 2, 0, 'ECONOMY', 500.0, 2000.0, 'https://elal.com')""",
                 (f"it_{idx}", strat),
             )
         with self.assertRaises(sqlite3.IntegrityError):
@@ -738,9 +751,9 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                     destination_city_he, destination_city_en, departure_date, return_date,
                     trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                     fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                    family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                    full_cash_benchmark_usd, booking_deep_link_url
-                ) VALUES ('it_bad', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 1, 'UPGRADE_VOUCHER_ONLY', '[]', '[]', '[]', 500.0, 2000.0, 'https://elal.com')"""
+                    seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                    total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+                ) VALUES ('it_bad', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 1, 'UPGRADE_VOUCHER_ONLY', '[]', '[]', 2, 2, 0, 'ECONOMY', 500.0, 2000.0, 'https://elal.com')"""
             )
 
     def test_f07_02_trip_nights_min_1_and_zero_or_negative_rejected(self) -> None:
@@ -753,9 +766,9 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                 destination_city_he, destination_city_en, departure_date, return_date,
                 trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                 fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                full_cash_benchmark_usd, booking_deep_link_url
-            ) VALUES ('it_1', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-12', 1, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', '[]', 500.0, 500.0, 'https://elal.com')"""
+                seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+            ) VALUES ('it_1', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-12', 1, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', 2, 0, 2, 'ECONOMY', 500.0, 500.0, 'https://elal.com')"""
         )
         for bad_nights in (0, -3):
             with self.assertRaises(sqlite3.IntegrityError):
@@ -765,9 +778,9 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                         destination_city_he, destination_city_en, departure_date, return_date,
                         trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                         fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                        family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                        full_cash_benchmark_usd, booking_deep_link_url
-                    ) VALUES (?, 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-12', ?, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', '[]', 500.0, 500.0, 'https://elal.com')""",
+                        seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                        total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+                    ) VALUES (?, 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-12', ?, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', 2, 0, 2, 'ECONOMY', 500.0, 500.0, 'https://elal.com')""",
                     (f"bad_n_{bad_nights}", bad_nights),
                 )
 
@@ -781,11 +794,12 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                 destination_city_he, destination_city_en, departure_date, return_date,
                 trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                 fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                family_ticket_allocation_json, total_matmid_points, total_taxes_and_fees_usd,
+                seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                total_matmid_points, total_taxes_and_fees_usd,
                 total_supplemental_cash_fares_usd, total_baggage_fees_usd,
                 total_out_of_pocket_cash_usd, full_cash_benchmark_usd, net_cash_saved_usd,
                 booking_deep_link_url
-            ) VALUES ('it_z', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', '[]', 0, 0.0, 0.0, 0.0, 0.0, 0.0, -50.0, 'https://elal.com')"""
+            ) VALUES ('it_z', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', 2, 0, 2, 'ECONOMY', 0, 0.0, 0.0, 0.0, 0.0, 0.0, -50.0, 'https://elal.com')"""
         )
         for col in (
             "total_matmid_points",
@@ -809,9 +823,9 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                 trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                 fulfillment_strategy, outbound_legs_json, inbound_legs_json,
                 outbound_bonus_id, inbound_bonus_id, cents_per_point_value,
-                family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                full_cash_benchmark_usd, booking_deep_link_url
-            ) VALUES ('it_null', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', NULL, NULL, NULL, '[]', 800.0, 800.0, 'https://elal.com')"""
+                seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+            ) VALUES ('it_null', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', NULL, NULL, NULL, 2, 0, 2, 'ECONOMY', 800.0, 800.0, 'https://elal.com')"""
         )
         with self.assertRaises(sqlite3.IntegrityError):
             conn.execute("UPDATE flight_itineraries SET outbound_bonus_id = 'nonexistent_bonus_id' WHERE id = 'it_null'")
@@ -826,9 +840,9 @@ class TestTier2F07FlightItinerariesBoundaries(Tier2BoundaryTestBase):
                 destination_city_he, destination_city_en, departure_date, return_date,
                 trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                 fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                full_cash_benchmark_usd, booking_deep_link_url
-            ) VALUES ('it_del', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', '[]', 800.0, 800.0, 'https://elal.com')"""
+                seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+            ) VALUES ('it_del', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 0, 'COMMERCIAL_CASH_ONLY', '[]', '[]', 2, 0, 2, 'ECONOMY', 800.0, 800.0, 'https://elal.com')"""
         )
         conn.execute("DELETE FROM flight_search_queries WHERE id = 'q1'")
         cnt = conn.execute("SELECT COUNT(*) FROM flight_itineraries WHERE id = 'it_del'").fetchone()[0]
@@ -851,9 +865,9 @@ class TestTier2F08VacationOptionProposalsBoundaries(Tier2BoundaryTestBase):
                 destination_city_he, destination_city_en, departure_date, return_date,
                 trip_nights, primary_carrier_iata, is_elal_flight, utilizes_elal_bonus,
                 fulfillment_strategy, outbound_legs_json, inbound_legs_json,
-                family_ticket_allocation_json, total_out_of_pocket_cash_usd,
-                full_cash_benchmark_usd, booking_deep_link_url
-            ) VALUES ('it1', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 1, 'FULL_BONUS_SAME_CABIN', '[]', '[]', '[]', 300.0, 2000.0, 'https://elal.com')"""
+                seated_passengers_count, bonus_tickets_count, cash_tickets_count, primary_cabin,
+                total_out_of_pocket_cash_usd, full_cash_benchmark_usd, booking_deep_link_url
+            ) VALUES ('it1', 'q1', 'TLV', 'FCO', 'FCO', 'רומא', 'Rome', '2027-04-11', '2027-04-18', 7, 'LY', 1, 1, 'FULL_BONUS_SAME_CABIN', '[]', '[]', 2, 2, 0, 'ECONOMY', 300.0, 2000.0, 'https://elal.com')"""
         )
 
     def test_f08_01_scores_vus_fbvs_ctos_0_and_100_boundaries_vs_out_of_bounds(self) -> None:
@@ -864,15 +878,14 @@ class TestTier2F08VacationOptionProposalsBoundaries(Tier2BoundaryTestBase):
             conn.execute(
                 """INSERT INTO vacation_option_proposals (
                     id, search_query_id, itinerary_id, associated_holiday_codes_json,
-                    total_vacation_days, parent_pto_days_used, pto_efficiency_ratio,
                     school_absence_penalty, childcare_coverage_gain, per_child_impact_json,
                     total_school_days_missed_across_children, max_single_child_school_days_missed,
-                    vacation_utilization_score, flight_bonus_value_score,
+                    holiday_alignment_score, flight_bonus_value_score,
                     combined_trip_optimization_score, explanation_summary_he
-                ) VALUES (?, 'q1', 'it1', '["PESACH"]', 7, 1.0, 7.0, 0.0, 1.0, '[]', 0, 0, ?, ?, ?, 'הסבר')""",
+                ) VALUES (?, 'q1', 'it1', '["PESACH"]', 0.0, 1.0, '[]', 0, 0, ?, ?, ?, 'הסבר')""",
                 (f"pr_{int(s_val)}", s_val, s_val, s_val),
             )
-        for col in ("vacation_utilization_score", "flight_bonus_value_score", "combined_trip_optimization_score"):
+        for col in ("holiday_alignment_score", "flight_bonus_value_score", "combined_trip_optimization_score"):
             for bad_s in (-0.01, 100.01):
                 with self.assertRaises(sqlite3.IntegrityError):
                     conn.execute(f"UPDATE vacation_option_proposals SET {col} = ? WHERE id = 'pr_0'", (bad_s,))
@@ -885,12 +898,11 @@ class TestTier2F08VacationOptionProposalsBoundaries(Tier2BoundaryTestBase):
             conn.execute(
                 """INSERT INTO vacation_option_proposals (
                     id, search_query_id, itinerary_id, associated_holiday_codes_json, window_set_type,
-                    total_vacation_days, parent_pto_days_used, pto_efficiency_ratio,
                     school_absence_penalty, childcare_coverage_gain, per_child_impact_json,
                     total_school_days_missed_across_children, max_single_child_school_days_missed,
-                    vacation_utilization_score, flight_bonus_value_score,
+                    holiday_alignment_score, flight_bonus_value_score,
                     combined_trip_optimization_score, explanation_summary_he
-                ) VALUES (?, 'q1', 'it1', '["PESACH"]', ?, 7, 1.0, 7.0, 0.0, 1.0, '[]', 0, 0, 80.0, 80.0, 80.0, 'הסבר')""",
+                ) VALUES (?, 'q1', 'it1', '["PESACH"]', ?, 0.0, 1.0, '[]', 0, 0, 80.0, 80.0, 80.0, 'הסבר')""",
                 (f"wst_{idx}", wst),
             )
         with self.assertRaises(sqlite3.IntegrityError):
@@ -900,19 +912,19 @@ class TestTier2F08VacationOptionProposalsBoundaries(Tier2BoundaryTestBase):
         _, db_path = self.create_temp_repo(auto_seed=False)
         conn = self.get_raw_conn(db_path)
         self._seed_parent_chain(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(vacation_option_proposals)").fetchall()}
+        for removed_col in ("total_vacation_days", "parent_pto_days_used", "pto_efficiency_ratio", "vacation_utilization_score"):
+            self.assertNotIn(removed_col, cols)
         conn.execute(
             """INSERT INTO vacation_option_proposals (
                 id, search_query_id, itinerary_id, associated_holiday_codes_json,
-                total_vacation_days, parent_pto_days_used, pto_efficiency_ratio,
                 school_absence_penalty, childcare_coverage_gain, per_child_impact_json,
                 total_school_days_missed_across_children, max_single_child_school_days_missed,
-                vacation_utilization_score, flight_bonus_value_score,
+                holiday_alignment_score, flight_bonus_value_score,
                 combined_trip_optimization_score, explanation_summary_he
-            ) VALUES ('pr_min', 'q1', 'it1', '["PESACH"]', 1, 0.0, 2.0, 0.0, 1.0, '[]', 0, 0, 50.0, 50.0, 50.0, 'הסבר')"""
+            ) VALUES ('pr_min', 'q1', 'it1', '["PESACH"]', 0.0, 1.0, '[]', 0, 0, 50.0, 50.0, 50.0, 'הסבר')"""
         )
         for col, bad_val in (
-            ("total_vacation_days", 0),
-            ("parent_pto_days_used", -0.5),
             ("total_school_days_missed_across_children", -1),
             ("max_single_child_school_days_missed", -1),
         ):
@@ -926,12 +938,11 @@ class TestTier2F08VacationOptionProposalsBoundaries(Tier2BoundaryTestBase):
         conn.execute(
             """INSERT INTO vacation_option_proposals (
                 id, search_query_id, itinerary_id, associated_holiday_codes_json,
-                total_vacation_days, parent_pto_days_used, pto_efficiency_ratio,
                 school_absence_penalty, childcare_coverage_gain, per_child_impact_json,
                 total_school_days_missed_across_children, max_single_child_school_days_missed,
-                vacation_utilization_score, flight_bonus_value_score,
+                holiday_alignment_score, flight_bonus_value_score,
                 combined_trip_optimization_score, explanation_summary_he
-            ) VALUES ('pr_it_del', 'q1', 'it1', '["PESACH"]', 7, 1.0, 7.0, 0.0, 1.0, '[]', 0, 0, 80.0, 80.0, 80.0, 'הסבר')"""
+            ) VALUES ('pr_it_del', 'q1', 'it1', '["PESACH"]', 0.0, 1.0, '[]', 0, 0, 80.0, 80.0, 80.0, 'הסבר')"""
         )
         conn.execute("DELETE FROM flight_itineraries WHERE id = 'it1'")
         cnt = conn.execute("SELECT COUNT(*) FROM vacation_option_proposals WHERE id = 'pr_it_del'").fetchone()[0]
@@ -944,12 +955,11 @@ class TestTier2F08VacationOptionProposalsBoundaries(Tier2BoundaryTestBase):
         conn.execute(
             """INSERT INTO vacation_option_proposals (
                 id, search_query_id, itinerary_id, associated_holiday_codes_json,
-                total_vacation_days, parent_pto_days_used, pto_efficiency_ratio,
                 school_absence_penalty, childcare_coverage_gain, per_child_impact_json,
                 total_school_days_missed_across_children, max_single_child_school_days_missed,
-                vacation_utilization_score, flight_bonus_value_score,
+                holiday_alignment_score, flight_bonus_value_score,
                 combined_trip_optimization_score, explanation_summary_he
-            ) VALUES ('pr_full_del', 'q1', 'it1', '["PESACH"]', 7, 1.0, 7.0, 0.0, 1.0, '[]', 0, 0, 80.0, 80.0, 80.0, 'הסבר')"""
+            ) VALUES ('pr_full_del', 'q1', 'it1', '["PESACH"]', 0.0, 1.0, '[]', 0, 0, 80.0, 80.0, 80.0, 'הסבר')"""
         )
         conn.execute("DELETE FROM family_profiles WHERE id = 'p1'")
         for tbl in ("flight_search_queries", "flight_itineraries", "vacation_option_proposals"):
@@ -1271,7 +1281,7 @@ class TestTier2F12SpecificDatesAndAgeClassificationBoundaries(Tier2BoundaryTestB
 
 
 class TestTier2F13MoEVacationMaximizationBoundaries(Tier2BoundaryTestBase):
-    """F13 — Mode 2 (MOE_VACATION_MAXIMIZATION) Full School-Year Optimizer boundaries."""
+    """F13 — Multi-Child Holiday Overlap, Bridge-Days & Blackout Optimizer boundaries."""
 
     def test_f13_01_strict_intersection_vs_camp_adjusted_vs_framework_delta_union_ordering(self) -> None:
         cal = MoECalendarService(self.shared_repo)
@@ -1287,52 +1297,54 @@ class TestTier2F13MoEVacationMaximizationBoundaries(Tier2BoundaryTestBase):
         maximizer = VacationMaximizerEngine(cal)
         prof = self.shared_repo.get_profile()
         q0 = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             airline_selection_mode="EL_AL_ONLY",
             destination_iatas=["FCO"],
-            school_year="2026-2027",
-            target_holiday_codes=["PURIM"],
+            direct_holiday_code="PURIM",
+            direct_target_year=2027,
             min_trip_nights=4,
             max_trip_nights=5,
             max_bridge_days_shift=0,
             overlap_policy="STRICT_ALL_CHILDREN_OFF",
         )
         q3 = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             airline_selection_mode="EL_AL_ONLY",
             destination_iatas=["FCO"],
-            school_year="2026-2027",
-            target_holiday_codes=["PURIM"],
+            direct_holiday_code="PURIM",
+            direct_target_year=2027,
             min_trip_nights=4,
             max_trip_nights=5,
             max_bridge_days_shift=3,
-            overlap_policy="MAXIMIZE_EFFICIENCY_SCORE",
+            overlap_policy="CAMP_ADJUSTED_INTERSECTION",
         )
         w0 = maximizer.generate_candidate_windows(q0, prof)
         w3 = maximizer.generate_candidate_windows(q3, prof)
         self.assertTrue(all(w.max_single_child_school_days_missed > 0 for w in w0))
         self.assertTrue(any(w.start_date == date(2027, 3, 23) and w.end_date == date(2027, 3, 27) for w in w3))
 
-    def test_f13_03_max_pto_per_trip_zero_restricts_to_zero_pto_windows(self) -> None:
+    def test_f13_03_zero_bridge_days_shift_restricts_to_zero_school_absence_windows(self) -> None:
         cal = MoECalendarService(self.shared_repo)
         maximizer = VacationMaximizerEngine(cal)
         prof = self.shared_repo.get_profile()
-        prof.max_pto_per_trip = 0.5
-        prof.erev_chag_pto_weight = 0.0
         q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             airline_selection_mode="EL_AL_ONLY",
             destination_iatas=["ATH"],
-            school_year="2026-2027",
-            target_holiday_codes=["ROSH_HASHANAH", "SHAVUOT"],
-            min_trip_nights=2,
-            max_trip_nights=4,
+            direct_holiday_code="PESACH",
+            direct_target_year=2027,
+            min_trip_nights=5,
+            max_trip_nights=8,
             max_bridge_days_shift=0,
             overlap_policy="STRICT_ALL_CHILDREN_OFF",
         )
         wins = maximizer.generate_candidate_windows(q, prof)
         self.assertGreater(len(wins), 0)
-        self.assertTrue(any(w.parent_pto_days_used == 0.0 for w in wins))
+        for w in wins:
+            self.assertEqual(w.max_single_child_school_days_missed, 0)
+            self.assertEqual(w.total_school_days_missed_across_children, 0)
+            self.assertFalse(hasattr(w, "parent_pto_days_used"))
+        self.assertTrue(any(w.school_absence_penalty == 0.0 for w in wins))
 
     def test_f13_04_bagrut_blackout_date_disqualifies_overlapping_candidate_windows(self) -> None:
         cal = MoECalendarService(self.shared_repo)
@@ -1347,11 +1359,11 @@ class TestTier2F13MoEVacationMaximizationBoundaries(Tier2BoundaryTestBase):
             )
         )
         q = FlightSearchQuery(
-            date_selection_mode="MOE_VACATION_MAXIMIZATION",
+            date_selection_mode="HOLIDAY_DIRECT_INTENT",
             airline_selection_mode="EL_AL_ONLY",
             destination_iatas=["MAD"],
-            school_year="2026-2027",
-            target_holiday_codes=["SUMMER_JUNE_20_30"],
+            direct_holiday_code="SUMMER_JUNE_20_30",
+            direct_target_year=2027,
             min_trip_nights=3,
             max_trip_nights=5,
             max_bridge_days_shift=2,
@@ -1365,13 +1377,13 @@ class TestTier2F13MoEVacationMaximizationBoundaries(Tier2BoundaryTestBase):
         maximizer = VacationMaximizerEngine(cal)
         prof = self.shared_repo.get_profile()
         blocked = {date(2025, 10, 1), date(2025, 10, 2), date(2026, 9, 20), date(2026, 9, 21)}
-        for sy in ("2025-2026", "2026-2027"):
+        for target_yr in (2025, 2026):
             q = FlightSearchQuery(
-                date_selection_mode="MOE_VACATION_MAXIMIZATION",
+                date_selection_mode="HOLIDAY_DIRECT_INTENT",
                 airline_selection_mode="EL_AL_ONLY",
                 destination_iatas=["FCO"],
-                school_year=sy,
-                target_holiday_codes=["YOM_KIPPUR_SUKKOT"],
+                direct_holiday_code="YOM_KIPPUR_SUKKOT",
+                direct_target_year=target_yr,
                 min_trip_nights=4,
                 max_trip_nights=12,
             )
@@ -1494,35 +1506,65 @@ class TestTier2F14HolidayDirectIntentBoundaries(Tier2BoundaryTestBase):
 
 
 class TestTier2F15CalendarScoringEngineBoundaries(Tier2BoundaryTestBase):
-    """F15 — Mathematical Calendar Scoring Engine (PER, SAP, CCG, VUS) boundaries."""
+    """F15 — Mathematical Calendar Scoring Engine (SAP, CCG, HAS) boundaries."""
 
-    def test_f15_01_per_division_by_zero_guard_when_parent_pto_is_zero(self) -> None:
+    def test_f15_01_ccg_zero_eligible_days_and_camp_toggle_boundary(self) -> None:
+        from backend.app.storage_cache.seed_data import build_default_family_profile
+
         cal = MoECalendarService(self.shared_repo)
         maximizer = VacationMaximizerEngine(cal)
-        prof = self.shared_repo.get_profile()
-        prof.workweek_type = "SUN_THU"
-        prof.erev_chag_pto_weight = 0.0
-        win_wknd = maximizer.evaluate_window(prof, date(2027, 4, 16), date(2027, 4, 17))
-        self.assertEqual(win_wknd.parent_pto_days_used, 0.0)
-        self.assertEqual(win_wknd.total_vacation_days, 2)
-        self.assertAlmostEqual(win_wknd.pto_efficiency_ratio, 4.0, places=2)
-        win_rh = maximizer.evaluate_window(prof, date(2026, 9, 11), date(2026, 9, 13))
-        self.assertEqual(win_rh.parent_pto_days_used, 0.0)
-        self.assertEqual(win_rh.total_vacation_days, 3)
-        self.assertAlmostEqual(win_rh.pto_efficiency_ratio, 6.0, places=2)
+        prof_care = build_default_family_profile()
+        prof_care.children[0].treat_camp_as_vacation = False
+        prof_vac = build_default_family_profile()
+        prof_vac.children[0].treat_camp_as_vacation = True
+        prof_none = build_default_family_profile()
+        prof_none.children[0].holiday_extension_mode = "NONE"
+        # Shabbat-only window has 0 eligible non-Shabbat days -> CCG == 1.0
+        win_shabbat = maximizer.evaluate_window(prof_care, date(2027, 4, 17), date(2027, 4, 17))
+        self.assertEqual(win_shabbat.childcare_coverage_gain, 1.0)
+        win_care = maximizer.evaluate_window(prof_care, date(2027, 4, 13), date(2027, 4, 19))
+        win_vac = maximizer.evaluate_window(prof_vac, date(2027, 4, 13), date(2027, 4, 19))
+        win_none = maximizer.evaluate_window(prof_none, date(2027, 4, 13), date(2027, 4, 19))
+        self.assertAlmostEqual(win_care.holiday_alignment_score, 86.4, places=1)
+        self.assertAlmostEqual(win_vac.holiday_alignment_score, 95.0, places=1)
+        self.assertAlmostEqual(win_none.holiday_alignment_score, 100.0, places=1)
 
-    def test_f15_02_per_sub_half_day_pto_clamped_at_0_5_vs_above_0_5(self) -> None:
+    def test_f15_02_sap_weighted_school_absence_5day_vs_6day_friday_boundary(self) -> None:
         cal = MoECalendarService(self.shared_repo)
         maximizer = VacationMaximizerEngine(cal)
-        prof = self.shared_repo.get_profile()
-        prof.workweek_type = "SUN_THU"
-        prof.erev_chag_pto_weight = 0.5
-        win_half = maximizer.evaluate_window(prof, date(2027, 6, 10), date(2027, 6, 12))
-        self.assertAlmostEqual(win_half.parent_pto_days_used, 0.5, places=2)
-        self.assertAlmostEqual(win_half.pto_efficiency_ratio, 6.0, places=2)
-        win_one = maximizer.evaluate_window(prof, date(2027, 6, 9), date(2027, 6, 12))
-        self.assertAlmostEqual(win_one.parent_pto_days_used, 1.5, places=2)
-        self.assertAlmostEqual(win_one.pto_efficiency_ratio, round(4.0 / 1.5, 2), places=2)
+        p5 = FamilyProfile(
+            id="p5",
+            adults_count=2,
+            children=[
+                ChildFramework(
+                    id="c5",
+                    child_age_years=13,
+                    framework_type=MoEFrameworkType.MIDDLE_SCHOOL_7_9,
+                    school_week_days=5,
+                )
+            ],
+        )
+        p6 = FamilyProfile(
+            id="p6",
+            adults_count=2,
+            children=[
+                ChildFramework(
+                    id="c6",
+                    child_age_years=13,
+                    framework_type=MoEFrameworkType.MIDDLE_SCHOOL_7_9,
+                    school_week_days=6,
+                )
+            ],
+        )
+        w5 = maximizer.evaluate_window(p5, date(2026, 6, 19), date(2026, 6, 20))
+        w6 = maximizer.evaluate_window(p6, date(2026, 6, 19), date(2026, 6, 20))
+        self.assertEqual(w5.school_absence_penalty, 0.0)
+        self.assertEqual(w5.childcare_coverage_gain, 1.0)
+        self.assertAlmostEqual(w6.school_absence_penalty, 0.35, places=2)
+        self.assertAlmostEqual(w6.childcare_coverage_gain, 0.75, places=2)
+        self.assertGreater(w5.holiday_alignment_score, w6.holiday_alignment_score)
+        w_thu = maximizer.evaluate_window(p5, date(2026, 6, 18), date(2026, 6, 20))
+        self.assertEqual(w_thu.total_school_days_missed_across_children, 1)
 
     def test_f15_03_vus_upper_clamp_at_100_0_on_perfect_uncovered_holiday_window(self) -> None:
         cal = MoECalendarService(self.shared_repo)
@@ -1531,7 +1573,7 @@ class TestTier2F15CalendarScoringEngineBoundaries(Tier2BoundaryTestBase):
         win = maximizer.evaluate_window(prof, date(2027, 4, 20), date(2027, 4, 28))
         self.assertEqual(win.school_absence_penalty, 0.0)
         self.assertEqual(win.childcare_coverage_gain, 1.0)
-        self.assertEqual(win.vacation_utilization_score, 100.0)
+        self.assertEqual(win.holiday_alignment_score, 100.0)
 
     def test_f15_04_vus_lower_clamp_at_0_0_under_extreme_school_absence_penalty(self) -> None:
         cal = MoECalendarService(self.shared_repo)
@@ -1549,9 +1591,9 @@ class TestTier2F15CalendarScoringEngineBoundaries(Tier2BoundaryTestBase):
             ],
         )
         win = maximizer.evaluate_window(prof, date(2027, 1, 10), date(2027, 1, 14))
-        self.assertEqual(win.vacation_utilization_score, 0.0)
-        self.assertGreaterEqual(win.vacation_utilization_score, 0.0)
-        self.assertLessEqual(win.vacation_utilization_score, 100.0)
+        self.assertEqual(win.holiday_alignment_score, 0.0)
+        self.assertGreaterEqual(win.holiday_alignment_score, 0.0)
+        self.assertLessEqual(win.holiday_alignment_score, 100.0)
 
     def test_f15_05_adult_only_or_null_framework_children_sap_zero_and_ccg_fallback(self) -> None:
         cal = MoECalendarService(self.shared_repo)
@@ -1567,8 +1609,7 @@ class TestTier2F15CalendarScoringEngineBoundaries(Tier2BoundaryTestBase):
             win = maximizer.evaluate_window(prof, date(2027, 4, 11), date(2027, 4, 18))
             self.assertEqual(win.school_absence_penalty, 0.0)
             self.assertEqual(win.childcare_coverage_gain, 1.0)
-            self.assertGreaterEqual(win.vacation_utilization_score, 0.0)
-            self.assertLessEqual(win.vacation_utilization_score, 100.0)
+            self.assertEqual(win.holiday_alignment_score, 80.0)
 
 
 class TestTier2F16PreSeededDatasetBoundaries(Tier2BoundaryTestBase):
@@ -2100,10 +2141,13 @@ class TestTier2F23SplitCabinBonusBoundaries(Tier2BoundaryTestBase):
             prof, out_a, in_a, 590.0, "SPLIT_CABIN_BONUS", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
         self.assertIsNotNone(res)
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        cabins = [_get_field(a, "cabin_class") for a in allocs]
-        self.assertEqual(cabins.count("ECONOMY"), 2)
-        self.assertEqual(cabins.count("PREMIUM"), 2)
+        assert res is not None
+        self.assertNotIn("family_ticket_allocation", res)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 0)
+        self.assertIn(_get_field(res, "primary_cabin"), ("ECONOMY", "PREMIUM"))
+        self.assertEqual(_get_field(res, "total_matmid_points"), 142000)
         self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
 
     def test_f23_02_family_of_5_three_way_cabin_split_2_econ_2_prem_1_biz(self) -> None:
@@ -2115,8 +2159,12 @@ class TestTier2F23SplitCabinBonusBoundaries(Tier2BoundaryTestBase):
             prof, out_a, in_a, 590.0, "SPLIT_CABIN_BONUS", ["ECONOMY", "PREMIUM", "BUSINESS"], ["ELAL_MATMID"]
         )
         self.assertIsNotNone(res)
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        self.assertEqual(len(allocs), 5)
+        assert res is not None
+        self.assertNotIn("family_ticket_allocation", res)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 5)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 0)
+        self.assertEqual(_get_field(res, "total_matmid_points"), 232000)
         self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
 
     def test_f23_03_rejected_when_cabins_are_on_different_flight_numbers(self) -> None:
@@ -2154,11 +2202,23 @@ class TestTier2F23SplitCabinBonusBoundaries(Tier2BoundaryTestBase):
             prof, out_a, in_a, 590.0, "SPLIT_CABIN_BONUS", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
         self.assertIsNotNone(res)
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        econ_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "cabin_class") == "ECONOMY"]
-        prem_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "cabin_class") == "PREMIUM"]
-        self.assertTrue(any("ADULT" in p or "הורה" in p for p in econ_pax))
-        self.assertTrue(any("ADULT" in p or "הורה" in p for p in prem_pax))
+        assert res is not None
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        # Single adult with 2 children <12 cannot split across 2 cabins without leaving a <12 child unaccompanied
+        prof_single_adult = FamilyProfile(
+            adults_count=1,
+            matmid_points_balance=200000,
+            children=[
+                ChildFramework(id="c1", child_age_years=5),
+                ChildFramework(id="c2", child_age_years=8),
+            ],
+        )
+        out_s, in_s = self._make_split_pair(econ=2, prem=1, biz=0)
+        res_single = eng.allocate_family_tickets(
+            prof_single_adult, out_s, in_s, 590.0, "SPLIT_CABIN_BONUS", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
+        )
+        self.assertIsNone(res_single)
 
 
 class TestTier2F24HybridBonusPlusCashBoundaries(Tier2BoundaryTestBase):
@@ -2193,11 +2253,12 @@ class TestTier2F24HybridBonusPlusCashBoundaries(Tier2BoundaryTestBase):
             prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
         self.assertIsNotNone(res)
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        cash_allocs = [a for a in allocs if _get_field(a, "ticket_mode") == "COMMERCIAL_CASH"]
-        self.assertEqual(len(cash_allocs), 1)
-        cash_label = f"{_get_field(cash_allocs[0], 'passenger_id') or ''} {_get_field(cash_allocs[0], 'passenger_label') or ''}".strip()
-        self.assertFalse(any(tok in cash_label for tok in ("נועה", "עידו", "CHILD_1", "CHILD_2", "c-noa", "c-ido")))
+        assert res is not None
+        self.assertNotIn("family_ticket_allocation", res)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 1)
+        self.assertTrue(_get_field(res, "is_cash_price_estimate"))
 
     def test_f24_02_all_children_under_12_with_1_cash_ticket_assigns_adult_to_cash_and_adult_to_bonus(self) -> None:
         eng = self.get_wallet_engine()
@@ -2208,11 +2269,12 @@ class TestTier2F24HybridBonusPlusCashBoundaries(Tier2BoundaryTestBase):
             prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
         self.assertIsNotNone(res)
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        bonus_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "ticket_mode") != "COMMERCIAL_CASH"]
-        cash_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "ticket_mode") == "COMMERCIAL_CASH"]
-        self.assertTrue(any("ADULT" in p or "הורה" in p for p in bonus_pax))
-        self.assertTrue(any("ADULT" in p or "הורה" in p for p in cash_pax))
+        assert res is not None
+        self.assertNotIn("family_ticket_allocation", res)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 3)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 1)
+        self.assertGreater(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
 
     def test_f24_03_single_adult_with_young_children_cannot_split_adult_away_from_children_under_12(self) -> None:
         eng = self.get_wallet_engine()
@@ -2228,11 +2290,7 @@ class TestTier2F24HybridBonusPlusCashBoundaries(Tier2BoundaryTestBase):
         res = eng.allocate_family_tickets(
             prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY"], ["ELAL_MATMID"]
         )
-        if res is not None:
-            allocs = _get_field(res, "family_ticket_allocation", [])
-            cash_pax = [f"{_get_field(a, 'passenger_id') or ''} {_get_field(a, 'passenger_label') or ''}".strip() for a in allocs if _get_field(a, "ticket_mode") == "COMMERCIAL_CASH"]
-            if cash_pax:
-                self.assertTrue(any("ADULT" in p or "הורה" in p for p in cash_pax))
+        self.assertIsNone(res)
 
     def test_f24_04_disabled_when_allow_hybrid_bonus_cash_is_false(self) -> None:
         planner = self.get_planner()
@@ -2579,8 +2637,11 @@ class TestTier2F27MultiClubWalletSplitBoundaries(Tier2BoundaryTestBase):
             ["ELAL_MATMID", "BRITISH_AVIOS", "FLYING_BLUE", "UNITED_MILEAGEPLUS", "AMEX_MR_ISRAEL"],
         )
         self.assertIsNotNone(res)
-        allocs = _get_field(res, "family_ticket_allocation", [])
-        self.assertEqual(len(allocs), 4)
+        assert res is not None
+        self.assertNotIn("family_ticket_allocation", res)
+        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
+        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
+        self.assertEqual(_get_field(res, "cash_tickets_count"), 0)
 
     def test_f27_05_all_10_loyalty_program_codes_supported_and_disabled_programs_ignored(self) -> None:
         eng = self.get_wallet_engine()
@@ -2653,7 +2714,7 @@ class TestTier2F28ScoringComparisonAndIcsExportBoundaries(Tier2BoundaryTestBase)
         )
         self.assertGreater(len(proposals), 0)
         for p in proposals:
-            expected_ctos = 0.55 * p.vacation_utilization_score + 0.45 * p.flight_bonus_value_score
+            expected_ctos = 0.55 * p.holiday_alignment_score + 0.45 * p.flight_bonus_value_score
             self.assertAlmostEqual(p.combined_trip_optimization_score, expected_ctos, delta=0.3)
             self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
             self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
@@ -2670,8 +2731,9 @@ class TestTier2F28ScoringComparisonAndIcsExportBoundaries(Tier2BoundaryTestBase)
             except (ValueError, KeyError):
                 pass
 
-    def test_f28_05_export_proposal_ics_rfc5545_structure_hebrew_utf8_and_missing_id(self) -> None:
+    def test_f28_05_estimated_cash_pricing_non_binding_copy_and_removed_ics_method_boundary(self) -> None:
         planner = self.get_planner()
+        self.assertFalse(hasattr(planner, "export_proposal_ics"))
         proposals = planner.search_vacations(
             {
                 "date_selection_mode": "SPECIFIC_DATES",
@@ -2681,11 +2743,18 @@ class TestTier2F28ScoringComparisonAndIcsExportBoundaries(Tier2BoundaryTestBase)
                 "destination_iatas": ["FCO"],
             }
         )
-        ics = planner.export_proposal_ics(proposals[0].id)
-        for token in ("BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "DTSTART", "DTEND", "SUMMARY:", "END:VEVENT", "END:VCALENDAR"):
-            self.assertIn(token, ics)
-        with self.assertRaises((ValueError, KeyError)):
-            planner.export_proposal_ics("missing-proposal-id-999")
+        self.assertGreaterEqual(len(proposals), 2)
+        for p in proposals[:2]:
+            assert p.itinerary is not None
+            it_dict = p.itinerary.to_dict()
+            self.assertTrue(it_dict["is_cash_price_estimate"])
+            self.assertAlmostEqual(it_dict["estimated_cash_usd"], it_dict["total_out_of_pocket_cash_usd"], places=2)
+            self.assertIn("~$", p.explanation_summary_he)
+        cmp_res = planner.compare_proposals([proposals[0].id, proposals[1].id])
+        cmp_dict = cmp_res if isinstance(cmp_res, dict) else cmp_res.to_dict()
+        self.assertNotIn("best_by_per_id", cmp_dict)
+        oop_row = next(r for r in cmp_dict["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd")
+        self.assertTrue(all(str(v).startswith("~$") for v in oop_row["values"].values()))
 
 
 class TestTier2F29RestApiNegativeAndBoundaries(Tier2BoundaryTestBase):
@@ -2752,10 +2821,24 @@ class TestTier2F29RestApiNegativeAndBoundaries(Tier2BoundaryTestBase):
     def test_f29_05_compare_and_export_ics_unknown_proposal_id_and_unknown_route_return_400_404_422(self) -> None:
         client = self.get_client()
         r_cmp = client.post("/api/v1/vacations/compare", json={"proposal_ids": []})
-        r_ics = client.get("/api/v1/vacations/nonexistent-id-xyz/export.ics")
+        r_ics_missing = client.get("/api/v1/vacations/nonexistent-id-xyz/export.ics")
+        s_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "destination_iatas": ["FCO"],
+            },
+        )
+        self.assertEqual(s_resp.status_code, 200)
+        valid_pid = s_resp.json()["proposals"][0]["id"]
+        r_ics_valid = client.get(f"/api/v1/vacations/{valid_pid}/export.ics")
         r_404 = client.get("/api/v1/nonexistent-endpoint")
         self.assertIn(r_cmp.status_code, (400, 404, 422))
-        self.assertIn(r_ics.status_code, (400, 404, 422))
+        self.assertEqual(r_ics_missing.status_code, 404)
+        self.assertEqual(r_ics_valid.status_code, 404)
         self.assertEqual(r_404.status_code, 404)
 
 
@@ -2788,10 +2871,18 @@ class TestTier2F30CliCompanionBoundaries(Tier2BoundaryTestBase):
             "--departure-date", "2027-04-11", "--return-date", "2027-04-18", "--flex-days", "15",
         )
         r2 = self._run_cli(
-            "search", "--mode", "moe-maximize", "--airline", "elal-only", "--max-bridge-days", "9",
+            "search", "--mode", "holiday-direct", "--holiday", "PESACH", "--year", "2027",
+            "--airline", "elal-only", "--max-bridge-days", "9",
+        )
+        r_removed_mode = self._run_cli("search", "--mode", "moe-maximize", "--airline", "elal-only")
+        r_removed_ics = self._run_cli(
+            "search", "--mode", "holiday-direct", "--holiday", "PESACH", "--year", "2027",
+            "--export-ics", "out.ics",
         )
         self.assertNotEqual(r1.returncode, 0)
         self.assertNotEqual(r2.returncode, 0)
+        self.assertNotEqual(r_removed_mode.returncode, 0)
+        self.assertNotEqual(r_removed_ics.returncode, 0)
 
     def test_f30_04_bonus_availability_missing_required_arguments_exits_nonzero(self) -> None:
         r1 = self._run_cli("bonus-availability")
