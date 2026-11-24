@@ -109,6 +109,9 @@ if [[ "$MODE" == "gce-vm" ]]; then
     sudo apt-get update -y && sudo apt-get install -y python3 python3-yaml sqlite3 caddy
     sudo mkdir -p /opt/family_vacation_planner
     sudo tar -xzf /tmp/app.tar.gz -C /opt/family_vacation_planner
+    sudo rm -rf /opt/family_vacation_planner/frontend/public/chrome_extension \
+                /opt/family_vacation_planner/frontend/public/install_chrome_extension.sh \
+                /opt/family_vacation_planner/frontend/public/sync_elal_to_server.py
     sudo mkdir -p /opt/family_vacation_planner/data
     sudo mkdir -p /etc/family_vacation_planner
     sudo chmod 700 /etc/family_vacation_planner
