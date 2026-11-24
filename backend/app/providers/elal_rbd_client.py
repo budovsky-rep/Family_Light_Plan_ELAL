@@ -44,6 +44,7 @@ METRO_IATA_EXPANSION: dict[str, list[str]] = {
     "ROM": ["FCO"],
     "TYO": ["NRT"],
     "MIA_AREA": ["MIA", "FLL"],
+    "KIV": ["RMO"],
 }
 
 SUPPORTED_ELAL_DESTINATIONS: list[str] = list(DESTINATION_CATALOG.keys())

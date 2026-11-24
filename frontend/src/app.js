@@ -97,23 +97,33 @@
     FCO: '🏛️',
     MXP: '🏔️',
     VCE: '🛶',
+    VRN: '🎢',
+    NAP: '🍕',
     ATH: '🏖️',
     RHO: '🏝️',
     HER: '🏝️',
     SKG: '🌊',
     CFU: '🏝️',
     EFL: '🏖️',
+    PVK: '🏖️',
+    JMK: '🏝️',
     JTR: '🌅',
     LCA: '☀️',
     PFO: '🏖️',
     TBS: '🏔️',
     BUS: '🌊',
     TIV: '⛵',
+    TIA: '🏖️',
+    DBV: '🏰',
+    ZAG: '🏞️',
+    LJU: '🏞️',
     BEG: '🏰',
     OTP: '🏰',
     SOF: '⛰️',
+    RMO: '🍇',
     PAR: '🥐',
     CDG: '🥐',
+    LYS: '⛷️',
     NCE: '🏖️',
     LON: '🎡',
     LHR: '🎡',
@@ -122,9 +132,11 @@
     BCN: '🌊',
     GVA: '⛷️',
     ZRH: '🏔️',
+    BSL: '🎢',
     MUC: '🏰',
     FRA: '🎢',
     VIE: '🎻',
+    SZG: '⛷️',
     PRG: '🏰',
     BUD: '♨️',
     WAW: '🏰',
@@ -132,7 +144,9 @@
     AMS: '🌷',
     BER: '🐻',
     LIS: '🚋',
+    OPO: '🍷',
     DXB: '☀️',
+    SEZ: '🏝️',
     NYC: '🗽',
     JFK: '🗽',
     EWR: '🗽',
@@ -1623,7 +1637,22 @@
     ZRH: 'Zurich',
     FRA: 'Frankfurt am Main',
     LIS: 'Lisbon',
+    OPO: 'Porto',
     NCE: 'NCE',
+    LYS: 'Lyon',
+    BSL: 'Basel',
+    SZG: 'Salzburg',
+    TIA: 'Tirana',
+    NAP: 'Naples',
+    VRN: 'Verona',
+    JMK: 'Mykonos',
+    PVK: 'Preveza',
+    DBV: 'Dubrovnik',
+    ZAG: 'Zagreb',
+    LJU: 'Ljubljana',
+    RMO: 'Chisinau',
+    KIV: 'Chisinau',
+    SEZ: 'Seychelles',
     DXB: 'Dubai',
     LAX: 'Los Angeles',
     BOS: 'Boston'
@@ -1767,8 +1796,8 @@
       const headlineText = isHe ? 'מחכה למשיכת טיסות' : 'Awaiting Flight Sync';
       const subText = isStandardUnsynced
         ? isHe
-          ? 'טרם נמשכו טיסות בונוס זמינות עבור היעד והחופשה שנבחרו. אפשר לבחור יעד או מועד אחר בטופס, או להריץ סנכרון טיסות מול אל על.'
-          : 'No synced award flights are currently loaded for the selected destination and holiday window. Pick another destination or holiday, or sync El Al availability.'
+          ? 'לא נמצאו מושבי בונוס פנויים במאגר עבור היעד והחופשה שנבחרו (מאגר טיסות הבונוס מתעדכן פעם ביום). מומלץ לנסות יעד נוסף או מועד חופשה אחר.'
+          : 'No open award seats are currently available in the database for the selected destination and holiday (the bonus flight database updates once daily). Try another destination or vacation window.'
         : isHe
           ? rawHe
           : String(state.statusMessageEn || 'No matching flights found for the current search filters.');
@@ -1827,8 +1856,8 @@
         </summary>
         <p class="award-note-body">${
           isHe
-            ? 'זמינות המושבים, הערכת הנקודות והערכת התשלום במזומן (מסים והשלמת כרטיסים) אינן מחייבות ומתבססות על מאגר כרטיסי הבונוס של אל על ותעריפי ייחוס. הזמינות בזמן אמת והמחיר הסופי בנקודות ובמזומן נקבעים בעת בחירת הטיסות להזמנה.'
-            : "Seat availability, point figures, and cash amounts (taxes and fare supplements) are non-binding estimates based on EL AL's Classic Award database and reference fares. Real-time availability and final point and cash pricing are determined at flight selection."
+            ? '<strong>מאגר טיסות הבונוס מתעדכן פעם ביום.</strong> זמינות המושבים, הערכת הנקודות והערכת התשלום במזומן (מסים והשלמת כרטיסים) אינן מחייבות ומתבססות על מאגר כרטיסי הבונוס של אל על ותעריפי ייחוס. הזמינות בזמן אמת והמחיר הסופי בנקודות ובמזומן נקבעים בעת בחירת הטיסות להזמנה.'
+            : "<strong>The bonus flight database is updated once daily.</strong> Seat availability, point figures, and cash amounts (taxes and fare supplements) are non-binding estimates based on EL AL's Classic Award database and reference fares. Real-time availability and final point and cash pricing are determined at flight selection."
         }</p>
       </details>
     `;

@@ -199,8 +199,14 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
     def test_anywhere_region_discovery_across_zones_a_to_e_f20(self) -> None:
         """2. Verify `F20` `ANYWHERE` expansion and multi-zone award discovery across Zones A-E."""
         anywhere_iatas = self.elal_adapter.expand_metro_iatas(["ANYWHERE"])
-        self.assertEqual(len(anywhere_iatas), 45)
+        self.assertEqual(len(anywhere_iatas), 60)
         self.assertEqual(set(anywhere_iatas), set(SUPPORTED_ELAL_DESTINATIONS))
+        self.assertEqual(self.elal_adapter.expand_metro_iatas(["KIV"]), ["RMO"])
+        for newly_added in (
+            "SZG", "TIA", "ZRH", "BSL", "NAP", "VRN", "LYS", "OPO",
+            "JMK", "PVK", "DBV", "ZAG", "LJU", "RMO", "SEZ",
+        ):
+            self.assertIn(newly_added, anywhere_iatas)
 
         rows = self.elal_adapter.get_award_availability(
             destinations=["ANYWHERE"],
@@ -835,7 +841,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
 
-        self.assertEqual(len(DESTINATION_CATALOG), 45)
+        self.assertEqual(len(DESTINATION_CATALOG), 60)
         for _iata_key, entry in DESTINATION_CATALOG.items():
             self.assertIn("climate_profile", entry)
             self.assertIn("monthly_weather", entry)
@@ -1015,7 +1021,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             },
             {
                 "AccumulatedOutput": {
-                    # List resultSet with list of Records including Premium RBD="A", unknown ZRH, and 0-seat row
+                    # List resultSet with list of Records including Premium RBD="A", SZG/ZRH, unknown HEL, and 0-seat row
                     "resultSet": [
                         {
                             "Record": [
@@ -1030,10 +1036,26 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                                     "NewAvailability": "2",
                                 },
                                 {
+                                    "SegmentRoute": "TLVSZG",
+                                    "SegmentDepDate": "2027-04-14T00:00:00",
+                                    "FlightCarrier": "LY",
+                                    "FlightNumber": "5135",
+                                    "RBD": "E",
+                                    "NewAvailability": "2+",
+                                },
+                                {
                                     "SegmentRoute": "TLVZRH",
                                     "SegmentDepDate": "2027-04-14T00:00:00",
                                     "FlightCarrier": "LY",
                                     "FlightNumber": "347",
+                                    "RBD": "E",
+                                    "NewAvailability": "2+",
+                                },
+                                {
+                                    "SegmentRoute": "TLVHEL",
+                                    "SegmentDepDate": "2027-04-14T00:00:00",
+                                    "FlightCarrier": "LY",
+                                    "FlightNumber": "999",
                                     "RBD": "E",
                                     "NewAvailability": "2+",
                                 },
@@ -1064,11 +1086,13 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         ]
 
         imported = iso_adapter.parse_and_import_external_rbd_payload(batch_payload)
-        self.assertEqual(len(imported), 2)
+        self.assertEqual(len(imported), 4)
         by_dest = {r.destination_iata: r for r in imported}
         self.assertIn("LCA", by_dest)
         self.assertIn("BUD", by_dest)
-        self.assertNotIn("ZRH", by_dest)
+        self.assertIn("SZG", by_dest)
+        self.assertIn("ZRH", by_dest)
+        self.assertNotIn("HEL", by_dest)
 
         lca_row = by_dest["LCA"]
         self.assertEqual(lca_row.economy_award_seats, 2)

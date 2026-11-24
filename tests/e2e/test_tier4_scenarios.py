@@ -1586,6 +1586,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   const zeroAlertText = zeroAlertEl ? zeroAlertEl.textContent : '';
                   const awardNoteEl = document.getElementById('award-source-note-banner');
                   const awardNoteText = awardNoteEl ? awardNoteEl.textContent : '';
+                  const awardNoteBodyEl = awardNoteEl ? awardNoteEl.querySelector('.award-note-body') : null;
+                  const awardNoteBodyText = awardNoteBodyEl ? awardNoteBodyEl.textContent.trim() : '';
                   document.getElementById('btn-add-child').click();
                   document.getElementById('btn-add-child').click();
                   const age0 = document.querySelector('[data-child-age="0"]');
@@ -1609,6 +1611,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     saveBtnHiddenOnGuest,
                     zeroAlertText,
                     awardNoteText,
+                    awardNoteBodyText,
                     btnTextBefore,
                     removedCount,
                     bodyTxt,
@@ -1624,6 +1627,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", guest_draft_state["bodyTxt"]))
             self.assertIn("יתרת מתמיד 0", guest_draft_state["zeroAlertText"])
             self.assertIn("מאגר כרטיסי הבונוס של אל על", guest_draft_state["awardNoteText"])
+            self.assertIn("מאגר טיסות הבונוס מתעדכן פעם ביום", guest_draft_state["awardNoteBodyText"])
             self.assertNotIn("rbddataclients", guest_draft_state["awardNoteText"].lower())
             self.assertIn("התחברות עם Gmail", guest_draft_state["btnTextBefore"])
             self.assertTrue(

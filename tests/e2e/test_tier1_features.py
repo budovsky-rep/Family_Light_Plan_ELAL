@@ -3361,7 +3361,10 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         )
         self.assertEqual(w_resp.status_code, 200)
         w_body = w_resp.json()
-        self.assertEqual(w_body["count"], 45)
+        self.assertEqual(w_body["count"], 60)
+        dest_codes_returned = {d["iata"] for d in w_body["destinations"]}
+        for new_code in ("SZG", "TIA", "ZRH", "BSL", "NAP", "VRN", "LYS", "OPO", "JMK", "PVK", "DBV", "ZAG", "LJU", "RMO", "SEZ"):
+            self.assertIn(new_code, dest_codes_returned)
         self.assertEqual(len(w_body["vacation_types_catalog"]), 7)
         top_dest = w_body["destinations"][0]
         self.assertGreaterEqual(top_dest["weather_suitability_score"], 85.0)

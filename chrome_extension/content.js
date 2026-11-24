@@ -25,7 +25,7 @@
     jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
   };
 
-  // All 45 supported destinations in DESTINATION_CATALOG (no ZRH)
+  // All 60 supported destinations in DESTINATION_CATALOG
   const PRIORITY_IATAS = [
     "ATH", "LCA", "RHO", "PFO", "TBS",
     "FCO", "MXP", "VIE", "BUD", "PRG", "BER", "MUC",
@@ -35,7 +35,9 @@
     "HER", "SKG", "CFU", "EFL", "JTR", "BUS", "TIV", "BEG",
     "OTP", "SOF", "WAW", "KRK",
     "VCE", "GVA", "FRA", "LIS", "NCE",
-    "DXB", "LAX", "BOS"
+    "DXB", "LAX", "BOS",
+    "SZG", "TIA", "ZRH", "BSL", "NAP", "VRN", "LYS", "OPO",
+    "JMK", "PVK", "DBV", "ZAG", "LJU", "RMO", "SEZ"
   ];
   const ALLOWED_IATA_SET = new Set(PRIORITY_IATAS);
 

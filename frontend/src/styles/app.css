@@ -1420,13 +1420,13 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 6px;
   border: 1px solid var(--brass-border);
   border-inline-start: 4px solid var(--brass-matmid);
   background: var(--brass-tint);
   border-radius: var(--radius-md);
-  padding-block: 10px;
-  padding-inline: 13px;
+  padding-block: 7px;
+  padding-inline: 12px;
   color: #78350F;
 }
 

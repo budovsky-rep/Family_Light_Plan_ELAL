@@ -20,6 +20,7 @@ elal_rbd_client:
     ROM: ["FCO"]
     TYO: ["NRT"]
     MIA_AREA: ["MIA", "FLL"]
+    KIV: ["RMO"]
 
 optimization_weights:
   ctos_calendar_weight: 0.55

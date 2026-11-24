@@ -55,7 +55,7 @@ try:
     from backend.app.storage_cache.seed_data import DESTINATION_CATALOG as _CATALOG
     ALL_ELAL_DESTINATIONS: list[str] = list(_CATALOG.keys())
 except Exception:
-    # Standalone fallback when run outside the repo checkout (all 45 supported destinations)
+    # Standalone fallback when run outside the repo checkout (all 60 supported destinations)
     ALL_ELAL_DESTINATIONS = [
         "ATH", "LCA", "RHO", "PFO", "TBS",
         "FCO", "MXP", "VIE", "BUD", "PRG", "BER", "MUC",
@@ -66,6 +66,8 @@ except Exception:
         "OTP", "SOF", "WAW", "KRK",
         "VCE", "GVA", "FRA", "LIS", "NCE",
         "DXB", "LAX", "BOS",
+        "SZG", "TIA", "ZRH", "BSL", "NAP", "VRN", "LYS", "OPO",
+        "JMK", "PVK", "DBV", "ZAG", "LJU", "RMO", "SEZ",
     ]
 
 # El Al GetRbdAvailability supports at most 50 directional segments (25 round-trip destinations) per request
@@ -1443,7 +1445,7 @@ def main() -> None:
     parser.add_argument(
         "--destinations",
         default=",".join(ALL_ELAL_DESTINATIONS),
-        help="Comma-separated destination IATA codes (default: all 45 catalog destinations)",
+        help="Comma-separated destination IATA codes (default: all 60 catalog destinations)",
     )
     parser.add_argument(
         "--days",

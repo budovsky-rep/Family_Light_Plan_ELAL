@@ -41,6 +41,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "ROM": ["FCO"],
             "TYO": ["NRT"],
             "MIA_AREA": ["MIA", "FLL"],
+            "KIV": ["RMO"],
         },
     },
     "optimization_weights": {
