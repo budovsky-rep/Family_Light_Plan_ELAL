@@ -1733,6 +1733,10 @@
   function formatLegFlightBadge(leg) {
     if (!leg || !leg.flight_number) return '';
     const fn = String(leg.flight_number).trim();
+    if (fn === 'LY_CASH') {
+      const cashLabel = state.locale === 'he' ? 'טיסה מסחרית (אין בונוס)' : 'Commercial (no award)';
+      return `<span class="route-flight-meta">${escapeHtml(cashLabel)}</span>`;
+    }
     const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
     const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
     const times = depT && arrT ? ` · ${depT}–${arrT}` : depT ? ` · ${depT}` : '';

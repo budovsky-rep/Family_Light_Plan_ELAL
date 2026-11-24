@@ -1467,7 +1467,65 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             },
             profile=prof_4,
         )
-        self.assertEqual(len(no_return_props), 0)
+        self.assertGreaterEqual(len(no_return_props), 1)
+        ow_lca = no_return_props[0]
+        self.assertEqual(ow_lca.itinerary.fulfillment_strategy, "ONE_WAY_BONUS_ONE_WAY_CASH")
+        self.assertEqual(ow_lca.itinerary.outbound_legs[0].flight_number, "LY5131")
+        self.assertEqual(ow_lca.itinerary.inbound_legs[0].flight_number, "LY_CASH")
+        self.assertLess(ow_lca.flight_bonus_value_score, 60.0)
+
+        # Verify outbound-only AMS in Hanukkah 2026 surfaces ONE_WAY_BONUS_ONE_WAY_CASH with lower FBVS
+        live_only_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "AMS",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY337",
+                    "flight_date": "2026-12-08",
+                    "economy_seats": 2,
+                    "dep_time": "06:15",
+                    "arr_time": "10:15",
+                },
+                {
+                    "destination_iata": "AMS",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY339",
+                    "flight_date": "2026-12-09",
+                    "economy_seats": 2,
+                    "dep_time": "16:10",
+                    "arr_time": "20:10",
+                },
+                {
+                    "destination_iata": "AMS",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY337",
+                    "flight_date": "2026-12-13",
+                    "economy_seats": 1,
+                    "dep_time": "16:00",
+                    "arr_time": "20:00",
+                },
+            ]
+        )
+        ams_hanukkah_props = live_only_planner.search_vacations(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["AMS"],
+                "direct_holiday_code": "HANUKKAH",
+                "direct_target_year": 2026,
+                "flex_days_plus_minus": 3,
+                "min_trip_nights": 4,
+                "max_trip_nights": 7,
+            },
+            profile=prof_4,
+        )
+        self.assertGreaterEqual(len(ams_hanukkah_props), 1)
+        for ap in ams_hanukkah_props:
+            self.assertEqual(ap.itinerary.destination_iata, "AMS")
+            self.assertEqual(ap.itinerary.fulfillment_strategy, "ONE_WAY_BONUS_ONE_WAY_CASH")
+            self.assertEqual(ap.itinerary.inbound_legs[0].flight_number, "LY_CASH")
+            self.assertNotEqual(ap.itinerary.return_date.isoformat(), "2026-12-12")
+            self.assertLess(ap.flight_bonus_value_score, 60.0)
 
         # Verify single-direction live routes (e.g. LTN outbound-only on 2026-12-09 with Saturday 2026-12-12)
         # NEVER fabricate a non-existent/Shabbat LY312 return leg, while real Open-Jaw (TLV->LTN + LHR->TLV) works
@@ -2391,7 +2449,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             self.assertEqual(rec_resp.status_code, 200)
             self.assertEqual(rec_resp.json()["records_reconciled"], 2)
 
-            # Sold-out LY384 inbound is completely removed -> FCO round-trip proposal disappears!
+            # Sold-out LY384 inbound is completely removed -> inbound leg degrades to LY_CASH (never LY384!)
             s_after = client.post(
                 "/api/v1/vacations/search",
                 json={
@@ -2402,7 +2460,11 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                     "destination_iatas": ["FCO"],
                 },
             ).json()
-            self.assertEqual(s_after["count"], 0)
+            self.assertEqual(s_after["count"], 1)
+            self.assertEqual(
+                s_after["proposals"][0]["itinerary"]["inbound_legs"][0]["flight_number"],
+                "LY_CASH",
+            )
 
             # Un-scanned cabin ("A" on LY381 = 1 seat) and un-scanned destination (ATH = 2 seats) remain intact,
             # and LY381 Economy dropped cleanly from 2 to 1!

@@ -733,6 +733,11 @@ class MultiClubWalletAllocationEngine:
     ) -> tuple[list[FlightLeg], list[FlightLeg]]:
         out_meta = DESTINATION_CATALOG.get(dest_iata, {})
         in_meta = DESTINATION_CATALOG.get(return_origin_iata, out_meta)
+        has_live_award = any(
+            "#live" in str(getattr(aw, "source_url", "") or "")
+            for aw in (outbound_award, inbound_award)
+            if aw is not None
+        )
 
         if outbound_award is not None:
             out_leg = FlightLeg(
@@ -759,6 +764,19 @@ class MultiClubWalletAllocationEngine:
                 aircraft_type=str(commercial_offer.get("aircraft_type") or "789"),
                 duration_minutes=int(commercial_offer.get("duration_minutes") or 225),
                 is_direct=bool(commercial_offer.get("is_direct", True)),
+            )
+        elif has_live_award:
+            out_leg = FlightLeg(
+                flight_number="LY_CASH",
+                operating_carrier=str(out_meta.get("operating_carrier", "LY")),
+                origin_iata=origin_iata,
+                destination_iata=dest_iata,
+                flight_date=dep_date,
+                departure_time_local="",
+                arrival_time_local="",
+                aircraft_type=str(out_meta.get("aircraft_type", "789")),
+                duration_minutes=int(out_meta.get("duration_minutes", 225)),
+                is_direct=True,
             )
         else:
             out_leg = FlightLeg(
@@ -799,6 +817,19 @@ class MultiClubWalletAllocationEngine:
                 aircraft_type=str(commercial_offer.get("aircraft_type") or "789"),
                 duration_minutes=int(commercial_offer.get("duration_minutes") or 230),
                 is_direct=bool(commercial_offer.get("is_direct", True)),
+            )
+        elif has_live_award:
+            in_leg = FlightLeg(
+                flight_number="LY_CASH",
+                operating_carrier=str(in_meta.get("operating_carrier", "LY")),
+                origin_iata=return_origin_iata,
+                destination_iata=origin_iata,
+                flight_date=ret_date,
+                departure_time_local="",
+                arrival_time_local="",
+                aircraft_type=str(in_meta.get("aircraft_type", "789")),
+                duration_minutes=int(in_meta.get("duration_minutes", 230)),
+                is_direct=True,
             )
         else:
             in_leg = FlightLeg(
@@ -892,6 +923,12 @@ class MultiClubWalletAllocationEngine:
         meta = DESTINATION_CATALOG.get(dest_iata, {})
         in_meta_check = DESTINATION_CATALOG.get(return_origin_iata, meta)
 
+        has_live_award = any(
+            "#live" in str(getattr(aw, "source_url", "") or "")
+            for aw in (outbound_award, inbound_award)
+            if aw is not None
+        )
+
         # Never fabricate a synthetic El Al / Sundor fallback leg on Yom Kippur or Shabbat
         if outbound_award is None and commercial_offer is None:
             out_carrier = str(meta.get("operating_carrier", "LY"))
@@ -899,7 +936,10 @@ class MultiClubWalletAllocationEngine:
             out_arr_t = str(meta.get("arr_time_out", "10:00"))
             if dep_date in YOM_KIPPUR_CLOSED_DATES or (
                 out_carrier in ("LY", "2U")
-                and is_shabbat_blocked_for_elal(dep_date, out_dep_t, out_arr_t)
+                and (
+                    (has_live_award and dep_date.weekday() == 5)
+                    or is_shabbat_blocked_for_elal(dep_date, out_dep_t, out_arr_t)
+                )
             ):
                 return None
         if inbound_award is None and commercial_offer is None:
@@ -908,7 +948,10 @@ class MultiClubWalletAllocationEngine:
             in_arr_t = str(in_meta_check.get("arr_time_in", "02:10"))
             if ret_date in YOM_KIPPUR_CLOSED_DATES or (
                 in_carrier in ("LY", "2U")
-                and is_shabbat_blocked_for_elal(ret_date, in_dep_t, in_arr_t)
+                and (
+                    (has_live_award and ret_date.weekday() == 5)
+                    or is_shabbat_blocked_for_elal(ret_date, in_dep_t, in_arr_t)
+                )
             ):
                 return None
 
@@ -1443,6 +1486,9 @@ class MultiClubWalletAllocationEngine:
             chosen_ow_pts = 0
             chosen_ow_tax = out_tax_per_pax
 
+            chosen_ow_s_cnt = 0
+            chosen_ow_two_plus = False
+
             for dir_label, aw, tax_ow in (
                 ("OUTBOUND_ONLY", outbound_award, out_tax_per_pax),
                 ("INBOUND_ONLY", inbound_award, in_tax_per_pax),
@@ -1452,7 +1498,7 @@ class MultiClubWalletAllocationEngine:
                 for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
                     if cab not in pref_cabins:
                         continue
-                    s_cnt, _, rbd_c, pts_c = _cabin_award_info(aw, cab)
+                    s_cnt, is_two_plus_ow, rbd_c, pts_c = _cabin_award_info(aw, cab)
                     if s_cnt >= 1 and pts_c > 0:
                         best_dir = dir_label
                         chosen_award = aw
@@ -1460,6 +1506,8 @@ class MultiClubWalletAllocationEngine:
                         chosen_rbd = rbd_c
                         chosen_ow_pts = pts_c
                         chosen_ow_tax = round(float(tax_ow), 2)
+                        chosen_ow_s_cnt = s_cnt
+                        chosen_ow_two_plus = is_two_plus_ow
                         break
                 if best_dir is not None:
                     break
@@ -1467,6 +1515,11 @@ class MultiClubWalletAllocationEngine:
             if best_dir is None or chosen_award is None or chosen_ow_pts <= 0:
                 return None
 
+            max_ow_slots = (
+                1
+                if (has_live_award and chosen_ow_s_cnt == 1 and not chosen_ow_two_plus)
+                else (n_seated if (chosen_ow_two_plus or chosen_ow_s_cnt >= 2) else max(1, chosen_ow_s_cnt))
+            )
             ow_cash_per_pax = round(0.45 * bench_per_pax, 2)
             wallets = self._prepare_working_wallets(profile, prog_list)
             pts_by_wallet = {}
@@ -1474,6 +1527,9 @@ class MultiClubWalletAllocationEngine:
             cash_ow_cnt = 0
 
             for p in seated_passengers:
+                if funded_ow_cnt >= max_ow_slots:
+                    cash_ow_cnt += 1
+                    continue
                 slot = _BonusSlot(
                     cabin_class=chosen_cabin,
                     rbd_code=chosen_rbd,
@@ -1874,6 +1930,11 @@ class BonusVacationPlannerService:
             else str(itinerary.fulfillment_strategy)
         )
 
+        has_unconfirmed_cash_leg = any(
+            leg.flight_number == "LY_CASH"
+            for leg in (itinerary.outbound_legs + itinerary.inbound_legs)
+        )
+
         if strat == "CASH_AND_POINTS":
             saved_ratio = min(
                 1.0,
@@ -1885,7 +1946,8 @@ class BonusVacationPlannerService:
             )
             seat_cov = 0.55 * saved_ratio
         elif strat == "ONE_WAY_BONUS_ONE_WAY_CASH" and itinerary.destination_iata == itinerary.return_origin_iata:
-            seat_cov = 0.65 * min(1.0, n_bonus / float(max(1, min(n_seated, 4))))
+            ow_factor = 0.32 if has_unconfirmed_cash_leg else 0.50
+            seat_cov = ow_factor * min(1.0, n_bonus / float(max(1, min(n_seated, 4))))
         else:
             # 4 confirmed bonus seats on a single flight (`2x Econ + 2x Prem/Biz`) is 100% of El Al's 2+ cap
             seat_cov = min(1.0, n_bonus / float(max(1, min(n_seated, 4))))
@@ -1897,7 +1959,7 @@ class BonusVacationPlannerService:
             leg.is_direct
             for leg in (itinerary.outbound_legs + itinerary.inbound_legs)
         )
-        sched_quality = 1.0 if all_direct else 0.65
+        sched_quality = 0.65 if (not all_direct or has_unconfirmed_cash_leg) else 1.0
 
         raw_score = 100.0 * (
             0.50 * seat_cov + 0.30 * cpp_norm + 0.20 * sched_quality
@@ -2209,12 +2271,23 @@ class BonusVacationPlannerService:
                             spec_seen.add(pair)
                             spec_selected.append(w)
 
-            # Priority 2: windows with one-way award availability
+            # Priority 2: windows with one-way award availability (and non-Shabbat/open other leg)
             for w in all_windows:
                 if len(spec_selected) >= spec_cap:
                     break
                 pair = (w.start_date, w.end_date)
-                if (w.start_date in out_dates or w.end_date in in_dates) and pair not in spec_seen:
+                if pair in spec_seen:
+                    continue
+                valid_ow = (
+                    w.start_date in out_dates
+                    and w.end_date.weekday() != 5
+                    and not self.calendar_service.is_tlv_airport_closed(w.end_date)
+                ) or (
+                    w.end_date in in_dates
+                    and w.start_date.weekday() != 5
+                    and not self.calendar_service.is_tlv_airport_closed(w.start_date)
+                )
+                if valid_ow:
                     spec_seen.add(pair)
                     spec_selected.append(w)
 
@@ -2322,12 +2395,23 @@ class BonusVacationPlannerService:
                             seen_pairs.add(pair)
                             selected.append(w)
 
-            # Second priority: windows with one-way award availability
+            # Second priority: windows with one-way award availability (and non-Shabbat/open other leg)
             for w in all_windows:
                 if len(selected) >= live_cap:
                     break
                 pair = (w.start_date, w.end_date)
-                if (w.start_date in out_dates or w.end_date in in_dates) and pair not in seen_pairs:
+                if pair in seen_pairs:
+                    continue
+                valid_ow = (
+                    w.start_date in out_dates
+                    and w.end_date.weekday() != 5
+                    and not self.calendar_service.is_tlv_airport_closed(w.end_date)
+                ) or (
+                    w.end_date in in_dates
+                    and w.start_date.weekday() != 5
+                    and not self.calendar_service.is_tlv_airport_closed(w.start_date)
+                )
+                if valid_ow:
                     seen_pairs.add(pair)
                     selected.append(w)
 
@@ -2712,29 +2796,45 @@ class BonusVacationPlannerService:
                     in_aw = in_awards[0] if in_awards else None
                     if out_aw is None and in_aw is None:
                         continue
-                    # In live-synced DB mode (`ELAL_LIVE_FETCH_ENABLED=1` or `#live`-only DB), NEVER fabricate
-                    # a missing outbound or inbound El Al flight leg from static catalog templates on dates
-                    # lacking a real `#live` flight row — even when a route only has 1 direction of award seats
-                    # (e.g. avoids inventing LTN LY312 on Saturday 2026-12-12 when LTN only has outbound awards;
-                    # genuine Open-Jaw pairings like TLV->LTN + LHR->TLV still synthesize below via
-                    # `window_outbound_by_dest` / `window_inbound_by_dest`).
-                    if live_only_inventory and (out_aw is None or in_aw is None):
-                        continue
 
-                    # Evaluate all 6 bonus strategies on (out_aw, in_aw)
-                    strategies_to_try = (
-                        [
-                            "HYBRID_BONUS_PLUS_CASH",
-                            "SPLIT_CABIN_BONUS",
-                            "FULL_BONUS_SAME_CABIN",
-                            "MULTI_CLUB_PER_PASSENGER_SPLIT",
-                            "ONE_WAY_BONUS_ONE_WAY_CASH",
-                            "CASH_AND_POINTS",
-                        ]
-                        if has_household_points
-                        else ["COMMERCIAL_CASH_ONLY"]
-                    )
+                    # When only ONE direction has live `#live` award availability (e.g. AMS or LHR
+                    # with outbound bonus seats and 0 return bonus seats), synthesize ONE_WAY_BONUS_ONE_WAY_CASH
+                    # (with honest `LY_CASH` commercial leg and lower FBVS score) while never inventing
+                    # an El Al flight on Shabbat (`weekday() == 5`) or Yom Kippur.
+                    is_single_dir_live = bool(live_only_inventory and ((out_aw is None) ^ (in_aw is None)))
+                    if is_single_dir_live:
+                        if out_aw is None and (
+                            window.start_date.weekday() == 5
+                            or self.calendar_service.is_tlv_airport_closed(window.start_date)
+                        ):
+                            continue
+                        if in_aw is None and (
+                            window.end_date.weekday() == 5
+                            or self.calendar_service.is_tlv_airport_closed(window.end_date)
+                        ):
+                            continue
+                        strategies_to_try = (
+                            ["ONE_WAY_BONUS_ONE_WAY_CASH", "COMMERCIAL_CASH_ONLY"]
+                            if has_household_points
+                            else ["COMMERCIAL_CASH_ONLY"]
+                        )
+                    else:
+                        strategies_to_try = (
+                            [
+                                "HYBRID_BONUS_PLUS_CASH",
+                                "SPLIT_CABIN_BONUS",
+                                "FULL_BONUS_SAME_CABIN",
+                                "MULTI_CLUB_PER_PASSENGER_SPLIT",
+                                "ONE_WAY_BONUS_ONE_WAY_CASH",
+                                "CASH_AND_POINTS",
+                            ]
+                            if has_household_points
+                            else ["COMMERCIAL_CASH_ONLY"]
+                        )
+                    window_dest_added_bonus = False
                     for strat_name in strategies_to_try:
+                        if is_single_dir_live and strat_name == "COMMERCIAL_CASH_ONLY" and window_dest_added_bonus:
+                            continue
                         if strat_name == "HYBRID_BONUS_PLUS_CASH" and not query.allow_hybrid_bonus_cash:
                             continue
                         itin_dict = self.wallet_engine.allocate_family_tickets(
@@ -2752,6 +2852,8 @@ class BonusVacationPlannerService:
                             itin = FlightItinerary.from_dict(itin_dict)
                             if not (query.min_trip_nights <= itin.trip_nights <= query.max_trip_nights):
                                 continue
+                            if strat_name == "ONE_WAY_BONUS_ONE_WAY_CASH":
+                                window_dest_added_bonus = True
                             raw_proposals.append(
                                 self._make_proposal_from_itinerary(
                                     query=query,
