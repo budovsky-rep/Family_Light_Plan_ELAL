@@ -278,10 +278,15 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             self.assertIn("estimated_cash_usd", it_2)
             self.assertTrue(it_2["is_cash_price_estimate"])
 
-            # Guest compare works cleanly from in-memory ephemeral cache; removed .ics export returns 404
+            # Ephemeral guest proposals resolve cleanly for guest requester; removed /compare and .ics endpoints return 404
             pids = [props_1[0]["id"], props_2[0]["id"]]
+            self.assertIsNotNone(
+                guest.router.planner_service.resolve_proposal_for_requester(
+                    pids[0], requester_user_id=None, enforce_owner=True
+                )
+            )
             cmp_r = guest.post("/api/v1/vacations/compare", json={"proposal_ids": pids})
-            self.assertEqual(cmp_r.status_code, 200)
+            self.assertEqual(cmp_r.status_code, 404)
             ics_r = guest.get(f"/api/v1/vacations/{pids[0]}/export.ics")
             self.assertEqual(ics_r.status_code, 404)
 
@@ -681,12 +686,28 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             prop_a = s_a.json()["proposals"][0]
             self.assertEqual(prop_a["itinerary"]["seated_passengers_count"], 4)
 
-            # User A can compare their own persisted proposal (200), while User B gets 404 (IDOR guard)
+            # User A resolves their own persisted proposal, User B is blocked (IDOR guard), and removed /compare & .ics return 404
+            sess_a = client_a.get("/api/v1/auth/session").json()
+            sess_b = client_b.get("/api/v1/auth/session").json()
+            self.assertIsNotNone(
+                client_a.router.planner_service.resolve_proposal_for_requester(
+                    prop_a["id"],
+                    requester_user_id=sess_a["user"]["id"],
+                    enforce_owner=True,
+                )
+            )
+            self.assertIsNone(
+                client_b.router.planner_service.resolve_proposal_for_requester(
+                    prop_a["id"],
+                    requester_user_id=sess_b["user"]["id"],
+                    enforce_owner=True,
+                )
+            )
             self.assertEqual(
                 client_a.post(
                     "/api/v1/vacations/compare", json={"proposal_ids": [prop_a["id"]]}
                 ).status_code,
-                200,
+                404,
             )
             self.assertEqual(
                 client_b.get(f"/api/v1/vacations/{prop_a['id']}/export.ics").status_code,
@@ -1304,32 +1325,43 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             self.assertEqual(prof_after["children"], [])
             self.assertEqual(prof_after["matmid_points_balance"], 0)
 
-            # Both User A's persisted AND ephemeral proposals were purged (404 on /compare)
+            # Both User A's persisted AND ephemeral proposals were purged (None on resolve_proposal_for_requester, 404 on removed /compare)
+            uid_a = sess_after["user"]["id"]
+            uid_b = client_b.get("/api/v1/auth/session").json()["user"]["id"]
+            self.assertIsNone(
+                client_a.router.planner_service.resolve_proposal_for_requester(
+                    persisted_a_pid, requester_user_id=uid_a, enforce_owner=True
+                )
+            )
+            self.assertIsNone(
+                client_a.router.planner_service.resolve_proposal_for_requester(
+                    eph_pid, requester_user_id=uid_a, enforce_owner=True
+                )
+            )
             self.assertEqual(
                 client_a.post(
                     "/api/v1/vacations/compare", json={"proposal_ids": [persisted_a_pid]}
                 ).status_code,
                 404,
             )
-            self.assertEqual(
-                client_a.post(
-                    "/api/v1/vacations/compare", json={"proposal_ids": [eph_pid]}
-                ).status_code,
-                404,
-            )
 
-            # User B's profile, children, and proposals are 100% untouched
+            # User B's profile, children, and persisted proposals are 100% untouched
             b_prof = client_b.get("/api/v1/profile").json()
             self.assertTrue(b_prof["is_persisted"])
             self.assertEqual(b_prof["matmid_points_balance"], 280000)
             self.assertEqual(
                 [c["child_age_years"] for c in b_prof["children"]], [7]
             )
+            self.assertIsNotNone(
+                client_b.router.planner_service.resolve_proposal_for_requester(
+                    persisted_b_pid, requester_user_id=uid_b, enforce_owner=True
+                )
+            )
             self.assertEqual(
                 client_b.post(
                     "/api/v1/vacations/compare", json={"proposal_ids": [persisted_b_pid]}
                 ).status_code,
-                200,
+                404,
             )
 
     # 13. Open-redirect, ASCII tab/control/whitespace, backslash & CRLF sanitization in `sanitize_return_to` and OAuth callback
@@ -1795,28 +1827,33 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             )
             self.assertEqual(u1_search.status_code, 200)
             u1_eph_id = u1_search.json()["proposals"][0]["id"]
-            # Owner accesses ephemeral proposal cleanly via /compare (200), Guest & User 2 get 404 on shared router
-            self.assertEqual(
-                unsaved_u1.post(
-                    "/api/v1/vacations/compare", json={"proposal_ids": [u1_eph_id]}
-                ).status_code,
-                200,
+            # Owner accesses ephemeral proposal cleanly via resolve_proposal_for_requester, Guest & User 2 get None; removed /compare returns 404
+            u1_uid = unsaved_u1.get("/api/v1/auth/session").json()["user"]["id"]
+            u2_uid = other_u2.get("/api/v1/auth/session").json()["user"]["id"]
+            self.assertIsNotNone(
+                unsaved_u1.router.planner_service.resolve_proposal_for_requester(
+                    u1_eph_id, requester_user_id=u1_uid, enforce_owner=True
+                )
             )
-            # Share the same router instance to test in-memory _ephemeral_proposals cross-requester IDOR directly
+            self.assertIsNone(
+                unsaved_u1.router.planner_service.resolve_proposal_for_requester(
+                    u1_eph_id, requester_user_id=None, enforce_owner=True
+                )
+            )
+            self.assertIsNone(
+                unsaved_u1.router.planner_service.resolve_proposal_for_requester(
+                    u1_eph_id, requester_user_id=u2_uid, enforce_owner=True
+                )
+            )
             guest_c.router = unsaved_u1.router
             other_u2.router = unsaved_u1.router
-            self.assertEqual(
-                guest_c.post(
-                    "/api/v1/vacations/compare", json={"proposal_ids": [u1_eph_id]}
-                ).status_code,
-                404,
-            )
-            self.assertEqual(
-                other_u2.post(
-                    "/api/v1/vacations/compare", json={"proposal_ids": [u1_eph_id]}
-                ).status_code,
-                404,
-            )
+            for req_client in (unsaved_u1, guest_c, other_u2):
+                self.assertEqual(
+                    req_client.post(
+                        "/api/v1/vacations/compare", json={"proposal_ids": [u1_eph_id]}
+                    ).status_code,
+                    404,
+                )
 
             # Personalized endpoints emit Vary: Cookie + Cache-Control: no-store, private & omit wildcard CORS over HTTP
             srv = create_http_server("127.0.0.1", 0, db_path=db_path)
@@ -1876,7 +1913,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                         r_http = hc.getresponse()
                         r_http.read()
                         hdrs_l = {k.lower(): v for k, v in r_http.getheaders()}
-                        self.assertEqual(r_http.status, 200)
+                        self.assertEqual(r_http.status, 404)
                         self.assertEqual(hdrs_l.get("cache-control"), "no-store, private")
                         self.assertIn("cookie", (hdrs_l.get("vary") or "").lower())
                         self.assertNotIn("access-control-allow-origin", hdrs_l)
@@ -2117,6 +2154,70 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 1,
                 f"save_search_results must execute in 1 transaction, opened {conn_open_count}",
             )
+
+    # 17. Run 10 R4: Non-affiliation disclaimer on local test OAuth sign-in page (he & en), profile sign-in box, and footer
+    def test_run10_r4_non_affiliation_disclaimers_on_local_oauth_and_main_surfaces(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "r4_disclaimers.sqlite"
+            old_test_mode = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
+            old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+            os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+            os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+            try:
+                tc_he = VacationPlannerTestClient(db_path=db_path)
+                r_login_he = tc_he.get("/api/v1/auth/google/login?lang=he")
+                self.assertEqual(r_login_he.status_code, 302)
+                r_page_he = tc_he.get(r_login_he.headers["Location"])
+                self.assertEqual(r_page_he.status_code, 200)
+                self.assertIn('dir="rtl"', r_page_he.text)
+                self.assertIn('id="local-signin-disclaimer"', r_page_he.text)
+                self.assertIn(
+                    "אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על",
+                    r_page_he.text,
+                )
+                self.assertIn('id="test-oauth-form"', r_page_he.text)
+
+                tc_en = VacationPlannerTestClient(db_path=db_path)
+                r_login_en = tc_en.get("/api/v1/auth/google/login?lang=en")
+                self.assertEqual(r_login_en.status_code, 302)
+                r_page_en = tc_en.get(r_login_en.headers["Location"])
+                self.assertEqual(r_page_en.status_code, 200)
+                self.assertIn('dir="ltr"', r_page_en.text)
+                self.assertIn('id="local-signin-disclaimer"', r_page_en.text)
+                self.assertIn("independent vacation planning application", r_page_en.text)
+                self.assertIn("not affiliated with", r_page_en.text)
+
+                # Triple-gate 404 when ELAL_LIVE_FETCH_ENABLED=1 remains intact
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
+                r_blocked = tc_en.get(r_login_en.headers["Location"])
+                self.assertEqual(r_blocked.status_code, 404)
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+
+                # Main page index.html contains footer & profile sign-in disclaimers
+                r_root = tc_he.get("/")
+                self.assertEqual(r_root.status_code, 200)
+                for req_id in (
+                    'id="site-footer"',
+                    'id="footer-elal-disclaimer"',
+                    'id="profile-signin-disclaimer"',
+                    'id="profile-user-disclaimer"',
+                ):
+                    self.assertIn(req_id, r_root.text)
+                self.assertIn(
+                    "אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על",
+                    r_root.text,
+                )
+            finally:
+                if old_test_mode is None:
+                    os.environ.pop("VACATION_PLANNER_AUTH_TEST_MODE", None)
+                else:
+                    os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = old_test_mode
+                if old_live is None:
+                    os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+                else:
+                    os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_live
 
 
 if __name__ == "__main__":

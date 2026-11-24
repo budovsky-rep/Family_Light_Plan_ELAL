@@ -111,11 +111,7 @@ body {
 }
 
 body {
-  padding-block-end: calc(var(--mobile-dock-h) + 16px + env(safe-area-inset-bottom));
-}
-
-body.has-compare-bar {
-  padding-block-end: calc(var(--mobile-dock-h) + 74px + env(safe-area-inset-bottom));
+  padding-block-end: calc(var(--mobile-dock-h) + 20px + env(safe-area-inset-bottom));
 }
 
 body.is-sheet-locked {
@@ -140,12 +136,23 @@ h3,
   outline-offset: 2px;
 }
 
-/* Compact Sticky Flight-Deck Top Bar (`~56-62px` on Mobile & Desktop) */
+/* Scoped Thailand Andaman & Longtail Branding Tokens (Header & Hero ONLY — `:root` stays untouched) */
+.app-header,
+.vacation-hero-card {
+  --thai-abyss-teal: #062C3A;
+  --thai-andaman-emerald: #0B5D69;
+  --thai-lagoon-turquoise: #138D97;
+  --thai-marigold-sun: #F5B841;
+  --thai-lotus-coral: #F27D65;
+  --thai-sand-mist: #FFF6E5;
+}
+
+/* Compact Sticky Top Bar (`~56-62px` on Mobile & Desktop) */
 .app-header {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: linear-gradient(135deg, #071529 0%, #0B1F3A 58%, #1452A6 100%);
+  background: linear-gradient(135deg, var(--thai-abyss-teal) 0%, var(--thai-andaman-emerald) 62%, #0E7480 100%);
   color: #FFFFFF;
   padding-block-start: max(8px, env(safe-area-inset-top));
   padding-block-end: 8px;
@@ -156,8 +163,8 @@ h3,
   justify-content: space-between;
   gap: 5px;
   min-height: 56px;
-  border-block-end: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 4px 16px rgba(11, 31, 58, 0.2);
+  border-block-end: 1px solid rgba(245, 184, 65, 0.3);
+  box-shadow: 0 4px 16px rgba(6, 44, 58, 0.22);
 }
 
 .header-brand {
@@ -176,8 +183,8 @@ h3,
 }
 
 .brand-emblem svg {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
 }
 
 .brand-title-group {
@@ -196,19 +203,50 @@ h3,
 }
 
 .header-brand h1 {
-  width: 100%;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  width: auto;
+  max-width: 100%;
   margin: 0;
-  font-size: 0.84rem;
+  font-size: 0.86rem;
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.18;
+}
+
+.brand-wordmark {
+  font-family: "Plus Jakarta Sans", "Rubik", system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--thai-sand-mist);
+  unicode-bidi: isolate;
+  white-space: nowrap;
+}
+
+.brand-wordmark-accent {
+  font-weight: 800;
+  color: var(--thai-marigold-sun);
+}
+
+.brand-title-sep {
+  display: none;
+  color: rgba(255, 246, 229, 0.52);
+  font-weight: 600;
+}
+
+.brand-title-local {
+  display: none;
+  color: #FFFFFF;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .brand-subtitle {
   display: none;
   margin: 0;
   font-size: var(--fs-tag);
-  color: #BFD6F6;
+  color: #D2F1F3;
   font-weight: 500;
   line-height: 1.25;
 }
@@ -459,52 +497,69 @@ input[type="date"] {
   gap: 10px;
 }
 
-/* Full-Width Departure Overview Masthead */
+/* Full-Width Departure Overview Masthead (Scoped Thailand Andaman Lagoon & Longtail Theme) */
 .vacation-hero-card {
   grid-column: 1 / -1;
   min-width: 0;
-  background: linear-gradient(135deg, #0B1F3A 0%, #103870 55%, #1452A6 100%);
+  background: linear-gradient(135deg, var(--thai-abyss-teal) 0%, var(--thai-andaman-emerald) 54%, var(--thai-lagoon-turquoise) 100%);
   color: #FFFFFF;
   border-radius: var(--radius-lg);
-  padding-block: 7px;
-  padding-inline: 12px;
-  box-shadow: 0 10px 26px rgba(11, 31, 58, 0.14);
-  border: 1px solid rgba(184, 207, 240, 0.28);
+  padding-block: 6px;
+  padding-inline: 10px;
+  box-shadow: 0 10px 26px rgba(6, 44, 58, 0.16);
+  border: 1px solid rgba(245, 184, 65, 0.34);
 }
 
 .hero-main-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 114px;
+  align-items: center;
+  gap: 8px;
 }
 
 .hero-copy-col {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .hero-masthead-top {
-  display: none;
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
 }
 
 .hero-eyebrow {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 3px;
   align-self: flex-start;
-  background: rgba(198, 122, 18, 0.24);
-  border: 1px solid rgba(243, 206, 142, 0.55);
-  color: #FEF5E7;
+  background: rgba(245, 184, 65, 0.18);
+  border: 1px solid rgba(245, 184, 65, 0.52);
+  color: var(--thai-sand-mist);
   padding-block: 2px;
-  padding-inline: 10px;
+  padding-inline: 8px;
   border-radius: 999px;
   font-size: var(--fs-tag);
   font-weight: 700;
+  line-height: 1.24;
+}
+
+.hero-eyebrow-short,
+.hero-eyebrow-sub {
+  display: none;
+}
+
+.hero-brand-inline {
+  font-family: "Plus Jakarta Sans", "Rubik", system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--thai-marigold-sun);
+  unicode-bidi: isolate;
 }
 
 .hero-title-band {
@@ -516,9 +571,9 @@ input[type="date"] {
 
 .hero-headline {
   margin: 0;
-  font-size: 1.12rem;
+  font-size: 0.94rem;
   font-weight: 800;
-  line-height: 1.24;
+  line-height: 1.2;
   color: #FFFFFF;
   letter-spacing: -0.02em;
 }
@@ -527,30 +582,24 @@ input[type="date"] {
   display: none;
   margin: 0;
   font-size: var(--fs-body);
-  color: #D5E4FA;
-  line-height: 1.42;
-}
-
-.hero-highlights-row {
-  display: none;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.hero-highlight-chip {
-  background: rgba(255, 255, 255, 0.11);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  color: #F0F6FF;
-  padding-block: 3px;
-  padding-inline: 9px;
-  border-radius: 999px;
-  font-size: var(--fs-tag);
-  font-weight: 600;
-  white-space: nowrap;
+  color: #E3F6F7;
+  line-height: 1.44;
 }
 
 .hero-art-col {
-  display: none;
+  display: block;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid rgba(255, 246, 229, 0.24);
+  box-shadow: 0 4px 12px rgba(5, 35, 46, 0.24);
+}
+
+.hero-scenic-svg {
+  display: block;
+  width: 100%;
+  height: 70px;
+  object-fit: cover;
 }
 
 /* Workspace Zone Cards */
@@ -590,10 +639,6 @@ input[type="date"] {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-}
-
-#zone-results .zone-actions-row {
-  display: none;
 }
 
 .zone-actions-row > .btn-compact-action {
@@ -863,6 +908,238 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   line-height: 1.3;
 }
 
+/* Accessible Hidden Native Multi-Select & Tactile Body-Palette Destination Picker */
+.sr-only-select {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.dest-multiselect {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dest-picker-trigger {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 6px;
+  padding-inline: 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--surface-boarding);
+  color: var(--ink-flightdeck);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dest-picker-trigger:hover,
+.dest-picker-trigger[aria-expanded="true"] {
+  border-color: var(--azure-elal);
+  background-color: var(--azure-tint);
+}
+
+.dest-picker-summary {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: break-word;
+  line-height: 1.3;
+}
+
+.dest-selected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.dest-chip {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-block: 3px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  background-color: var(--azure-tint);
+  border: 1px solid var(--azure-border);
+  color: var(--azure-elal);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dest-chip:hover {
+  background-color: var(--surface-recessed);
+  border-color: var(--azure-elal);
+}
+
+.dest-chip-clear-all {
+  background-color: var(--surface-recessed);
+  border-color: var(--border-strong);
+  color: var(--ink-secondary);
+}
+
+.dest-picker-popover {
+  position: absolute;
+  inset-inline: 0;
+  top: calc(100% + 4px);
+  z-index: 36;
+  background-color: var(--surface-boarding);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-hover);
+  padding: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dest-filter-wrap {
+  min-width: 0;
+}
+
+.dest-filter-input {
+  width: 100%;
+  min-height: 40px;
+  font-size: 16px;
+}
+
+.dest-options-list {
+  max-height: 250px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-block: 4px;
+  border-block: 1px solid var(--border-subtle);
+}
+
+.dest-option-row {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 5px;
+  padding-inline: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background-color: transparent;
+  color: var(--ink-flightdeck);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+}
+
+.dest-option-row:hover {
+  background-color: var(--surface-recessed);
+}
+
+.dest-option-row.is-selected {
+  background-color: var(--azure-tint);
+  border-color: var(--azure-border);
+  color: var(--azure-elal);
+  font-weight: 700;
+}
+
+.dest-option-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dest-option-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid var(--border-strong);
+  background-color: var(--surface-boarding);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #FFFFFF;
+  flex-shrink: 0;
+}
+
+.dest-option-row.is-selected .dest-option-check {
+  background-color: var(--azure-elal);
+  border-color: var(--azure-elal);
+}
+
+.dest-option-label {
+  min-width: 0;
+  overflow-wrap: break-word;
+  line-height: 1.28;
+}
+
+.dest-option-iata {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  color: var(--ink-muted);
+  background-color: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+  padding-block: 1px;
+  padding-inline: 6px;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.dest-option-row.is-selected .dest-option-iata {
+  color: var(--azure-elal);
+  background-color: var(--surface-boarding);
+  border-color: var(--azure-border);
+}
+
+.dest-options-empty {
+  margin: 0;
+  padding-block: 10px;
+  padding-inline: 8px;
+  font-size: var(--fs-label);
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+.dest-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.btn-dest-popover-done {
+  width: auto;
+  flex: 1 1 auto;
+  min-height: var(--control-h);
+  padding-block: 5px;
+  padding-inline: 12px;
+  font-size: var(--fs-label);
+}
+
 .search-actions-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1008,111 +1285,6 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
 }
 
 /* Signature Perforated BiDi Boarding-Pass & Holiday-Bridge Proposal Cards */
-.comparison-banner-wrap {
-  margin-block-end: 12px;
-}
-
-.comparison-banner-card {
-  border: 1px solid var(--pine-border);
-  border-inline-start: 4px solid var(--pine-bridge);
-  background: var(--pine-tint);
-  border-radius: var(--radius-md);
-  padding-block: 10px;
-  padding-inline: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.comparison-banner-title {
-  font-size: var(--fs-body);
-  font-weight: 800;
-  color: var(--ink-flightdeck);
-}
-
-.comparison-banner-text {
-  margin: 0;
-  font-size: var(--fs-body);
-  color: var(--ink-secondary);
-  line-height: 1.45;
-}
-
-.comparison-cards-grid {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(240px, 1fr);
-  gap: 10px;
-  overflow-x: auto;
-  scroll-snap-type: inline mandatory;
-  padding-block-start: 4px;
-  padding-block-end: 4px;
-}
-
-.comparison-col-card {
-  scroll-snap-align: start;
-  min-width: 0;
-  background: var(--surface-boarding);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding-block: 8px;
-  padding-inline: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.comparison-col-head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-block-end: 4px;
-  border-block-end: 1px solid var(--border-subtle);
-}
-
-.comparison-col-dates {
-  font-family: var(--font-mono);
-  font-size: var(--fs-tag);
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.comparison-winner-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.comparison-winner-chip {
-  background: var(--pine-tint);
-  border: 1px solid var(--pine-border);
-  color: var(--pine-bridge);
-  padding-block: 1px;
-  padding-inline: 6px;
-  border-radius: 999px;
-  font-size: var(--fs-tag);
-  font-weight: 700;
-}
-
-.comparison-metric-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: var(--fs-tag);
-}
-
-.comparison-metric-item {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  color: var(--ink-secondary);
-}
-
-.comparison-metric-item strong {
-  color: var(--ink-flightdeck);
-  text-align: end;
-}
-
 .status-banner-card {
   border: 1px solid var(--danger-border);
   border-inline-start: 5px solid var(--danger-ink);
@@ -1783,42 +1955,6 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   margin-block-start: auto;
 }
 
-.stub-secondary-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: stretch;
-}
-
-.compare-check-label {
-  font-size: var(--fs-label);
-  font-weight: 700;
-  color: var(--ink-secondary);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  cursor: pointer;
-  min-height: 44px;
-  padding-block: 4px;
-  padding-inline: 10px;
-  background: var(--surface-boarding);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-}
-
-.compare-check-label:has(input:checked) {
-  background: var(--azure-tint);
-  border-color: var(--azure-elal);
-  color: var(--azure-elal);
-}
-
-.compare-check-label input {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-}
-
 /* Full-Width Card Footer (`2+` Award Cap Verification Notice) */
 .proposal-pass-footer {
   border-block-start: 1px solid var(--border-subtle);
@@ -2033,6 +2169,7 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
 /* Direct EL AL Flight Booking Action & 2+ Cap Notice */
 .btn-elal-book {
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -2040,13 +2177,13 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   gap: 5px;
   min-height: 44px;
   padding-block: 6px;
-  padding-inline: 8px;
+  padding-inline: 12px;
   border-radius: var(--radius-sm);
   background: linear-gradient(135deg, #0B1F3A 0%, #1452A6 100%);
   color: #FFFFFF;
   border: 1px solid #0B2E63;
   text-decoration: none;
-  font-size: var(--fs-tag);
+  font-size: var(--fs-label);
   font-weight: 700;
   line-height: 1.3;
   text-align: center;
@@ -2185,6 +2322,16 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   font-size: var(--fs-label);
   font-weight: 600;
   color: var(--pine-bridge);
+  text-align: start;
+}
+
+.auth-affiliation-disclaimer {
+  margin: 0;
+  padding-block-start: 6px;
+  border-block-start: 1px dashed var(--border-strong);
+  font-size: var(--fs-tag);
+  line-height: 1.42;
+  color: var(--ink-secondary);
   text-align: start;
 }
 
@@ -2365,48 +2512,26 @@ body.is-keyboard-open .profile-sheet-footer {
   position: static;
 }
 
-/* Floating Sticky Comparison Tray (Stacked 10px Above #mobile-thumb-dock Below 1024px) */
-.sticky-compare-bar {
-  position: fixed;
-  inset-inline: 12px;
-  inset-block-end: calc(var(--mobile-dock-h) + 10px + env(safe-area-inset-bottom));
-  z-index: 48;
-  max-width: 560px;
+/* Site Footer & Independent Non-Affiliation Disclaimer (Neutral Body/Surface Palette) */
+.site-footer {
+  width: 100%;
+  background-color: var(--surface-boarding);
+  border-block-start: 1px solid var(--border-subtle);
+  padding-block: 12px;
+  padding-inline: 14px;
+}
+
+.site-footer-inner {
+  max-width: 1640px;
   margin-inline: auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-block: 7px;
-  padding-inline: 12px;
-  border-radius: var(--radius-md);
-  background: var(--ink-flightdeck);
-  color: #FFFFFF;
-  border: 1px solid rgba(147, 197, 253, 0.4);
-  box-shadow: 0 10px 26px rgba(11, 31, 58, 0.28);
 }
 
-.sticky-compare-count {
+.site-footer-disclaimer {
+  margin: 0;
   font-size: var(--fs-label);
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.sticky-compare-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.btn-sticky-compare-run {
-  width: auto;
-  flex: 0 0 auto;
-  min-height: 36px;
-  padding-block: 5px;
-  padding-inline: 11px;
-  font-size: var(--fs-tag);
-  border-radius: 999px;
+  line-height: 1.48;
+  color: var(--ink-secondary);
+  text-align: center;
 }
 
 /* Thumb-Ergonomic Mobile Bottom Navigation Dock (Shown below 1024px) */
@@ -2427,9 +2552,7 @@ body.is-keyboard-open .profile-sheet-footer {
 }
 
 body.is-sheet-locked .mobile-thumb-dock,
-body.is-sheet-locked .sticky-compare-bar,
-body.is-keyboard-open .mobile-thumb-dock,
-body.is-keyboard-open .sticky-compare-bar {
+body.is-keyboard-open .mobile-thumb-dock {
   display: none !important;
 }
 
@@ -2487,6 +2610,10 @@ body.is-keyboard-open .sticky-compare-bar {
 
 /* Mobile-First Responsive Breakpoints (`min-width` only, ascending: one cascade from phone to wide desktop) */
 @media (min-width: 560px) {
+  .hero-eyebrow-short {
+    display: inline;
+  }
+
   .form-grid-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2550,6 +2677,27 @@ body.is-keyboard-open .sticky-compare-bar {
 }
 
 @media (min-width: 640px) {
+  .hero-eyebrow-short {
+    display: none;
+  }
+
+  .hero-eyebrow-sub {
+    display: inline;
+  }
+
+  .hero-main-grid {
+    grid-template-columns: minmax(0, 1fr) 248px;
+    gap: 12px;
+  }
+
+  .hero-headline {
+    font-size: 1.1rem;
+  }
+
+  .hero-scenic-svg {
+    height: 92px;
+  }
+
   .awaiting-flights-showcase {
     min-height: clamp(360px, 54vh, 480px);
   }
@@ -2622,12 +2770,34 @@ body.is-keyboard-open .sticky-compare-bar {
   }
 
   .vacation-hero-card {
-    padding-block: 10px;
-    padding-inline: 14px;
+    padding-block: 11px;
+    padding-inline: 16px;
+  }
+
+  .hero-main-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+    align-items: center;
+    gap: 16px;
+  }
+
+  .hero-scenic-svg {
+    height: 132px;
   }
 
   .hero-masthead-top {
     display: flex;
+  }
+
+  .dest-picker-trigger {
+    min-height: var(--control-h);
+    padding-block: 4px;
+    padding-inline: 10px;
+  }
+
+  .dest-filter-input {
+    min-height: var(--control-h);
+    font-size: var(--fs-body);
   }
 
   #active-mode-badge {
@@ -2651,10 +2821,6 @@ body.is-keyboard-open .sticky-compare-bar {
     padding-inline: 15px;
   }
 
-  #zone-results .zone-actions-row {
-    display: flex;
-  }
-
   .hh-compact-chip {
     display: none;
   }
@@ -2675,10 +2841,6 @@ body.is-keyboard-open .sticky-compare-bar {
 
   .hero-lead {
     display: block;
-  }
-
-  .hero-highlights-row {
-    display: flex;
   }
 
   .search-filters-toggle-btn {
@@ -2814,24 +2976,22 @@ body.is-keyboard-open .sticky-compare-bar {
     background: var(--canvas-limestone);
   }
 
+  .brand-title-sep,
+  .brand-title-local {
+    display: inline;
+  }
+
   .stub-actions-stack {
     flex-direction: column;
     gap: 6px;
-  }
-
-  .stub-secondary-actions {
-    width: 100%;
   }
 
   .btn-elal-book {
     width: 100%;
     flex: 0 0 auto;
     min-height: 38px;
-  }
-
-  .compare-check-label {
-    width: 100%;
-    min-height: var(--control-h);
+    padding-block: 6px;
+    font-size: var(--fs-tag);
   }
 }
 
@@ -2844,16 +3004,12 @@ body.is-keyboard-open .sticky-compare-bar {
     padding-block-end: 0;
   }
 
-  body.has-compare-bar {
-    padding-block-end: 74px;
-  }
-
   .mobile-thumb-dock {
     display: none;
   }
 
-  .sticky-compare-bar {
-    inset-block-end: max(16px, calc(12px + env(safe-area-inset-bottom)));
+  .site-footer {
+    padding-inline: 24px;
   }
 
   .header-brand {
@@ -2878,20 +3034,18 @@ body.is-keyboard-open .sticky-compare-bar {
   }
 
   .vacation-hero-card {
-    padding-block: 11px;
+    padding-block: 12px;
     padding-inline: 18px;
   }
 
   .hero-title-band {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 14px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
   }
 
   .hero-headline {
-    font-size: 1.18rem;
+    font-size: 1.24rem;
   }
 
   .hero-lead {
@@ -2900,6 +3054,15 @@ body.is-keyboard-open .sticky-compare-bar {
 }
 
 @media (min-width: 1180px) {
+  .hero-main-grid {
+    grid-template-columns: minmax(0, 0.9fr) minmax(520px, 1.1fr);
+    gap: 20px;
+  }
+
+  .hero-scenic-svg {
+    height: 150px;
+  }
+
   body.is-sheet-locked {
     overflow: visible;
   }

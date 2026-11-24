@@ -2719,21 +2719,22 @@ class TestTier2F28ScoringComparisonAndIcsExportBoundaries(Tier2BoundaryTestBase)
             self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
             self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
 
-    def test_f28_04_compare_proposals_with_empty_or_unknown_ids_handled_gracefully(self) -> None:
+    def test_f28_04_compare_proposals_removed_and_compare_route_returns_404_for_all_inputs(self) -> None:
         planner = self.get_planner()
-        for bad_ids in ([], ["nonexistent-id-1", "nonexistent-id-2"]):
-            try:
-                res = planner.compare_proposals(bad_ids)
-                if isinstance(res, dict):
-                    self.assertEqual(len(res.get("proposals", [])), 0)
-                else:
-                    self.assertEqual(len(getattr(res, "proposals", [])), 0)
-            except (ValueError, KeyError):
-                pass
+        self.assertFalse(hasattr(planner, "compare_proposals"))
+        client = self.get_client()
+        for payload in (
+            {"proposal_ids": []},
+            {"proposal_ids": ["nonexistent-id-1", "nonexistent-id-2"]},
+            {},
+        ):
+            r = client.post("/api/v1/vacations/compare", json=payload)
+            self.assertEqual(r.status_code, 404)
 
     def test_f28_05_estimated_cash_pricing_non_binding_copy_and_removed_ics_method_boundary(self) -> None:
         planner = self.get_planner()
         self.assertFalse(hasattr(planner, "export_proposal_ics"))
+        self.assertFalse(hasattr(planner, "compare_proposals"))
         proposals = planner.search_vacations(
             {
                 "date_selection_mode": "SPECIFIC_DATES",
@@ -2750,11 +2751,38 @@ class TestTier2F28ScoringComparisonAndIcsExportBoundaries(Tier2BoundaryTestBase)
             self.assertTrue(it_dict["is_cash_price_estimate"])
             self.assertAlmostEqual(it_dict["estimated_cash_usd"], it_dict["total_out_of_pocket_cash_usd"], places=2)
             self.assertIn("~$", p.explanation_summary_he)
-        cmp_res = planner.compare_proposals([proposals[0].id, proposals[1].id])
-        cmp_dict = cmp_res if isinstance(cmp_res, dict) else cmp_res.to_dict()
-        self.assertNotIn("best_by_per_id", cmp_dict)
-        oop_row = next(r for r in cmp_dict["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd")
-        self.assertTrue(all(str(v).startswith("~$") for v in oop_row["values"].values()))
+
+    def test_f28_06_multi_select_destination_empty_and_malformed_boundaries_run10_r2(self) -> None:
+        client = self.get_client()
+        base = {
+            "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+            "direct_holiday_code": "PESACH",
+            "direct_target_year": 2027,
+        }
+        for valid_open in (
+            {**base, "destination_iatas": []},
+            {**base, "destinations": []},
+            {**base, "destination": ""},
+            {**base, "destination_iatas": ["ANYWHERE", "ROM"]},
+        ):
+            r_ok = client.post("/api/v1/vacations/search", json=valid_open)
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(r_ok.json()["query"]["destination_iatas"], ["ANYWHERE"])
+
+        for malformed in (
+            {**base, "destination_iatas": [None]},
+            {**base, "destination_iatas": ["   "]},
+            {**base, "destination_iatas": [123]},
+            {**base, "destination_iatas": ["ZZZZ"]},
+            {**base, "destinations": [None]},
+            {**base, "destination": 999},
+        ):
+            r_bad = client.post("/api/v1/vacations/search", json=malformed)
+            self.assertEqual(r_bad.status_code, 422)
+
+        # POST /api/v1/elal-bonus/sync must keep rejecting {"destinations": []} with 422
+        r_sync_empty = client.post("/api/v1/elal-bonus/sync", json={"destinations": []})
+        self.assertEqual(r_sync_empty.status_code, 422)
 
 
 class TestTier2F29RestApiNegativeAndBoundaries(Tier2BoundaryTestBase):
@@ -2834,9 +2862,11 @@ class TestTier2F29RestApiNegativeAndBoundaries(Tier2BoundaryTestBase):
         )
         self.assertEqual(s_resp.status_code, 200)
         valid_pid = s_resp.json()["proposals"][0]["id"]
+        r_cmp_valid = client.post("/api/v1/vacations/compare", json={"proposal_ids": [valid_pid]})
         r_ics_valid = client.get(f"/api/v1/vacations/{valid_pid}/export.ics")
         r_404 = client.get("/api/v1/nonexistent-endpoint")
-        self.assertIn(r_cmp.status_code, (400, 404, 422))
+        self.assertEqual(r_cmp.status_code, 404)
+        self.assertEqual(r_cmp_valid.status_code, 404)
         self.assertEqual(r_ics_missing.status_code, 404)
         self.assertEqual(r_ics_valid.status_code, 404)
         self.assertEqual(r_404.status_code, 404)
@@ -3018,14 +3048,15 @@ class TestTier2F32PwaAndPackagingBoundaries(Tier2BoundaryTestBase):
         for sym in ("MoEFrameworkType", "DateSelectionMode", "AirlineSelectionMode", "LoyaltyProgramCode", "FulfillmentStrategy"):
             self.assertIn(sym, dom_txt)
         comp_root = PROJECT_ROOT / "frontend" / "src" / "components"
+        self.assertFalse((comp_root / "results" / "BonusVacationComparisonModal.tsx").exists())
         for rel in (
             "layout/AppShell.tsx",
+            "layout/BreezyFlightsBrandHeader.tsx",
             "profile/FamilyProfileDrawer.tsx",
             "search/SearchControlPanel.tsx",
             "search/ElAlBonusSearchSubPanel.tsx",
             "calendar/MultiChildCalendarHeatmap.tsx",
             "results/BonusVacationOptionCard.tsx",
-            "results/BonusVacationComparisonModal.tsx",
             "results/AllAirlinesItineraryCard.tsx",
         ):
             fp = comp_root / rel

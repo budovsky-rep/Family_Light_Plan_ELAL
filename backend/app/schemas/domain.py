@@ -775,11 +775,44 @@ class FlightSearchQuery(_DomainModelBase):
         self.include_sundor_flights = _parse_bool(self.include_sundor_flights, True)
         self.origin_iata = str(self.origin_iata or "TLV").upper()
 
-        self.destination_iatas = [
-            str(x).upper() for x in _parse_json_list(self.destination_iatas, ["FCO"])
-        ]
-        if not self.destination_iatas:
+        if self.destination_iatas is None:
             self.destination_iatas = ["FCO"]
+        elif isinstance(self.destination_iatas, str):
+            raw_s = self.destination_iatas.strip()
+            if not raw_s:
+                self.destination_iatas = ["ANYWHERE"]
+            elif raw_s.startswith("["):
+                parsed_list = _parse_json_list(raw_s, [])
+                toks = [str(x).strip().upper() for x in parsed_list if str(x).strip()]
+                self.destination_iatas = toks or ["ANYWHERE"]
+            else:
+                toks = [t.strip().upper() for t in raw_s.split(",") if t.strip()]
+                self.destination_iatas = toks or ["ANYWHERE"]
+        else:
+            raw_items = list(self.destination_iatas)
+            if not raw_items:
+                self.destination_iatas = ["ANYWHERE"]
+            else:
+                toks = []
+                for x in raw_items:
+                    if x is None:
+                        continue
+                    for sub in str(x).split(","):
+                        sc = sub.strip().upper()
+                        if sc:
+                            toks.append(sc)
+                self.destination_iatas = toks or ["ANYWHERE"]
+
+        if any(t in ("ANYWHERE", "ALL", "*") for t in self.destination_iatas):
+            self.destination_iatas = ["ANYWHERE"]
+        else:
+            dedup_dests: list[str] = []
+            seen_dests: set[str] = set()
+            for t in self.destination_iatas:
+                if t not in seen_dests:
+                    seen_dests.add(t)
+                    dedup_dests.append(t)
+            self.destination_iatas = dedup_dests or ["ANYWHERE"]
 
         self.specific_departure_date = _parse_optional_date(self.specific_departure_date)
         self.specific_return_date = _parse_optional_date(self.specific_return_date)
@@ -942,9 +975,20 @@ class FlightSearchQuery(_DomainModelBase):
     def from_dict(cls, data: dict[str, Any] | Self) -> Self:
         if isinstance(data, cls):
             return data
-        dests = data.get("destination_iatas")
-        if dests is None:
-            dests = data.get("destination_iatas_json", ["FCO"])
+        dests: Any = None
+        has_explicit_dest = False
+        for dest_key in (
+            "destination_iatas",
+            "destinations",
+            "destination",
+            "destination_iatas_json",
+        ):
+            if dest_key in data and data.get(dest_key) is not None:
+                dests = data.get(dest_key)
+                has_explicit_dest = True
+                break
+        if not has_explicit_dest:
+            dests = ["FCO"]
         holidays = data.get("target_holiday_codes")
         if holidays is None:
             holidays = data.get("target_holiday_codes_json", [])
@@ -978,7 +1022,7 @@ class FlightSearchQuery(_DomainModelBase):
             ),
             include_sundor_flights=_parse_bool(data.get("include_sundor_flights", True)),
             origin_iata=str(data.get("origin_iata") or "TLV"),
-            destination_iatas=_parse_json_list(dests, ["FCO"]),
+            destination_iatas=dests,
             specific_departure_date=data.get("specific_departure_date"),
             specific_return_date=data.get("specific_return_date"),
             flex_days_plus_minus=int(data.get("flex_days_plus_minus", 0)),
@@ -2151,49 +2195,4 @@ class MoECalendarSyncStatus(_DomainModelBase):
             ),
             last_synced_at=str(data.get("last_synced_at") or _now_iso()),
             windows=[MoEVacationWindow.from_dict(w) for w in raw_windows],
-        )
-
-
-@dataclass
-class VacationComparisonMatrix(_DomainModelBase):
-    proposals: list[VacationOptionProposal] = field(default_factory=list)
-    comparison_rows: list[dict[str, Any]] = field(default_factory=list)
-    best_by_ctos_id: Optional[str] = None
-    best_by_cash_savings_id: Optional[str] = None
-    best_by_minimal_absence_id: Optional[str] = None
-    best_by_weather_id: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        self.proposals = [
-            VacationOptionProposal.from_dict(p)
-            if not isinstance(p, VacationOptionProposal)
-            else p
-            for p in (self.proposals or [])
-        ]
-        self.comparison_rows = list(self.comparison_rows or [])
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "proposals": [p.to_dict() for p in self.proposals],
-            "comparison_rows": list(self.comparison_rows),
-            "best_by_ctos_id": self.best_by_ctos_id,
-            "best_by_cash_savings_id": self.best_by_cash_savings_id,
-            "best_by_minimal_absence_id": self.best_by_minimal_absence_id,
-            "best_by_weather_id": self.best_by_weather_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | Self) -> Self:
-        if isinstance(data, cls):
-            return data
-        return cls(
-            proposals=[
-                VacationOptionProposal.from_dict(p)
-                for p in (data.get("proposals") or [])
-            ],
-            comparison_rows=list(data.get("comparison_rows") or []),
-            best_by_ctos_id=data.get("best_by_ctos_id"),
-            best_by_cash_savings_id=data.get("best_by_cash_savings_id"),
-            best_by_minimal_absence_id=data.get("best_by_minimal_absence_id"),
-            best_by_weather_id=data.get("best_by_weather_id"),
         )

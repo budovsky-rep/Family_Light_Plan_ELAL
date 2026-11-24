@@ -22,8 +22,7 @@ export function renderAppShellHeader(props: AppShellProps): string {
   return `
     <header class="app-header" dir="${dir}">
       <div class="header-brand">
-        <span class="brand-badge">✈️ EL AL & MoE</span>
-        <h1>${isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner'}</h1>
+        <h1><span class="brand-wordmark" dir="ltr">breezy<span class="brand-wordmark-accent">flights</span></span> · ${isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner'}</h1>
       </div>
       <div class="header-summary-pills">
         <span class="pill" dir="ltr">${totalPassengers} Pax (${props.profile.adults_count}A + ${props.profile.children.length}C)</span>

@@ -680,6 +680,11 @@ class GoogleOAuthService:
             else "התחברות עם Gmail (מצב בדיקה מקומי)"
         )
         btn_txt = "Continue" if lang == "en" else "המשך לחשבון"
+        disclaimer_txt = (
+            "Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines."
+            if lang == "en"
+            else "הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית."
+        )
         hidden_inputs = "".join(
             f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(str(q.get(k, "")))}" />'
             for k in (
@@ -707,6 +712,7 @@ class GoogleOAuthService:
     label {{ display: block; font-weight: 600; margin-block-end: 6px; }}
     input[type="email"], input[type="text"] {{ width: 100%; box-sizing: border-box; min-height: 38px; padding-inline: 10px; margin-block-end: 12px; border: 1px solid #B4C5DC; border-radius: 8px; font-size: 14px; }}
     button {{ min-height: 38px; width: 100%; border-radius: 8px; border: 1px solid #0B2E63; background: #1452A6; color: #FFFFFF; font-weight: 700; font-size: 14px; cursor: pointer; }}
+    .disclaimer {{ margin-block: 14px 0; padding-block-start: 12px; border-block-start: 1px solid #D5DFEC; font-size: 13px; line-height: 1.5; color: #364B66; text-align: start; }}
   </style>
 </head>
 <body>
@@ -720,6 +726,7 @@ class GoogleOAuthService:
       <input type="text" id="test-oauth-name-input" name="test_name" value="Alice" />
       <button type="submit" id="btn-test-oauth-continue">{html.escape(btn_txt)}</button>
     </form>
+    <p class="disclaimer" id="local-signin-disclaimer" data-non-affiliation-disclaimer="local-signin" role="note">{html.escape(disclaimer_txt)}</p>
   </main>
 </body>
 </html>"""

@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0B1F3A" />
-  <meta name="description" content="מתכנן חופשות משפחתיות חכם סביב חופשות משרד החינוך וחיפוש כרטיסי בונוס באל על ומועדון הנוסע המתמיד" />
-  <title>מתכנן חופשות משפחתיות חכם | משרד החינוך וכרטיסי בונוס אל על</title>
+  <meta name="description" content="breezyflights — מתכנן חופשות משפחתיות חכם סביב חופשות משרד החינוך וחיפוש כרטיסי בונוס באל על ומועדון הנוסע המתמיד" />
+  <title>breezyflights | מתכנן חופשות משפחתיות חכם וכרטיסי בונוס אל על</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@600;700&amp;family=Plus+Jakarta+Sans:wght@700;800&amp;family=Rubik:wght@600;700;800&amp;display=swap" media="print" onload="this.media='all'" />
@@ -19,24 +19,34 @@
 <body>
   <!-- Top App Header -->
   <header class="app-header" id="app-header">
-    <div class="header-brand">
+    <div class="header-brand" id="header-brand">
       <div class="brand-emblem" aria-hidden="true">
-        <svg viewBox="0 0 36 36" width="34" height="34" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="18" cy="18" r="17" fill="url(#crestGrad)" stroke="rgba(255,255,255,0.35)" stroke-width="1.5" />
-          <path d="M8 24C12.5 21.5 23.5 21.5 28 24" stroke="#bae6fd" stroke-width="1.6" stroke-linecap="round" />
-          <circle cx="25" cy="11" r="3.5" fill="#fbbf24" />
-          <path d="M9.5 19.5L25.5 13L19.5 22.5L16.5 18.5L9.5 19.5Z" fill="#ffffff" />
+        <svg viewBox="0 0 40 40" width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg">
           <defs>
-            <linearGradient id="crestGrad" x1="0" y1="0" x2="36" y2="36" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#0284c7" />
-              <stop offset="100%" stop-color="#0d9488" />
+            <linearGradient id="thaiCrestBg" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#062C3A" />
+              <stop offset="62%" stop-color="#0B5D69" />
+              <stop offset="100%" stop-color="#138D97" />
             </linearGradient>
           </defs>
+          <rect x="1" y="1" width="38" height="38" rx="11" fill="url(#thaiCrestBg)" stroke="rgba(245,184,65,0.52)" stroke-width="1.4" />
+          <circle cx="27.5" cy="12" r="6.2" fill="#F5B841" opacity="0.22" />
+          <circle cx="27.5" cy="12" r="4.4" fill="#F5B841" />
+          <path d="M6.5 26.5C9.5 17 13.8 14.5 17.5 26.5H6.5Z" fill="#083E49" />
+          <path d="M11.5 26.5C13.2 19.5 15.2 17.8 17.5 26.5H11.5Z" fill="#138D97" opacity="0.55" />
+          <path d="M5.5 26.2C13.2 29.2 24.8 28.6 32.2 23.2L34.4 17.8L33.1 17.4L30.8 22.3C23.8 26.8 13.5 27.2 6.4 24.8L5.5 26.2Z" fill="#FFF6E5" />
+          <path d="M34.2 18.2C35.8 19.4 36.8 20.8 37.4 22.1" stroke="#F27D65" stroke-width="1.7" stroke-linecap="round" />
+          <path d="M33.6 19.4C34.9 20.6 35.7 21.9 36.1 23.2" stroke="#F5B841" stroke-width="1.5" stroke-linecap="round" />
+          <path d="M6.5 32.2C13.5 30.4 26.5 30.4 33.5 32.2" stroke="#7CE3E6" stroke-opacity="0.65" stroke-width="1.5" stroke-linecap="round" />
         </svg>
       </div>
       <div class="brand-title-group">
         <div class="brand-title-row">
-          <h1 id="header-title">מתכנן חופשות משפחתיות חכם</h1>
+          <h1 id="header-title">
+            <span class="brand-wordmark" dir="ltr">breezy<span class="brand-wordmark-accent">flights</span></span>
+            <span class="brand-title-sep" aria-hidden="true">·</span>
+            <span class="brand-title-local" id="header-title-local">מתכנן חופשות משפחתיות חכם</span>
+          </h1>
         </div>
         <p class="brand-subtitle" id="header-subtitle">תכנון חופשות לפי לוח משרד החינוך, קייטנות ניצנים וכרטיסי בונוס באל על</p>
       </div>
@@ -61,39 +71,97 @@
 
   <!-- Wide-Desktop Flight-Deck Workspace -->
   <main class="dashboard-shell" id="dashboard-shell">
-    <!-- Full-Width Departure Overview Masthead -->
-    <section class="vacation-hero-card" id="vacation-hero" aria-label="פתיח מתכנן חופשות משפחתיות" data-aria-he="פתיח מתכנן חופשות משפחתיות" data-aria-en="Family vacation planner overview">
+    <!-- Full-Width Departure Overview Masthead (Scoped Thailand Andaman & Longtail Branding) -->
+    <section class="vacation-hero-card" id="vacation-hero" aria-label="פתיח breezyflights לתכנון חופשות משפחתיות" data-aria-he="פתיח breezyflights לתכנון חופשות משפחתיות" data-aria-en="breezyflights family vacation planner overview">
       <div class="hero-main-grid">
         <div class="hero-copy-col">
           <div class="hero-masthead-top">
-            <span class="hero-eyebrow" id="hero-eyebrow">✈️ המראות מנתב״ג (TLV) · תכנון חופשות שנה קדימה</span>
-            <div class="hero-highlights-row" id="hero-highlights">
-              <span class="hero-highlight-chip" data-he="🎫 מושבי בונוס אל על ומועדון מתמיד" data-en="🎫 EL AL Matmid Award Seats">🎫 מושבי בונוס אל על ומועדון מתמיד</span>
-              <span class="hero-highlight-chip" data-he="🎒 סינכרון חופשות וקייטנות ניצנים" data-en="🎒 MoE Breaks &amp; Nitzanim Camps">🎒 סינכרון חופשות וקייטנות ניצנים</span>
-            </div>
+            <span class="hero-eyebrow" id="hero-eyebrow">🏝️ <span class="hero-brand-inline" dir="ltr">breezyflights</span><span class="hero-eyebrow-short"> · חופשות חכמות</span><span class="hero-eyebrow-sub"> · תכנון חכם לחופשה המשפחתית הבאה</span></span>
           </div>
           <div class="hero-title-band">
-            <h2 class="hero-headline" id="hero-headline">הפכו כל חופשת בית ספר לחופשת חלומות משפחתית</h2>
+            <h2 class="hero-headline" id="hero-headline">הפכו כל חופשת בית ספר לחופשה משפחתית חלומית</h2>
             <p class="hero-lead" id="hero-lead">
-              הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס באל על ובמועדון הנוסע המתמיד.
+              הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס מנתב״ג לכל היעדים הפתוחים.
             </p>
           </div>
         </div>
         <div class="hero-art-col" aria-hidden="true">
-          <svg class="hero-scenic-svg" viewBox="0 0 380 210" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect width="380" height="210" rx="16" fill="url(#skyGrad)" />
-            <circle cx="296" cy="58" r="34" fill="url(#sunGrad)" opacity="0.95" />
-            <path d="M46 138C118 52 225 38 332 76" stroke="rgba(255,255,255,0.55)" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" />
+          <svg class="hero-scenic-svg" viewBox="0 0 720 156" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
             <defs>
-              <linearGradient id="skyGrad" x1="0" y1="0" x2="380" y2="210" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#0B1F3A" />
-                <stop offset="100%" stop-color="#1452A6" />
+              <linearGradient id="thaiSkyGrad" x1="0" y1="0" x2="720" y2="108" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#052633" />
+                <stop offset="50%" stop-color="#0B5D69" />
+                <stop offset="100%" stop-color="#15939D" />
               </linearGradient>
-              <linearGradient id="sunGrad" x1="296" y1="24" x2="296" y2="92" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#FEF5E7" />
-                <stop offset="100%" stop-color="#C67A12" />
+              <linearGradient id="thaiHorizonGlow" x1="360" y1="36" x2="360" y2="104" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#F5B841" stop-opacity="0.0" />
+                <stop offset="100%" stop-color="#F5B841" stop-opacity="0.3" />
+              </linearGradient>
+              <linearGradient id="thaiSunGrad" x1="418" y1="24" x2="418" y2="68" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FFF6E5" />
+                <stop offset="62%" stop-color="#F5B841" />
+                <stop offset="100%" stop-color="#F27D65" />
+              </linearGradient>
+              <linearGradient id="thaiSeaGrad" x1="0" y1="102" x2="0" y2="156" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#179CA6" />
+                <stop offset="54%" stop-color="#0A5561" />
+                <stop offset="100%" stop-color="#05232E" />
               </linearGradient>
             </defs>
+            <rect width="720" height="156" rx="13" fill="url(#thaiSkyGrad)" />
+            <rect y="36" width="720" height="68" fill="url(#thaiHorizonGlow)" />
+            <!-- Warm Golden Sun & Panoramic Tropical Clouds -->
+            <circle cx="418" cy="46" r="35" fill="#F5B841" opacity="0.18" />
+            <circle cx="418" cy="46" r="20" fill="url(#thaiSunGrad)" />
+            <path d="M138 38C152 33 174 33 188 38M334 40C345 36 361 36 372 40M466 34C480 29 500 29 514 34M612 42C626 37 648 37 662 42" stroke="#FFF6E5" stroke-opacity="0.28" stroke-width="2" stroke-linecap="round" />
+            <!-- Panoramic Flight Breeze Arc Descending Across the Bay -->
+            <path d="M652 58C576 22 492 17 444 35" stroke="#FFF6E5" stroke-opacity="0.62" stroke-width="1.6" stroke-dasharray="4 5" stroke-linecap="round" />
+            <path d="M449 30.5L437 36.8L448.2 39.6L445.6 35.3L449 30.5Z" fill="#FFF6E5" />
+            <!-- Panoramic Limestone Karst Sea-Stacks Across the Horizon -->
+            <path d="M604 104C612 76 623 62 636 64C648 66 656 84 666 104H604Z" fill="#084550" opacity="0.62" />
+            <path d="M532 104C539 74 549 58 561 60C572 62 580 82 590 104H532Z" fill="#094D58" opacity="0.76" />
+            <path d="M556 104C560 80 566 66 573 69C579 72 584 87 590 104H556Z" fill="#148690" opacity="0.38" />
+            <path d="M446 104C454 70 465 55 477 58C489 61 496 81 506 104H446Z" fill="#073A44" opacity="0.92" />
+            <path d="M472 104C476 74 482 62 489 65C495 69 500 85 506 104H472Z" fill="#138D97" opacity="0.36" />
+            <path d="M342 104C348 76 356 61 367 63C376 65 383 82 390 104H342Z" fill="#094A55" opacity="0.82" />
+            <path d="M362 104C365 80 370 67 376 69C381 71 385 86 390 104H362Z" fill="#137C86" opacity="0.46" />
+            <path d="M268 104C276 62 288 41 304 43C318 45 327 69 338 104H268Z" fill="#062C3A" />
+            <path d="M300 104C305 64 312 48 320 51C327 55 332 76 338 104H300Z" fill="#0E6B78" opacity="0.54" />
+            <path d="M286 52C293 42 306 40 315 47C306 46 294 48 286 52Z" fill="#0C7A60" opacity="0.74" />
+            <path d="M116 104C126 60 142 36 161 39C178 42 190 69 204 104H116Z" fill="#063140" opacity="0.9" />
+            <path d="M154 104C160 64 169 46 179 50C188 54 195 77 204 104H154Z" fill="#107380" opacity="0.48" />
+            <path d="M188 104C194 79 202 66 212 68C221 70 227 85 234 104H188Z" fill="#094B56" opacity="0.78" />
+            <!-- Emerald-Turquoise Lagoon, Sun Shimmer & Distant Boat -->
+            <rect y="102" width="720" height="54" fill="url(#thaiSeaGrad)" />
+            <path d="M392 109H444M382 117H454M396 125H438M406 133H428" stroke="#FFF6E5" stroke-opacity="0.58" stroke-width="1.6" stroke-linecap="round" />
+            <path d="M28 134C118 127 214 137 312 130C412 123 514 135 612 128C652 125 682 129 704 127" stroke="#7CE3E6" stroke-opacity="0.38" stroke-width="1.4" stroke-linecap="round" />
+            <path d="M84 145C176 140 278 148 384 142C486 136 584 146 678 140" stroke="#7CE3E6" stroke-opacity="0.24" stroke-width="1.2" stroke-linecap="round" />
+            <!-- Distant Companion Boat Silhouette on the Horizon -->
+            <path d="M552 114C564 117 581 116 593 111L597 103L595 103L590 110C579 114 565 114 554 112L552 114Z" fill="#05232E" opacity="0.82" />
+            <!-- Main Traditional Longtail Boat (Rua Hang Yao) with Canopy & Ribbons -->
+            <path d="M290 128L315 119" stroke="#041B24" stroke-width="1.8" stroke-linecap="round" />
+            <path d="M273 130C281 129 289 129 296 130" stroke="#FFF6E5" stroke-opacity="0.64" stroke-width="1.4" stroke-linecap="round" />
+            <path d="M311 120C342 129 386 128 417 114L429 91L425 90L412 110C384 121 344 122 316 116L311 120Z" fill="#041B24" />
+            <path d="M319 118C346 123 383 122 410 112" stroke="#FFF6E5" stroke-opacity="0.72" stroke-width="1.1" stroke-linecap="round" />
+            <path d="M342 117H382L377 107H347L342 117Z" fill="#09434F" />
+            <path d="M345 107.5H379" stroke="#F5B841" stroke-opacity="0.86" stroke-width="1.4" stroke-linecap="round" />
+            <path d="M428 92C435 96 440 101 444 106" stroke="#F27D65" stroke-width="2" stroke-linecap="round" />
+            <path d="M427 95C433 99 437 105 440 110" stroke="#F5B841" stroke-width="1.8" stroke-linecap="round" />
+            <path d="M426 98C431 102 434 107 436 111" stroke="#FFF6E5" stroke-opacity="0.85" stroke-width="1.2" stroke-linecap="round" />
+            <!-- Central-Cove Palm Silhouette (Visible on Both Phone & Desktop) -->
+            <path d="M234 156C238 124 245 94 257 65L261 67C250 96 244 124 241 156H234Z" fill="#041B24" />
+            <path d="M259 66C244 57 229 61 220 74C232 68 246 67 259 69Z" fill="#041B24" />
+            <path d="M259 66C250 51 235 47 223 53C236 53 248 58 259 68Z" fill="#041B24" />
+            <path d="M259 66C269 50 286 48 300 57C285 55 271 59 260 68Z" fill="#041B24" />
+            <path d="M259 66C275 61 290 67 301 80C288 72 273 69 259 69Z" fill="#041B24" />
+            <!-- Panoramic Foreground Coconut Palm Grove & Sandy Cove -->
+            <path d="M0 144C36 138 78 143 118 156H0V144Z" fill="#041B24" />
+            <path d="M36 150C41 112 52 74 70 40L75 42C58 76 48 112 44 150H36Z" fill="#041B24" />
+            <path d="M72 41C51 29 31 35 16 52C34 43 53 42 72 45Z" fill="#041B24" />
+            <path d="M72 41C60 21 39 15 22 24C40 24 58 31 72 44Z" fill="#041B24" />
+            <path d="M72 41C86 20 110 17 129 29C109 27 89 33 74 44Z" fill="#041B24" />
+            <path d="M72 41C94 34 116 42 130 60C112 49 92 45 72 45Z" fill="#041B24" />
+            <path d="M72 42C83 49 94 61 100 76C90 64 81 53 71 45Z" fill="#041B24" />
           </svg>
         </div>
       </div>
@@ -156,11 +224,28 @@
           </div>
         </div>
 
-        <!-- Destination Selection (Defaults to All Open Destinations / ANYWHERE) -->
+        <!-- Destination Multi-Select Pre-Filtering (Defaults to All Open Destinations / ANYWHERE) -->
         <div class="form-grid">
           <div class="form-field">
-            <label for="select-destination" data-he="יעד חופשה (או כל היעדים הפתוחים):" data-en="Destination (or All Open Destinations):">יעד חופשה (או כל היעדים הפתוחים):</label>
-            <select id="select-destination">
+            <label id="label-select-destination" for="btn-dest-picker-toggle" data-he="יעדי חופשה (בחירה מרובה או כל היעדים הפתוחים):" data-en="Destinations (Multi-Select or All Open):">יעדי חופשה (בחירה מרובה או כל היעדים הפתוחים):</label>
+            <div class="dest-multiselect" id="destination-multiselect">
+              <button type="button" class="dest-picker-trigger" id="btn-dest-picker-toggle" aria-haspopup="listbox" aria-expanded="false" aria-controls="dest-picker-popover" aria-labelledby="label-select-destination dest-picker-summary">
+                <span class="dest-picker-summary" id="dest-picker-summary">🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)</span>
+                <span class="hh-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="dest-selected-chips" id="dest-selected-chips" hidden style="display: none;"></div>
+              <div class="dest-picker-popover" id="dest-picker-popover" hidden style="display: none;">
+                <div class="dest-filter-wrap">
+                  <input type="text" id="input-dest-filter" class="dest-filter-input" autocomplete="off" placeholder="סינון יעד או קוד שדה (למשל BKK, ROM, אתונה)..." aria-label="סינון יעדים" data-aria-he="סינון יעדים" data-aria-en="Filter destinations" />
+                </div>
+                <div class="dest-options-list" id="dest-options-list" role="listbox" aria-multiselectable="true" aria-label="רשימת יעדים לבחירה מרובה" data-aria-he="רשימת יעדים לבחירה מרובה" data-aria-en="Multi-select destinations list"></div>
+                <div class="dest-picker-footer">
+                  <button type="button" class="btn-secondary btn-compact-action" id="btn-dest-popover-reset" data-he="נקה הכל (ANYWHERE)" data-en="Reset (ANYWHERE)">נקה הכל (ANYWHERE)</button>
+                  <button type="button" class="btn-primary btn-dest-popover-done" id="btn-dest-popover-done" data-he="✓ סיום בחירה" data-en="✓ Done">✓ סיום בחירה</button>
+                </div>
+              </div>
+            </div>
+            <select id="select-destination" multiple class="sr-only-select" tabindex="-1" aria-hidden="true">
               <option value="ANYWHERE" selected data-he="🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)" data-en="🌍 All Open Award Destinations (ANYWHERE)">🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)</option>
               <option value="ROM" data-he="רומא, איטליה (ROM / FCO)" data-en="Rome, Italy (ROM / FCO)">רומא, איטליה (ROM / FCO)</option>
               <option value="MXP" data-he="מילאנו / דולומיטים, איטליה (MXP)" data-en="Milan / Dolomites, Italy (MXP)">מילאנו / דולומיטים, איטליה (MXP)</option>
@@ -315,6 +400,7 @@
               <span id="btn-google-signin-label" data-he="התחברות עם Gmail לשמירת פרופיל" data-en="Sign in with Gmail to Save Profile">התחברות עם Gmail לשמירת פרופיל</span>
             </button>
             <p id="auth-status-note" class="auth-status-note" hidden style="display: none;"></p>
+            <p class="auth-affiliation-disclaimer" id="profile-signin-disclaimer" data-non-affiliation-disclaimer="profile-guest" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.</p>
           </div>
 
           <div id="auth-user-panel" class="auth-panel-inner" hidden style="display: none;">
@@ -340,6 +426,7 @@
               <span id="auth-notif-label-text" data-he="🔔 הכן את החשבון להתראות עתידיות במייל על מושבי בונוס (בקרוב)" data-en="🔔 Prepare account for future email alerts on award seats (coming soon)">🔔 הכן את החשבון להתראות עתידיות במייל על מושבי בונוס (בקרוב)</span>
             </label>
             <p id="auth-save-feedback" class="auth-save-feedback" hidden style="display: none;"></p>
+            <p class="auth-affiliation-disclaimer" id="profile-user-disclaimer" data-non-affiliation-disclaimer="profile-user" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.</p>
           </div>
         </div>
 
@@ -377,13 +464,7 @@
           <div class="zone-title-wrap">
             <h2 id="zone-results-title">תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס</h2>
           </div>
-          <div class="zone-actions-row">
-            <button type="button" class="btn-secondary btn-compact-action" id="btn-compare-selected" data-he="⚖️ השווה נבחרות" data-en="⚖️ Compare Selected">
-              ⚖️ השווה נבחרות
-            </button>
-          </div>
         </div>
-        <div id="comparison-banner-container" class="comparison-banner-wrap" style="display: none;"></div>
         <div class="proposals-grid" id="proposals-container">
           <p data-he="מחשב חלופות חופשה משפחתית וכרטיסי בונוס..." data-en="Computing family vacation &amp; award seat proposals...">מחשב חלופות חופשה משפחתית וכרטיסי בונוס...</p>
         </div>
@@ -427,15 +508,16 @@
     </div>
   </main>
 
-  <!-- Mobile Bottom-Sheet Backdrop (<1180px) & Sticky Comparison Bar -->
-  <div class="profile-sheet-backdrop" id="profile-sheet-backdrop" hidden style="display: none;"></div>
-  <div class="sticky-compare-bar" id="sticky-compare-bar" role="region" aria-label="השוואת חלופות" hidden style="display: none;">
-    <span class="sticky-compare-count" id="sticky-compare-count"></span>
-    <div class="sticky-compare-actions">
-      <button type="button" class="btn-primary btn-sticky-compare-run" id="btn-sticky-compare-run" data-he="⚖️ השווה עכשיו" data-en="⚖️ Compare Now">⚖️ השווה עכשיו</button>
-      <button type="button" class="btn-secondary btn-compact-action" id="btn-sticky-compare-clear" data-he="נקה ✕" data-en="Clear ✕">נקה ✕</button>
+  <footer class="site-footer" id="site-footer" role="contentinfo">
+    <div class="site-footer-inner">
+      <p class="site-footer-disclaimer" id="footer-elal-disclaimer" data-non-affiliation-disclaimer="footer" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">
+        הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.
+      </p>
     </div>
-  </div>
+  </footer>
+
+  <!-- Mobile Bottom-Sheet Backdrop (<1180px) -->
+  <div class="profile-sheet-backdrop" id="profile-sheet-backdrop" hidden style="display: none;"></div>
 
   <!-- Thumb-Ergonomic Mobile Bottom Navigation Dock (Hidden on Desktop `>=1024px`) -->
   <nav class="mobile-thumb-dock" id="mobile-thumb-dock" aria-label="ניווט מהיר במובייל" data-aria-he="ניווט מהיר במובייל" data-aria-en="Mobile quick navigation">

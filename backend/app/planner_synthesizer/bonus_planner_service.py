@@ -20,7 +20,7 @@ Implements Features `F22` through `F28`:
     `CASH_AND_POINTS` with `<0.8c` low-CPP warning, `MULTI_CLUB_PER_PASSENGER_SPLIT`)
     plus `COMMERCIAL_CASH_ONLY`.
   - Computes `CPP`, `FBVS` (Bonus & Cash modes), and `CTOS = 0.55 * HAS + 0.45 * FBVS`.
-  - Provides `search_vacations` and `compare_proposals` (`VacationComparisonMatrix`).
+  - Provides `search_vacations`.
 """
 
 from __future__ import annotations
@@ -60,7 +60,6 @@ from backend.app.schemas.domain import (
     FulfillmentStrategy,
     LoyaltyProgramCode,
     PassengerLoyaltyWallet,
-    VacationComparisonMatrix,
     VacationOptionProposal,
     classify_passenger_type,
 )
@@ -2447,7 +2446,17 @@ class BonusVacationPlannerService:
         else:
             query.family_profile_id = None  # type: ignore[assignment]
 
-        expanded_destinations = self.elal_adapter.expand_metro_iatas(query.destination_iatas)
+        raw_dest_tokens = [
+            str(x).strip().upper()
+            for x in (query.destination_iatas or [])
+            if str(x).strip()
+        ]
+        is_anywhere_query = (not raw_dest_tokens) or any(
+            t in ("ANYWHERE", "ALL", "*") for t in raw_dest_tokens
+        )
+        expanded_destinations = self.elal_adapter.expand_metro_iatas(
+            ["ANYWHERE"] if is_anywhere_query else raw_dest_tokens
+        )
         self.last_expanded_destinations = list(expanded_destinations)
         self.last_weather_fallback_message_he = None
         self.last_weather_fallback_message_en = None
@@ -2473,7 +2482,7 @@ class BonusVacationPlannerService:
         # - In offline mode with an active vacation-type filter: rank all destinations by average
         #   weather suitability (`WSS`) across candidate windows and keep top 14 + all passing `effective_tau`.
         # - In offline mode without a vacation-type filter: keep the 14 canonical destinations (+ any `#live` routes).
-        if len(expanded_destinations) > 10 and not (
+        if is_anywhere_query and not (
             self.repository.is_live_fetch_mode() or self._has_live_only_inventory()
         ):
             if has_weather_filter:
@@ -2798,6 +2807,25 @@ class BonusVacationPlannerService:
                             )
                         )
 
+        if not is_anywhere_query:
+            allowed_iatas = set(expanded_destinations)
+            raw_proposals = [
+                p
+                for p in raw_proposals
+                if p.itinerary is not None
+                and p.itinerary.destination_iata in allowed_iatas
+                and (p.itinerary.return_origin_iata or p.itinerary.destination_iata)
+                in allowed_iatas
+                and (
+                    not p.itinerary.outbound_legs
+                    or p.itinerary.outbound_legs[-1].destination_iata in allowed_iatas
+                )
+                and (
+                    not p.itinerary.inbound_legs
+                    or p.itinerary.inbound_legs[0].origin_iata in allowed_iatas
+                )
+            ]
+
         if not raw_proposals:
             if persist_results:
                 self.repository.save_search_query(query)
@@ -3035,205 +3063,3 @@ class BonusVacationPlannerService:
             itinerary=itinerary,
             created_at=_now_iso(),
         )
-
-    def compare_proposals(
-        self,
-        proposal_ids: list[str | VacationOptionProposal | dict[str, Any]],
-        *,
-        requester_user_id: Optional[str] = None,
-        enforce_owner: bool = False,
-    ) -> dict[str, Any]:
-        """Build a side-by-side `VacationComparisonMatrix` for 1..N proposals (`F28`)."""
-        if not proposal_ids:
-            raise ValueError("proposal_ids must not be empty")
-
-        proposals: list[VacationOptionProposal] = []
-        for item in proposal_ids:
-            if isinstance(item, VacationOptionProposal):
-                proposals.append(item)
-            elif isinstance(item, dict):
-                proposals.append(VacationOptionProposal.from_dict(item))
-            else:
-                loaded = self.resolve_proposal_for_requester(
-                    str(item),
-                    requester_user_id=requester_user_id,
-                    enforce_owner=enforce_owner,
-                )
-                if loaded is not None:
-                    proposals.append(loaded)
-                elif enforce_owner:
-                    raise LookupError(f"Proposal not found or unauthorized: {item!r}")
-
-        if not proposals:
-            if enforce_owner:
-                raise LookupError("No matching accessible proposals found.")
-            raise ValueError(f"No matching proposals found for IDs: {proposal_ids!r}")
-
-        best_by_ctos = max(
-            proposals,
-            key=lambda p: (
-                p.combined_trip_optimization_score,
-                p.holiday_alignment_score,
-                p.flight_bonus_value_score,
-            ),
-        )
-        best_by_savings = max(
-            proposals,
-            key=lambda p: (
-                p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
-                -(p.itinerary.total_out_of_pocket_cash_usd if p.itinerary else 999999.0),
-            ),
-        )
-        best_by_absence = min(
-            proposals,
-            key=lambda p: (
-                p.school_absence_penalty,
-                p.total_school_days_missed_across_children,
-                p.max_single_child_school_days_missed,
-                -p.combined_trip_optimization_score,
-            ),
-        )
-        best_by_weather = max(
-            proposals,
-            key=lambda p: (
-                p.weather_suitability_score,
-                p.combined_trip_optimization_score,
-            ),
-        )
-
-        def _row(
-            key: str, label_he: str, label_en: str, extractor: Any
-        ) -> dict[str, Any]:
-            vals_by_id = {p.id: extractor(p) for p in proposals}
-            return {
-                "metric_key": key,
-                "label_he": label_he,
-                "label_en": label_en,
-                "values": vals_by_id,
-                "values_list": [vals_by_id[p.id] for p in proposals],
-            }
-
-        comparison_rows = [
-            _row(
-                "destination",
-                "יעד",
-                "Destination",
-                lambda p: (
-                    f"{p.itinerary.destination_city_he} ({p.itinerary.destination_iata})"
-                    if p.itinerary
-                    else ""
-                ),
-            ),
-            _row(
-                "dates_and_duration",
-                "תאריכים ומשך חופשה",
-                "Dates & Duration",
-                lambda p: (
-                    f"{p.itinerary.departure_date.isoformat()} -> {p.itinerary.return_date.isoformat()} "
-                    f"({p.itinerary.trip_nights} לילות)"
-                    if p.itinerary
-                    else ""
-                ),
-            ),
-            _row(
-                "flights",
-                "טיסות",
-                "Flights",
-                lambda p: (
-                    " / ".join(
-                        [leg.flight_number for leg in p.itinerary.outbound_legs]
-                        + [leg.flight_number for leg in p.itinerary.inbound_legs]
-                    )
-                    if p.itinerary
-                    else ""
-                ),
-            ),
-            _row(
-                "fulfillment_strategy",
-                "אסטרטגיית מימוש כרטיסים",
-                "Fulfillment Strategy",
-                lambda p: (
-                    p.itinerary.fulfillment_strategy.value
-                    if p.itinerary
-                    and isinstance(p.itinerary.fulfillment_strategy, Enum)
-                    else (str(p.itinerary.fulfillment_strategy) if p.itinerary else "")
-                ),
-            ),
-            _row(
-                "total_points",
-                "סה\"כ נקודות מועדון",
-                "Total Loyalty Points",
-                lambda p: p.itinerary.total_matmid_points if p.itinerary else 0,
-            ),
-            _row(
-                "out_of_pocket_cash_usd",
-                "הערכת תשלום במזומן (כולל מסים וכבודה, לא מחייב)",
-                "Estimated Cash Price (USD, non-binding)",
-                lambda p: (
-                    f"~${p.itinerary.total_out_of_pocket_cash_usd:,.2f}"
-                    if p.itinerary
-                    else "~$0.00"
-                ),
-            ),
-            _row(
-                "net_cash_saved_usd",
-                "חיסכון משוער מול הערכת מחיר מלא",
-                "Estimated Net Cash Saved (USD)",
-                lambda p: (
-                    f"~${p.itinerary.net_cash_saved_usd:,.2f}"
-                    if p.itinerary
-                    else "~$0.00"
-                ),
-            ),
-            _row(
-                "cents_per_point",
-                "שווי נקודה משוער במימוש זה (CPP בסנט)",
-                "Estimated Point Value (CPP, cents)",
-                lambda p: p.itinerary.cents_per_point_value if p.itinerary else None,
-            ),
-            _row(
-                "school_days_missed",
-                "ימי לימודים שהוחמצו וקנס היעדרות (SAP)",
-                "School Absence Impact (SAP)",
-                lambda p: {
-                    "total_school_days_missed_across_children": p.total_school_days_missed_across_children,
-                    "max_single_child_school_days_missed": p.max_single_child_school_days_missed,
-                    "school_absence_penalty": p.school_absence_penalty,
-                },
-            ),
-            _row(
-                "weather_suitability",
-                "התאמת מזג אוויר וסגנון חופשה",
-                "Weather & Vacation Style Match",
-                lambda p: {
-                    "WSS": p.weather_suitability_score,
-                    "vacation_type_scores": p.vacation_type_scores,
-                    "weather_summary_he": (
-                        p.weather_metrics.weather_summary_he
-                        if p.weather_metrics
-                        else ""
-                    ),
-                },
-            ),
-            _row(
-                "scores",
-                "ציוני אופטימיזציה (HAS / FBVS / WSS / CTOS)",
-                "Optimization Scores",
-                lambda p: {
-                    "HAS": p.holiday_alignment_score,
-                    "FBVS": p.flight_bonus_value_score,
-                    "WSS": p.weather_suitability_score,
-                    "CTOS": p.combined_trip_optimization_score,
-                },
-            ),
-        ]
-
-        matrix = VacationComparisonMatrix(
-            proposals=proposals,
-            comparison_rows=comparison_rows,
-            best_by_ctos_id=best_by_ctos.id,
-            best_by_cash_savings_id=best_by_savings.id,
-            best_by_minimal_absence_id=best_by_absence.id,
-            best_by_weather_id=best_by_weather.id,
-        )
-        return matrix.to_dict()

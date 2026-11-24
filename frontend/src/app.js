@@ -458,8 +458,10 @@
     isCalendarVisible: false,
     isSearchFiltersOpen: false,
     isProfileSheetOpen: false,
+    isDestPickerOpen: false,
+    destFilterQuery: '',
+    selectedDestinations: [],
     showAllProposals: false,
-    lastComparison: null,
     auth: {
       authenticated: false,
       oauthConfigured: false,
@@ -481,9 +483,10 @@
     userEditedMinNights: false,
     userEditedManualDates: false,
     calendarData: null,
-    proposals: [],
-    selectedProposalIds: new Set()
+    proposals: []
   };
+
+  let latestSearchSeq = 0;
 
   function syncVacationTypePills() {
     const activeSet = new Set(state.selectedVacationTypes || []);
@@ -658,43 +661,233 @@
     }
   }
 
-  function renderStickyCompareBar() {
-    const isHe = state.locale === 'he';
-    if (
-      (!state.proposals || state.proposals.length === 0) &&
-      state.selectedProposalIds &&
-      state.selectedProposalIds.size > 0
-    ) {
-      state.selectedProposalIds.clear();
+  function getSelectedDestinationCodes() {
+    if (Array.isArray(state.selectedDestinations) && state.selectedDestinations.length > 0) {
+      return state.selectedDestinations.slice();
     }
-    const count = state.selectedProposalIds ? state.selectedProposalIds.size : 0;
-    const bar = document.getElementById('sticky-compare-bar');
-    const countEl = document.getElementById('sticky-compare-count');
-    const btnTopCompare = document.getElementById('btn-compare-selected');
+    return ['ANYWHERE'];
+  }
 
-    if (btnTopCompare) {
-      btnTopCompare.textContent =
-        count > 0
-          ? isHe
-            ? `⚖️ השווה נבחרות (${count})`
-            : `⚖️ Compare Selected (${count})`
-          : isHe
-            ? '⚖️ השווה נבחרות'
-            : '⚖️ Compare Selected';
-    }
-
-    if (!bar) return;
-    if (count >= 2) {
-      if (countEl) {
-        countEl.textContent = isHe ? `⚖️ נבחרו ${count} חלופות` : `⚖️ ${count} selected`;
+  function syncNativeSelectFromDestState() {
+    const selectEl = document.getElementById('select-destination');
+    if (!selectEl || !selectEl.options) return;
+    const activeSet = new Set(state.selectedDestinations || []);
+    const isAnywhere = activeSet.size === 0;
+    Array.from(selectEl.options).forEach((opt) => {
+      const code = String(opt.value || '').trim().toUpperCase();
+      if (code === 'ANYWHERE') {
+        opt.selected = isAnywhere;
+      } else {
+        opt.selected = !isAnywhere && activeSet.has(code);
       }
-      bar.removeAttribute('hidden');
-      bar.style.display = 'flex';
-      document.body.classList.add('has-compare-bar');
+    });
+  }
+
+  function syncDestStateFromNativeSelect() {
+    const selectEl = document.getElementById('select-destination');
+    if (!selectEl || !selectEl.options) return;
+    const chosen = Array.from(selectEl.selectedOptions || [])
+      .map((opt) => String(opt.value || '').trim().toUpperCase())
+      .filter(Boolean);
+    if (
+      chosen.length === 0 ||
+      (chosen.length === 1 && (chosen[0] === 'ANYWHERE' || chosen[0] === 'ALL'))
+    ) {
+      state.selectedDestinations = [];
     } else {
-      bar.setAttribute('hidden', '');
-      bar.style.display = 'none';
-      document.body.classList.remove('has-compare-bar');
+      const specific = chosen.filter((c) => c !== 'ANYWHERE' && c !== 'ALL');
+      state.selectedDestinations = Array.from(new Set(specific));
+    }
+    syncNativeSelectFromDestState();
+  }
+
+  function formatDestOptionShortName(optEl, isHe) {
+    if (!optEl) return '';
+    const code = String(optEl.value || '').trim().toUpperCase();
+    const rawLabel = String(
+      (isHe ? optEl.getAttribute('data-he') : optEl.getAttribute('data-en')) ||
+        optEl.textContent ||
+        code
+    ).trim();
+    const withoutParen = rawLabel.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    const primaryCity = withoutParen.split(',')[0].trim();
+    return primaryCity || withoutParen || code;
+  }
+
+  function setDestPickerOpen(open) {
+    state.isDestPickerOpen = Boolean(open);
+    const popoverEl = document.getElementById('dest-picker-popover');
+    const toggleBtn = document.getElementById('btn-dest-picker-toggle');
+    const filterInput = document.getElementById('input-dest-filter');
+    if (popoverEl) {
+      if (state.isDestPickerOpen) {
+        popoverEl.removeAttribute('hidden');
+        popoverEl.style.display = 'flex';
+      } else {
+        popoverEl.setAttribute('hidden', '');
+        popoverEl.style.display = 'none';
+      }
+    }
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-expanded', state.isDestPickerOpen ? 'true' : 'false');
+    }
+    if (!state.isDestPickerOpen && state.destFilterQuery) {
+      state.destFilterQuery = '';
+      if (filterInput) filterInput.value = '';
+    }
+    renderDestinationMultiSelect();
+    if (
+      state.isDestPickerOpen &&
+      filterInput &&
+      typeof window !== 'undefined' &&
+      window.innerWidth >= 768
+    ) {
+      setTimeout(() => {
+        filterInput.focus();
+      }, 30);
+    }
+  }
+
+  function renderDestinationMultiSelect() {
+    const isHe = state.locale === 'he';
+    const selectEl = document.getElementById('select-destination');
+    const summaryEl = document.getElementById('dest-picker-summary');
+    const chipsEl = document.getElementById('dest-selected-chips');
+    const listEl = document.getElementById('dest-options-list');
+    const filterInput = document.getElementById('input-dest-filter');
+
+    if (filterInput) {
+      filterInput.placeholder = isHe
+        ? 'סינון יעד או קוד שדה (למשל BKK, ROM, אתונה)...'
+        : 'Filter city, country, or IATA (e.g. BKK, ROM, Athens)...';
+    }
+    if (!selectEl) return;
+
+    const optionsByCode = new Map();
+    const allOptions = Array.from(selectEl.options || []);
+    allOptions.forEach((opt) => {
+      const code = String(opt.value || '').trim().toUpperCase();
+      if (code) optionsByCode.set(code, opt);
+    });
+
+    const selectedCodes = Array.isArray(state.selectedDestinations)
+      ? state.selectedDestinations
+      : [];
+    const selectedSet = new Set(selectedCodes);
+    const isAnywhere = selectedSet.size === 0;
+
+    if (summaryEl) {
+      if (isAnywhere) {
+        const anyOpt = optionsByCode.get('ANYWHERE');
+        summaryEl.textContent = anyOpt
+          ? String(
+              (isHe ? anyOpt.getAttribute('data-he') : anyOpt.getAttribute('data-en')) ||
+                anyOpt.textContent ||
+                ''
+            ).trim()
+          : isHe
+            ? '🌍 כל היעדים הפתוחים בבונוס (ANYWHERE)'
+            : '🌍 All Open Award Destinations (ANYWHERE)';
+      } else if (selectedCodes.length === 1) {
+        const oneOpt = optionsByCode.get(selectedCodes[0]);
+        summaryEl.textContent = oneOpt
+          ? String(
+              (isHe ? oneOpt.getAttribute('data-he') : oneOpt.getAttribute('data-en')) ||
+                oneOpt.textContent ||
+                selectedCodes[0]
+            ).trim()
+          : selectedCodes[0];
+      } else {
+        const previewNames = selectedCodes
+          .slice(0, 3)
+          .map((c) => formatDestOptionShortName(optionsByCode.get(c), isHe) || c);
+        const extra = selectedCodes.length > 3 ? ` +${selectedCodes.length - 3}` : '';
+        summaryEl.textContent = isHe
+          ? `✈️ ${selectedCodes.length} יעדים נבחרו: ${previewNames.join(', ')}${extra}`
+          : `✈️ ${selectedCodes.length} destinations: ${previewNames.join(', ')}${extra}`;
+      }
+    }
+
+    if (chipsEl) {
+      if (isAnywhere) {
+        chipsEl.setAttribute('hidden', '');
+        chipsEl.style.display = 'none';
+        chipsEl.innerHTML = '';
+      } else {
+        chipsEl.removeAttribute('hidden');
+        chipsEl.style.display = 'flex';
+        const chipsHtml = selectedCodes
+          .map((code) => {
+            const opt = optionsByCode.get(code);
+            const shortName = formatDestOptionShortName(opt, isHe) || code;
+            const icon = DESTINATION_ICONS[code] || '✈️';
+            return `<button type="button" class="dest-chip" data-remove-dest="${escapeHtml(code)}" title="${isHe ? 'הסר יעד' : 'Remove destination'}"><span>${icon} ${escapeHtml(shortName)} (<span dir="ltr">${escapeHtml(code)}</span>)</span><span aria-hidden="true">✕</span></button>`;
+          })
+          .join('');
+        const clearBtnHtml = `<button type="button" class="dest-chip dest-chip-clear-all" id="btn-dest-clear-all">${isHe ? 'נקה הכל' : 'All open'}</button>`;
+        chipsEl.innerHTML = chipsHtml + clearBtnHtml;
+      }
+    }
+
+    if (listEl) {
+      const q = String(state.destFilterQuery || '').trim().toLowerCase();
+      const matchingOpts = allOptions.filter((opt) => {
+        if (!q) return true;
+        const code = String(opt.value || '').toLowerCase();
+        const heTxt = String(opt.getAttribute('data-he') || '').toLowerCase();
+        const enTxt = String(opt.getAttribute('data-en') || '').toLowerCase();
+        const rawTxt = String(opt.textContent || '').toLowerCase();
+        return code.includes(q) || heTxt.includes(q) || enTxt.includes(q) || rawTxt.includes(q);
+      });
+
+      if (matchingOpts.length === 0) {
+        listEl.innerHTML = `<p class="dest-options-empty">${isHe ? 'לא נמצאו יעדים התואמים לסינון.' : 'No matching destinations found.'}</p>`;
+      } else {
+        listEl.innerHTML = matchingOpts
+          .map((opt) => {
+            const code = String(opt.value || '').trim().toUpperCase();
+            const isOptSelected = code === 'ANYWHERE' ? isAnywhere : selectedSet.has(code);
+            const labelTxt = String(
+              (isHe ? opt.getAttribute('data-he') : opt.getAttribute('data-en')) ||
+                opt.textContent ||
+                code
+            ).trim();
+            const icon = code === 'ANYWHERE' ? '' : (DESTINATION_ICONS[code] ? `${DESTINATION_ICONS[code]} ` : '');
+            return `
+              <button type="button" class="dest-option-row${isOptSelected ? ' is-selected' : ''}" role="option" aria-selected="${isOptSelected ? 'true' : 'false'}" data-dest-option="${escapeHtml(code)}">
+                <span class="dest-option-main">
+                  <span class="dest-option-check" aria-hidden="true">${isOptSelected ? '✓' : ''}</span>
+                  <span class="dest-option-label">${icon}${escapeHtml(labelTxt)}</span>
+                </span>
+                <span class="dest-option-iata" dir="ltr">${escapeHtml(code)}</span>
+              </button>
+            `;
+          })
+          .join('');
+      }
+    }
+  }
+
+  function toggleDestinationSelection(code, triggerSearch) {
+    const norm = String(code || '').trim().toUpperCase();
+    if (!norm || norm === 'ANYWHERE' || norm === 'ALL') {
+      state.selectedDestinations = [];
+    } else {
+      const next = Array.isArray(state.selectedDestinations)
+        ? state.selectedDestinations.slice()
+        : [];
+      const idx = next.indexOf(norm);
+      if (idx >= 0) {
+        next.splice(idx, 1);
+      } else {
+        next.push(norm);
+      }
+      state.selectedDestinations = next;
+    }
+    syncNativeSelectFromDestState();
+    renderDestinationMultiSelect();
+    if (triggerSearch) {
+      runVacationSearch();
     }
   }
 
@@ -1528,95 +1721,6 @@
       : `Ranked Vacation Proposals & Award Fulfillment${countSuffix}`;
   }
 
-  function renderComparisonBanner() {
-    const banner = document.getElementById('comparison-banner-container');
-    if (!banner) return;
-    const cmp = state.lastComparison;
-    if (!cmp) {
-      banner.style.display = 'none';
-      banner.innerHTML = '';
-      return;
-    }
-    const isHe = state.locale === 'he';
-    const props = cmp.proposals || [];
-    const byId = new Map(props.map((p) => [p.id, p]));
-    const fmtWinner = (pid) => {
-      const p = byId.get(pid);
-      if (!p || !p.itinerary) return null;
-      const it = p.itinerary;
-      const city = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
-      const strat = formatStrategyLabel(it.fulfillment_strategy);
-      return `${city} (${it.departure_date} → ${it.return_date} · ${strat})`;
-    };
-
-    const bestOverall = fmtWinner(cmp.best_by_ctos_id);
-    const bestSavings = fmtWinner(cmp.best_by_cash_savings_id);
-    const bestAbsence = fmtWinner(cmp.best_by_minimal_absence_id);
-    const bestWeather = fmtWinner(cmp.best_by_weather_id);
-
-    let summaryLine = isHe ? (cmp.summary_he || '') : (cmp.summary_en || '');
-    if (!summaryLine) {
-      const parts = [];
-      if (bestOverall) parts.push(isHe ? `ציון משוקלל מוביל: ${bestOverall}` : `Best Overall Score: ${bestOverall}`);
-      if (bestSavings) parts.push(isHe ? `חיסכון משוער מרבי: ${bestSavings}` : `Highest Est. Savings: ${bestSavings}`);
-      if (bestAbsence) parts.push(isHe ? `מינימום חיסור מבי״ס: ${bestAbsence}` : `Lowest School Absence: ${bestAbsence}`);
-      if (bestWeather) parts.push(isHe ? `מזג אוויר מיטבי: ${bestWeather}` : `Best Weather Match: ${bestWeather}`);
-      summaryLine = parts.join(' · ');
-    }
-
-    const cardsGridHtml = props
-      .map((p) => {
-        const it = p.itinerary || {};
-        const city = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
-        const strat = formatStrategyLabel(it.fulfillment_strategy);
-        const pts = Number(it.total_matmid_points || 0).toLocaleString();
-        const oop = Number(it.total_out_of_pocket_cash_usd || 0).toFixed(0);
-        const missed = Number(p.total_school_days_missed_across_children || 0);
-        const hasVal = Number(p.holiday_alignment_score ?? 0).toFixed(1);
-        const wss = Number(p.weather_suitability_score || 0).toFixed(0);
-        const ctos = Number(p.combined_trip_optimization_score || 0).toFixed(1);
-        const badges = [];
-        if (p.id === cmp.best_by_ctos_id) {
-          badges.push(`<span class="comparison-winner-chip">🏆 ${isHe ? 'מוביל משוקלל' : 'Best Overall'}</span>`);
-        }
-        if (p.id === cmp.best_by_cash_savings_id) {
-          badges.push(`<span class="comparison-winner-chip">🏆 ${isHe ? 'חיסכון משוער' : 'Est. Savings'}</span>`);
-        }
-        if (p.id === cmp.best_by_minimal_absence_id) {
-          badges.push(`<span class="comparison-winner-chip">🏆 ${isHe ? 'מינ׳ חיסור' : 'Min Absence'}</span>`);
-        }
-        if (p.id === cmp.best_by_weather_id) {
-          badges.push(`<span class="comparison-winner-chip">🏆 ${isHe ? 'אקלים מיטבי' : 'Best Weather'}</span>`);
-        }
-        return `
-          <div class="comparison-col-card">
-            <div class="comparison-col-head">
-              <strong>${escapeHtml(city)} (<span dir="ltr">${escapeHtml(it.destination_iata || '')}</span>)</strong>
-              <span class="comparison-col-dates" dir="ltr">${escapeHtml(it.departure_date)} → ${escapeHtml(it.return_date)} (${escapeHtml(it.trip_nights)}n)</span>
-            </div>
-            ${badges.length > 0 ? `<div class="comparison-winner-row">${badges.join('')}</div>` : ''}
-            <div class="comparison-metric-list">
-              <div class="comparison-metric-item"><span>${isHe ? 'אסטרטגיה' : 'Strategy'}</span><strong>${escapeHtml(strat)}</strong></div>
-              <div class="comparison-metric-item"><span>${isHe ? 'נקודות מתמיד' : 'Matmid Points'}</span><strong dir="ltr">${pts}</strong></div>
-              <div class="comparison-metric-item"><span>${isHe ? 'הערכת מחיר במזומן' : 'Est. Cash Price'}</span><strong dir="ltr">~$${oop}</strong></div>
-              <div class="comparison-metric-item"><span>${isHe ? 'התאמה / חיסור בי״ס' : 'Break Fit / Missed'}</span><strong dir="ltr">${hasVal} · ${missed}d</strong></div>
-              <div class="comparison-metric-item"><span>${isHe ? 'אקלים / משוקלל' : 'Weather / Overall'}</span><strong dir="ltr">${wss} · ⭐${ctos}</strong></div>
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-
-    banner.style.display = 'block';
-    banner.innerHTML = `
-      <div class="comparison-banner-card">
-        <strong class="comparison-banner-title">⚖️ ${isHe ? `השוואת ${props.length} חלופות נבחרות (הערכות מחיר אינן מחייבות):` : `Side-by-Side Comparison (${props.length} proposals — non-binding cash estimates):`}</strong>
-        <p class="comparison-banner-text">${escapeHtml(summaryLine)}</p>
-        <div class="comparison-cards-grid">${cardsGridHtml}</div>
-      </div>
-    `;
-  }
-
   function renderProposals() {
     const container = document.getElementById('proposals-container');
     if (!container) return;
@@ -1645,12 +1749,19 @@
       const rawHe = String(state.statusMessageHe || '');
       const isStandardUnsynced = !rawHe || rawHe.includes(NO_SYNCED_FLIGHTS_TOKEN_HE);
       const selectDestEl = document.getElementById('select-destination');
-      const selectedDestOpt = selectDestEl && selectDestEl.selectedOptions && selectDestEl.selectedOptions[0];
-      const destCode = selectDestEl ? String(selectDestEl.value || '').trim() : '';
+      const chosenOpts = selectDestEl
+        ? Array.from(selectDestEl.selectedOptions || []).filter(
+            (o) => o.value && o.value !== 'ANYWHERE'
+          )
+        : [];
       const destLabel =
-        selectedDestOpt && destCode && destCode !== 'ANYWHERE'
-          ? String(selectedDestOpt.textContent || '').trim()
-          : '';
+        chosenOpts.length === 1
+          ? String(chosenOpts[0].textContent || '').trim()
+          : chosenOpts.length > 1
+            ? chosenOpts
+                .map((o) => formatDestOptionShortName(o, isHe) || o.value)
+                .join(' · ')
+            : '';
 
       const badgeText = isHe ? '✈️ מחכה למשיכת טיסות' : '✈️ Awaiting Flight Sync';
       const headlineText = isHe ? 'מחכה למשיכת טיסות' : 'Awaiting Flight Sync';
@@ -1811,7 +1922,6 @@
           `
           : '';
 
-        const checked = state.selectedProposalIds.has(p.id) ? 'checked' : '';
         const rankNum = p.rank_order || p.rank || (idx + 1);
         const tierCode = p.recommendation_tier || (idx === 0 ? 'RECOMMENDED' : idx < 4 ? 'TOP_CHOICE' : 'ALTERNATIVE');
         const tierBadgeText = formatRecommendationTierLabel(tierCode);
@@ -1951,15 +2061,7 @@
                   <p class="stub-estimate-note">${isHe ? '* הערכה לא מחייבת — המחיר הסופי נקבע בבחירת הטיסה' : '* Non-binding estimate — final price set at flight selection'}</p>
                 </div>
 
-                <div class="stub-actions-stack">
-                  ${elalBookBtnHtml}
-                  <div class="stub-secondary-actions">
-                    <label class="compare-check-label">
-                      <input type="checkbox" data-compare-id="${escapeHtml(p.id)}" ${checked} />
-                      <span>${isHe ? 'השווה' : 'Compare'}</span>
-                    </label>
-                  </div>
-                </div>
+                ${elalBookBtnHtml ? `<div class="stub-actions-stack">${elalBookBtnHtml}</div>` : ''}
               </div>
             </div>
 
@@ -2037,12 +2139,14 @@
     });
 
     document.title = isHe
-      ? 'מתכנן חופשות משפחתיות חכם | משרד החינוך וכרטיסי בונוס אל על'
-      : 'Smart Family Vacation Planner | MoE Breaks & EL AL Award Flights';
+      ? 'breezyflights | מתכנן חופשות משפחתיות חכם וכרטיסי בונוס אל על'
+      : 'breezyflights | Smart Family Vacation & EL AL Award Planner';
 
-    const headerTitle = document.getElementById('header-title');
-    if (headerTitle) {
-      headerTitle.textContent = isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner';
+    const headerTitleLocal = document.getElementById('header-title-local');
+    if (headerTitleLocal) {
+      headerTitleLocal.textContent = isHe
+        ? 'מתכנן חופשות משפחתיות חכם'
+        : 'Smart Family Vacation Planner';
     }
     const headerSubtitle = document.getElementById('header-subtitle');
     if (headerSubtitle) {
@@ -2052,21 +2156,21 @@
     }
     const heroEyebrow = document.getElementById('hero-eyebrow');
     if (heroEyebrow) {
-      heroEyebrow.textContent = isHe
-        ? '✈️ המראות מנתב״ג (TLV) · תכנון חופשות שנה קדימה'
-        : '✈️ Departing TLV · Rolling 1-Year Vacation Planner';
+      heroEyebrow.innerHTML = isHe
+        ? '🏝️ <span class="hero-brand-inline" dir="ltr">breezyflights</span><span class="hero-eyebrow-short"> · חופשות חכמות</span><span class="hero-eyebrow-sub"> · תכנון חכם לחופשה המשפחתית הבאה</span>'
+        : '🏝️ <span class="hero-brand-inline" dir="ltr">breezyflights</span><span class="hero-eyebrow-short"> · Smart Escapes</span><span class="hero-eyebrow-sub"> · Smart Family Vacation Planning</span>';
     }
     const heroHeadline = document.getElementById('hero-headline');
     if (heroHeadline) {
       heroHeadline.textContent = isHe
-        ? 'הפכו כל חופשת בית ספר לחופשת חלומות משפחתית'
-        : 'Turn Every School Break Into a Family Escape';
+        ? 'הפכו כל חופשת בית ספר לחופשה משפחתית חלומית'
+        : 'Turn Every School Break Into a Dream Family Escape';
     }
     const heroLead = document.getElementById('hero-lead');
     if (heroLead) {
       heroLead.textContent = isHe
-        ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס באל על ובמועדון הנוסע המתמיד.'
-        : 'Cross-references official MoE school breaks & Nitzanim camps with EL AL Matmid award seat availability.';
+        ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס מנתב״ג לכל היעדים הפתוחים.'
+        : 'Smart cross-matching of official MoE school breaks, Nitzanim camps, and EL AL Matmid award seats from TLV across all open destinations.';
     }
     const vtTitle = document.getElementById('vacation-type-title');
     if (vtTitle) {
@@ -2101,12 +2205,11 @@
 
     updateActiveModeBadge();
     syncSearchFiltersSummary();
+    renderDestinationMultiSelect();
     setCalendarVisibility(state.isCalendarVisible, false);
     renderProfileControls();
     renderCalendarTable();
-    renderComparisonBanner();
     renderProposals();
-    renderStickyCompareBar();
   }
 
   function collectActiveFrameworksCsv() {
@@ -2235,15 +2338,11 @@
     state.calendarData = null;
     state.proposals = [];
     state.showAllProposals = false;
-    state.lastComparison = null;
-    state.selectedProposalIds = new Set();
 
     await scrubBrowserClientState();
     renderProfileControls();
     renderCalendarTable();
-    renderComparisonBanner();
     renderProposals();
-    renderStickyCompareBar();
     await refreshUpcomingHolidaysFromServer(false);
     await loadCalendarForSchoolYear();
     await runVacationSearch();
@@ -2261,16 +2360,12 @@
       state.validationErrorEn = null;
       state.proposals = [];
       state.showAllProposals = false;
-      state.lastComparison = null;
-      state.selectedProposalIds = new Set();
       state.saveFeedbackHe = '✓ הנתונים השמורים נמחקו מהחשבון.';
       state.saveFeedbackEn = '✓ Saved family data deleted from your account.';
       await scrubBrowserClientState();
       renderProfileControls();
       renderCalendarTable();
-      renderComparisonBanner();
       renderProposals();
-      renderStickyCompareBar();
       await refreshUpcomingHolidaysFromServer(false);
       await loadCalendarForSchoolYear();
       await runVacationSearch();
@@ -2328,12 +2423,10 @@
     state.validationErrorEn = null;
     state.proposals = [];
     state.showAllProposals = false;
-    state.lastComparison = null;
-    state.selectedProposalIds = new Set();
     state.profile = createCleanGuestProfile();
+    syncDestStateFromNativeSelect();
+    renderDestinationMultiSelect();
     renderProfileControls();
-    renderComparisonBanner();
-    renderStickyCompareBar();
     state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: state.userSelectedHoliday,
@@ -2437,14 +2530,14 @@
       await loadCalendarForSchoolYear(refIso);
       await runVacationSearch();
     } catch (err) {
-      renderStickyCompareBar();
       console.error('Initialization error:', err);
     }
   }
 
   async function runVacationSearch() {
+    const mySearchSeq = ++latestSearchSeq;
     syncProfileStateFromDom();
-    const destVal = (document.getElementById('select-destination') || {}).value || 'ANYWHERE';
+    const destCodes = getSelectedDestinationCodes();
     const selectHolidayEl = document.getElementById('select-direct-holiday');
     const holidayVal = (selectHolidayEl && selectHolidayEl.value) || 'HANUKKAH';
     const selectedHolidayOpt =
@@ -2505,7 +2598,7 @@
         matmid_points_balance: matmidBalanceVal,
         children: inlineChildren
       },
-      destination_iatas: [destVal],
+      destination_iatas: destCodes,
       direct_holiday_code: holidayVal,
       specific_departure_date: depVal,
       specific_return_date: retVal,
@@ -2525,46 +2618,24 @@
 
     try {
       const res = await apiSend('POST', '/api/v1/vacations/search', payload);
+      if (mySearchSeq !== latestSearchSeq) return;
       state.proposals = res.proposals || [];
       state.showAllProposals = false;
-      state.lastComparison = null;
       state.statusMessageHe = res.status_message_he || null;
       state.statusMessageEn = res.status_message_en || null;
       state.weatherFallbackMessageHe = res.weather_fallback_message_he || null;
-      state.selectedProposalIds = new Set();
     } catch (err) {
+      if (mySearchSeq !== latestSearchSeq) return;
       const detail = extractApiErrorDetail(err);
       const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
       const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
       state.proposals = [];
       state.showAllProposals = false;
-      state.lastComparison = null;
-      state.selectedProposalIds = new Set();
       state.validationErrorHe = `נא לוודא שטווח התאריכים ומספר הלילות בטופס החיפוש תקינים ולנסות שוב.${detailSuffixHe}`;
       state.validationErrorEn = `Verify that the return date is on or after the departure date and the nights range is valid, then try again.${detailSuffixEn}`;
     }
-    renderComparisonBanner();
     renderProposals();
-    renderStickyCompareBar();
     syncSearchFiltersSummary();
-  }
-
-  async function runCompareSelected() {
-    let ids = Array.from(state.selectedProposalIds || []);
-    if (ids.length < 2 && state.proposals && state.proposals.length >= 2) {
-      ids = state.proposals.slice(0, 2).map((p) => p.id);
-    }
-    if (ids.length === 0) return;
-    try {
-      state.lastComparison = await apiSend('POST', '/api/v1/vacations/compare', { proposal_ids: ids });
-      renderComparisonBanner();
-      const bannerEl = document.getElementById('comparison-banner-container');
-      if (bannerEl) {
-        bannerEl.scrollIntoView({ behavior: getScrollBehavior(), block: 'nearest' });
-      }
-    } catch (err) {
-      console.error('Comparison failed:', err);
-    }
   }
 
   function bindEvents() {
@@ -2573,6 +2644,50 @@
         setDateMode(btn.getAttribute('data-mode'));
       });
     });
+
+    const btnDestToggle = document.getElementById('btn-dest-picker-toggle');
+    if (btnDestToggle) {
+      btnDestToggle.addEventListener('click', () => {
+        setDestPickerOpen(!state.isDestPickerOpen);
+      });
+    }
+
+    const inputDestFilterEl = document.getElementById('input-dest-filter');
+    if (inputDestFilterEl) {
+      inputDestFilterEl.addEventListener('input', () => {
+        state.destFilterQuery = inputDestFilterEl.value || '';
+        renderDestinationMultiSelect();
+      });
+    }
+
+    const btnDestReset = document.getElementById('btn-dest-popover-reset');
+    if (btnDestReset) {
+      btnDestReset.addEventListener('click', () => {
+        state.selectedDestinations = [];
+        state.destFilterQuery = '';
+        if (inputDestFilterEl) inputDestFilterEl.value = '';
+        syncNativeSelectFromDestState();
+        renderDestinationMultiSelect();
+        runVacationSearch();
+      });
+    }
+
+    const btnDestDone = document.getElementById('btn-dest-popover-done');
+    if (btnDestDone) {
+      btnDestDone.addEventListener('click', () => {
+        setDestPickerOpen(false);
+        runVacationSearch();
+      });
+    }
+
+    const selectDestNative = document.getElementById('select-destination');
+    if (selectDestNative) {
+      selectDestNative.addEventListener('change', () => {
+        syncDestStateFromNativeSelect();
+        renderDestinationMultiSelect();
+        runVacationSearch();
+      });
+    }
 
     const selectHolidayEl = document.getElementById('select-direct-holiday');
     if (selectHolidayEl) {
@@ -2777,8 +2892,13 @@
     }
 
     document.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape' && state.isProfileSheetOpen) {
-        setProfileSheetOpen(false);
+      if (ev.key === 'Escape') {
+        if (state.isDestPickerOpen) {
+          setDestPickerOpen(false);
+        }
+        if (state.isProfileSheetOpen) {
+          setProfileSheetOpen(false);
+        }
       }
     });
 
@@ -2885,13 +3005,9 @@
           saved.passenger_loyalty_wallets = [];
           state.profile = saved;
           state.profileDirty = false;
-          state.lastComparison = null;
-          state.selectedProposalIds = new Set();
           state.saveFeedbackHe = '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
           state.saveFeedbackEn = '✓ Family profile saved to your account.';
           renderProfileControls();
-          renderComparisonBanner();
-          renderStickyCompareBar();
           await refreshUpcomingHolidaysFromServer(false);
           await loadCalendarForSchoolYear();
           await runVacationSearch();
@@ -2905,13 +3021,9 @@
           const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
           state.proposals = [];
           state.showAllProposals = false;
-          state.lastComparison = null;
-          state.selectedProposalIds = new Set();
           state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
           state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
-          renderComparisonBanner();
           renderProposals();
-          renderStickyCompareBar();
         }
       });
     }
@@ -2979,17 +3091,34 @@
         state.profile.children[idx].framework_type = val === '' ? null : val;
         state.profileDirty = true;
         refreshClientHolidaysOnProfileEdit();
-      } else if (target.hasAttribute('data-compare-id')) {
-        const pid = target.getAttribute('data-compare-id');
-        if (target.checked) state.selectedProposalIds.add(pid);
-        else state.selectedProposalIds.delete(pid);
-        renderStickyCompareBar();
       }
     });
 
     document.body.addEventListener('click', (ev) => {
       const target = ev.target;
       if (!target) return;
+      const destOptBtn = target.closest('[data-dest-option]');
+      if (destOptBtn) {
+        const optCode = destOptBtn.getAttribute('data-dest-option');
+        toggleDestinationSelection(optCode, true);
+        if (optCode === 'ANYWHERE') {
+          setDestPickerOpen(false);
+        }
+        return;
+      }
+      const removeDestBtn = target.closest('[data-remove-dest]');
+      if (removeDestBtn) {
+        toggleDestinationSelection(removeDestBtn.getAttribute('data-remove-dest'), true);
+        return;
+      }
+      const clearAllDestBtn = target.closest('#btn-dest-clear-all');
+      if (clearAllDestBtn) {
+        toggleDestinationSelection('ANYWHERE', true);
+        return;
+      }
+      if (state.isDestPickerOpen && !target.closest('#destination-multiselect')) {
+        setDestPickerOpen(false);
+      }
       const focusMatmidBtn = target.closest('[data-focus-matmid]');
       if (focusMatmidBtn) {
         setProfileSheetOpen(true, { focusMatmid: true });
@@ -3030,10 +3159,10 @@
     if (btnSyncElal) {
       btnSyncElal.addEventListener('click', async () => {
         try {
-          const destVal = (document.getElementById('select-destination') || {}).value || 'ANYWHERE';
+          const destCodes = getSelectedDestinationCodes();
           const refIso = getReferenceToday();
           await apiSend('POST', '/api/v1/elal-bonus/sync', {
-            destinations: [destVal],
+            destinations: destCodes,
             start_date: refIso,
             end_date: addDaysIso(refIso, 30),
             origin: 'TLV',
@@ -3043,33 +3172,6 @@
         } catch (err) {
           console.error('EL AL sync failed:', err);
         }
-      });
-    }
-
-    const btnCompare = document.getElementById('btn-compare-selected');
-    if (btnCompare) {
-      btnCompare.addEventListener('click', async () => {
-        await runCompareSelected();
-      });
-    }
-
-    const btnStickyCompareRun = document.getElementById('btn-sticky-compare-run');
-    if (btnStickyCompareRun) {
-      btnStickyCompareRun.addEventListener('click', async () => {
-        await runCompareSelected();
-      });
-    }
-
-    const btnStickyCompareClear = document.getElementById('btn-sticky-compare-clear');
-    if (btnStickyCompareClear) {
-      btnStickyCompareClear.addEventListener('click', () => {
-        state.selectedProposalIds = new Set();
-        state.lastComparison = null;
-        document.querySelectorAll('[data-compare-id]').forEach((cb) => {
-          cb.checked = false;
-        });
-        renderStickyCompareBar();
-        renderComparisonBanner();
       });
     }
 

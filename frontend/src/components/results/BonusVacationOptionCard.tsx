@@ -4,7 +4,7 @@
  * - Recommendation tier badge (`RECOMMENDED`, `ALTERNATIVE`, `BUDGET_STRETCH`)
  * - Mathematical score breakdown (`CTOS`, `HAS`, `FBVS`, `SAP`, `CCG`)
  * - Aggregate household traveler count & non-binding estimated cash fare (`~$`)
- * - Comparison selection checkbox & EL AL Google Flights booking handoff
+ * - Direct EL AL Google Flights booking handoff
  */
 
 export interface ProposalSummary {

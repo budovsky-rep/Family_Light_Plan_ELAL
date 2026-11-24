@@ -320,11 +320,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         top_ids = [p["id"] for p in body["proposals"][:3]]
         cmp_resp = client.post("/api/v1/vacations/compare", json={"proposal_ids": top_ids})
-        self.assertEqual(cmp_resp.status_code, 200)
-        cmp_body = cmp_resp.json()
-        for key in ("proposals", "comparison_rows", "best_by_ctos_id", "best_by_cash_savings_id", "best_by_minimal_absence_id"):
-            self.assertIn(key, cmp_body)
-        self.assertNotIn("best_by_per_id", cmp_body)
+        self.assertEqual(cmp_resp.status_code, 404)
 
         ics_resp = client.get(f"/api/v1/vacations/{top_ids[0]}/export.ics")
         self.assertEqual(ics_resp.status_code, 404)
@@ -938,10 +934,15 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             any(p["itinerary"]["utilizes_elal_bonus"] for p in inline_props)
         )
 
-        # Compare works seamlessly for ephemeral guest proposals while removed .ics route returns 404
+        # Ephemeral guest proposals resolve cleanly in memory while removed /compare and .ics routes return 404
         pids = [clean_props[0]["id"], inline_props[0]["id"]]
+        self.assertIsNotNone(
+            guest_client.router.planner_service.resolve_proposal_for_requester(
+                inline_props[0]["id"], requester_user_id=None, enforce_owner=True
+            )
+        )
         cmp_r = guest_client.post("/api/v1/vacations/compare", json={"proposal_ids": pids})
-        self.assertEqual(cmp_r.status_code, 200)
+        self.assertEqual(cmp_r.status_code, 404)
         ics_r = guest_client.get(f"/api/v1/vacations/{inline_props[0]['id']}/export.ics")
         self.assertEqual(ics_r.status_code, 404)
 
@@ -1856,11 +1857,18 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "/api/v1/vacations/compare",
             json={"proposal_ids": [s_body["proposals"][0]["id"], s_body["proposals"][1]["id"]]},
         )
-        self.assertEqual(cmp_resp.status_code, 200)
-        cmp_body = cmp_resp.json()
-        self.assertNotIn("best_by_per_id", cmp_body)
-        oop_row = next(r for r in cmp_body["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd")
-        self.assertTrue(all(str(v).startswith("~$") for v in oop_row["values"].values()))
+        self.assertEqual(cmp_resp.status_code, 404)
+        for removed_cmp_sel in (
+            "btn-compare-selected",
+            "sticky-compare-bar",
+            "comparison-banner-container",
+            "data-compare-id",
+            "compare-check-label",
+            "has-compare-bar",
+        ):
+            self.assertNotIn(removed_cmp_sel, html_text)
+            self.assertNotIn(removed_cmp_sel, js_text)
+            self.assertNotIn(removed_cmp_sel, css_text)
 
         # 3. Real Headless Chrome Multi-Viewport (390x844 Mobile & 1440x900 Desktop, he RTL & en LTR)
         chrome_bin = Path("/usr/bin/google-chrome")
@@ -2221,36 +2229,20 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(kb_check["dockDuringKb"], "none")
         self.assertNotEqual(kb_check["dockAfterKb"], "none")
 
-        # (d) Checking 2 `[data-compare-id]` checkboxes shows `#sticky-compare-bar` strictly above `#mobile-thumb-dock` without overlap
+        # (d) Verify all flight/proposal comparison controls, checkboxes, sticky bars, and banners are absent (`run10` R1)
         cmp_bar_check = _cdp_eval(
-            """(async () => {
-              const cbs = Array.from(document.querySelectorAll('[data-compare-id]')).slice(0, 2);
-              cbs.forEach((cb) => {
-                cb.checked = true;
-                cb.dispatchEvent(new Event('change', { bubbles: true }));
-              });
-              const bar = document.getElementById('sticky-compare-bar');
-              const dock = document.getElementById('mobile-thumb-dock');
-              const barR = bar.getBoundingClientRect();
-              const dockR = dock.getBoundingClientRect();
-              document.getElementById('btn-sticky-compare-run').click();
-              for (let i = 0; i < 60; i++) {
-                await new Promise((r) => setTimeout(r, 30));
-                if (document.querySelectorAll('.comparison-col-card').length >= 2) break;
-              }
-              const cmpCards = document.querySelectorAll('.comparison-col-card').length;
-              document.getElementById('btn-sticky-compare-clear').click();
+            """(() => {
+              const cmpMatches = document.querySelectorAll(
+                '#btn-compare-selected, #sticky-compare-bar, #comparison-banner-container, [data-compare-id], .compare-check-label, .comparison-col-card'
+              ).length;
               return {
-                barDisplay: barR.height > 0,
-                barBottom: barR.bottom,
-                dockTop: dockR.top,
-                cmpCards
+                cmpMatches,
+                hasCompareBody: document.body.classList.contains('has-compare-bar')
               };
             })()"""
         )
-        self.assertTrue(cmp_bar_check["barDisplay"])
-        self.assertLessEqual(cmp_bar_check["barBottom"], cmp_bar_check["dockTop"] - 4)
-        self.assertGreaterEqual(cmp_bar_check["cmpCards"], 2)
+        self.assertEqual(cmp_bar_check["cmpMatches"], 0)
+        self.assertFalse(cmp_bar_check["hasCompareBody"])
 
         # (e) Tapping `#btn-mobile-dock-calendar` opens `#zone-calendar` in <768px card-stack layout without overflow
         mob_cal = _cdp_eval(
@@ -2272,14 +2264,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(mob_cal["tblDisplay"], "block")
         self.assertLessEqual(mob_cal["scrollWidth"], mob_cal["clientWidth"])
 
-        # (f) Opening `#zone-profile` sheet at <1180px (`390x844`) with 2 cards checked, then resizing to 1440x900 (`>=1180px`) unlocks body & restores `#sticky-compare-bar`
+        # (f) Opening `#zone-profile` sheet at <1180px (`390x844`), then resizing to 1440x900 (`>=1180px`) unlocks body cleanly
         resize_pre = _cdp_eval(
             """(() => {
-              const cbs = Array.from(document.querySelectorAll('[data-compare-id]')).slice(0, 2);
-              cbs.forEach((cb) => {
-                cb.checked = true;
-                cb.dispatchEvent(new Event('change', { bubbles: true }));
-              });
               document.querySelector('[data-dock-zone="zone-profile"]').click();
               return {
                 bodyLockedBefore: document.body.classList.contains('is-sheet-locked'),
@@ -2300,16 +2287,13 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         resize_post = _cdp_eval(
             """(async () => {
               await new Promise((r) => setTimeout(r, 60));
-              const out = {
+              return {
                 bodyLockedAfter: document.body.classList.contains('is-sheet-locked'),
                 sheetOpenAfter: document.getElementById('zone-profile').classList.contains('is-sheet-open'),
                 dockProfActiveAfter: document.querySelector('[data-dock-zone="zone-profile"]').classList.contains('active'),
                 hhAriaExpandedAfter: document.getElementById('btn-header-household').getAttribute('aria-expanded'),
-                bodyOverflowAfter: getComputedStyle(document.body).overflow,
-                compareBarDisplayAfter: getComputedStyle(document.getElementById('sticky-compare-bar')).display
+                bodyOverflowAfter: getComputedStyle(document.body).overflow
               };
-              document.getElementById('btn-sticky-compare-clear').click();
-              return out;
             })()"""
         )
         self.assertFalse(resize_post["bodyLockedAfter"])
@@ -2317,7 +2301,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertFalse(resize_post["dockProfActiveAfter"])
         self.assertEqual(resize_post["hhAriaExpandedAfter"], "false")
         self.assertNotEqual(resize_post["bodyOverflowAfter"], "hidden")
-        self.assertEqual(resize_post["compareBarDisplayAfter"], "flex")
 
         for target_dir in ("rtl", "ltr"):
             if target_dir == "ltr":
@@ -2362,7 +2345,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertTrue(desk["calBtnActiveWhenOpen"])
             self.assertFalse(desk["calBtnActiveAfterClose"])
 
-        # 5. Signed-in `#btn-save-profile` HTTP 422 error clears `#sticky-compare-bar`, `body.has-compare-bar`, and `#btn-compare-selected` `(2)` badge
+        # 5. Signed-in `#btn-save-profile` HTTP 422 error clears proposals and renders validation banner cleanly
         active_browser_client = client
         _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
         for _ in range(80):
@@ -2373,17 +2356,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         save_err_check = _cdp_eval(
             """(async () => {
-              const cbs = Array.from(document.querySelectorAll('[data-compare-id]')).slice(0, 2);
-              cbs.forEach((cb) => {
-                cb.checked = true;
-                cb.dispatchEvent(new Event('change', { bubbles: true }));
-              });
-              const bar = document.getElementById('sticky-compare-bar');
-              const topCompareBtn = document.getElementById('btn-compare-selected');
-              const barDisplayBefore = getComputedStyle(bar).display;
-              const hasCompareBodyBefore = document.body.classList.contains('has-compare-bar');
-              const topBtnBefore = topCompareBtn.textContent;
-
               const adultsEl = document.getElementById('prof-adults-count');
               adultsEl.value = '99';
               adultsEl.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2394,29 +2366,498 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 if (document.querySelector('.status-banner-card')) break;
               }
               return {
-                barDisplayBefore,
-                hasCompareBodyBefore,
-                topBtnBefore,
                 proposalsCountAfter: document.querySelectorAll('.proposal-card').length,
                 hasErrorBanner: Boolean(document.querySelector('.status-banner-card')),
-                barDisplayAfter: getComputedStyle(bar).display,
-                barHiddenAfter: bar.hasAttribute('hidden'),
                 hasCompareBodyAfter: document.body.classList.contains('has-compare-bar'),
-                topBtnAfter: topCompareBtn.textContent,
                 jsErrors: window.__fvpJsErrors
               };
             })()"""
         )
         self.assertEqual(save_err_check["jsErrors"], [])
-        self.assertEqual(save_err_check["barDisplayBefore"], "flex")
-        self.assertTrue(save_err_check["hasCompareBodyBefore"])
-        self.assertIn("(2)", save_err_check["topBtnBefore"])
         self.assertEqual(save_err_check["proposalsCountAfter"], 0)
         self.assertTrue(save_err_check["hasErrorBanner"])
-        self.assertEqual(save_err_check["barDisplayAfter"], "none")
-        self.assertTrue(save_err_check["barHiddenAfter"])
         self.assertFalse(save_err_check["hasCompareBodyAfter"])
-        self.assertNotIn("(2)", save_err_check["topBtnAfter"])
+
+    def test_scenario_23_run10_r1_r2_r3_r4_comprehensive_e2e(self) -> None:
+        """Scenario 23 (Run 10 R1–R4): Comparison removal, UI+API multi-select destinations, scoped Thailand breezyflights branding & 3-surface disclaimers."""
+        import base64 as _b64
+        import re as _re
+        import shutil as _shutil
+        import signal as _signal
+        import socket
+        import struct as _struct
+        import subprocess
+        import time
+        import urllib.parse as _urlparse
+        import urllib.request
+
+        db_path, _repo, authed_client = self.create_authenticated_client_env("scen23@gmail.com")
+        guest_client = self.get_client(db_path)
+
+        # R1: Backend comparison endpoint rejected with 404
+        self.assertEqual(
+            guest_client.post("/api/v1/vacations/compare", json={"proposal_ids": ["x"]}).status_code,
+            404,
+        )
+
+        # R4: Local sign-in HTML page (`GET /api/v1/auth/test-oauth-authorize`) in he & en
+        old_tm = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
+        old_lf = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+
+        def _restore_auth_env() -> None:
+            if old_tm is None:
+                os.environ.pop("VACATION_PLANNER_AUTH_TEST_MODE", None)
+            else:
+                os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = old_tm
+            if old_lf is None:
+                os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            else:
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_lf
+
+        self.addCleanup(_restore_auth_env)
+
+        oauth_he_client = self.get_client(db_path)
+        oauth_en_client = self.get_client(db_path)
+        oauth_he_login = oauth_he_client.get("/api/v1/auth/google/login?lang=he")
+        oauth_en_login = oauth_en_client.get("/api/v1/auth/google/login?lang=en")
+        self.assertEqual(oauth_he_login.status_code, 302)
+        self.assertEqual(oauth_en_login.status_code, 302)
+        oauth_he_page = oauth_he_client.get(oauth_he_login.headers["Location"])
+        oauth_en_page = oauth_en_client.get(oauth_en_login.headers["Location"])
+        self.assertEqual(oauth_he_page.status_code, 200)
+        self.assertEqual(oauth_en_page.status_code, 200)
+        self.assertIn("אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על", oauth_he_page.text)
+        self.assertIn("not affiliated with", oauth_en_page.text)
+
+        chrome_bin = Path("/usr/bin/google-chrome")
+        if not chrome_bin.exists():
+            return
+
+        chrome_tmp = tempfile.TemporaryDirectory(
+            prefix="tier4_scen23_chrome_", ignore_cleanup_errors=True
+        )
+        self.addCleanup(lambda: _shutil.rmtree(chrome_tmp.name, ignore_errors=True))
+        self.addCleanup(chrome_tmp.cleanup)
+
+        html_text = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        css_text = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        js_text = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+
+        inlined_html = _re.sub(
+            r'<link[^>]+(?:fonts\.googleapis\.com|fonts\.gstatic\.com|manifest\.webmanifest)[^>]*>',
+            "",
+            html_text,
+        )
+        inlined_html = _re.sub(r"<noscript>.*?</noscript>", "", inlined_html, flags=_re.S)
+        inlined_html = inlined_html.replace(
+            '<link rel="stylesheet" href="/src/styles/app.css" />',
+            f"<style>{css_text}</style>",
+        )
+        inlined_html = _re.sub(
+            r'<script[^>]+src="/src/app\.js"[^>]*></script>', "", inlined_html
+        )
+        bridge_preamble = """<script>
+(function() {
+  window.__FVP_REFERENCE_DATE__ = '2026-11-19';
+  window.__fvpJsErrors = [];
+  window.__fvpSearchRequests = [];
+  window.addEventListener('error', function(e) { window.__fvpJsErrors.push(String(e.message || e)); });
+  window.addEventListener('unhandledrejection', function(e) { window.__fvpJsErrors.push(String(e.reason || e)); });
+  const _ss = {};
+  const _ls = {};
+  function _mkStore(backing) {
+    return {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(backing, k) ? backing[k] : null; },
+      setItem(k, v) { backing[String(k)] = String(v); },
+      removeItem(k) { delete backing[String(k)]; },
+      clear() { Object.keys(backing).forEach((k) => delete backing[k]); },
+      get length() { return Object.keys(backing).length; }
+    };
+  }
+  Object.defineProperty(window, 'sessionStorage', { value: _mkStore(_ss), configurable: true });
+  Object.defineProperty(window, 'localStorage', { value: _mkStore(_ls), configurable: true });
+  let _reqSeq = 0;
+  const _pending = new Map();
+  window.__fvpResolveFetch = function(id, status, headersObj, bodyText) {
+    const p = _pending.get(id);
+    if (!p) return;
+    _pending.delete(id);
+    p.resolve(new Response(bodyText, { status: status, headers: headersObj || {} }));
+  };
+  window.fetch = function(input, init) {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    if (urlStr.endsWith('/sw.js')) {
+      return Promise.resolve(new Response('', { status: 200, headers: { 'Content-Type': 'application/javascript' } }));
+    }
+    const opts = init || {};
+    if (urlStr.includes('/api/v1/vacations/search') && opts.body) {
+      try { window.__fvpSearchRequests.push(JSON.parse(opts.body)); } catch (_e) {}
+    }
+    const id = ++_reqSeq;
+    return new Promise((resolve, reject) => {
+      _pending.set(id, { resolve, reject });
+      window.__fvpHostFetch(JSON.stringify({
+        id: id,
+        method: opts.method || 'GET',
+        url: urlStr,
+        headers: opts.headers || {},
+        body: opts.body || null
+      }));
+    });
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register = function() { return Promise.resolve({}); };
+  }
+})();
+</script>"""
+        mounted_doc = inlined_html.replace("<head>", "<head>" + bridge_preamble, 1).replace(
+            "</body>", f"<script>{js_text}</script></body>", 1
+        )
+
+        active_browser_client = guest_client
+        proc_c = subprocess.Popen(
+            [
+                str(chrome_bin),
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={chrome_tmp.name}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        def _kill_chrome() -> None:
+            try:
+                os.killpg(proc_c.pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc_c.wait(timeout=3.0)
+            except Exception:
+                pass
+
+        self.addCleanup(_kill_chrome)
+
+        active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
+        deadline = time.time() + 12.0
+        while time.time() < deadline and not active_port_file.exists():
+            time.sleep(0.05)
+        self.assertTrue(active_port_file.exists())
+        cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5.0) as r_list:
+            targets = json.loads(r_list.read().decode("utf-8"))
+        page_target = next(t for t in targets if t.get("type") == "page")
+        ws_parsed = _urlparse.urlsplit(page_target["webSocketDebuggerUrl"])
+
+        sock = socket.create_connection(("127.0.0.1", cdp_port), timeout=10.0)
+        self.addCleanup(sock.close)
+        ws_key = _b64.b64encode(os.urandom(16)).decode("ascii")
+        sock.sendall(
+            (
+                f"GET {ws_parsed.path} HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{cdp_port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {ws_key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("ascii")
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        ws_leftover = bytearray(buf[buf.index(b"\r\n\r\n") + 4 :])
+
+        def _ws_send_json(obj: dict[str, Any]) -> None:
+            raw_b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            mask = os.urandom(4)
+            ln = len(raw_b)
+            if ln < 126:
+                hdr = bytes([0x81, 0x80 | ln]) + mask
+            elif ln < 65536:
+                hdr = bytes([0x81, 0x80 | 126]) + _struct.pack("!H", ln) + mask
+            else:
+                hdr = bytes([0x81, 0x80 | 127]) + _struct.pack("!Q", ln) + mask
+            sock.sendall(hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(raw_b)))
+
+        def _ws_recv_exact(n: int) -> bytes:
+            while len(ws_leftover) < n:
+                more = sock.recv(65536)
+                if not more:
+                    raise EOFError("CDP WebSocket closed unexpectedly")
+                ws_leftover.extend(more)
+            out_b = bytes(ws_leftover[:n])
+            del ws_leftover[:n]
+            return out_b
+
+        def _ws_recv_msg() -> dict[str, Any]:
+            fragments: list[bytes] = []
+            while True:
+                b0, b1 = _ws_recv_exact(2)
+                fin = bool(b0 & 0x80)
+                opcode = b0 & 0x0F
+                masked_flag = bool(b1 & 0x80)
+                ln = b1 & 0x7F
+                if ln == 126:
+                    ln = _struct.unpack("!H", _ws_recv_exact(2))[0]
+                elif ln == 127:
+                    ln = _struct.unpack("!Q", _ws_recv_exact(8))[0]
+                mkey = _ws_recv_exact(4) if masked_flag else b""
+                payload_b = _ws_recv_exact(ln)
+                if masked_flag:
+                    payload_b = bytes(b ^ mkey[i % 4] for i, b in enumerate(payload_b))
+                if opcode == 0x9:
+                    mask_p = os.urandom(4)
+                    sock.sendall(
+                        bytes([0x8A, 0x80 | len(payload_b)])
+                        + mask_p
+                        + bytes(b ^ mask_p[i % 4] for i, b in enumerate(payload_b))
+                    )
+                    continue
+                fragments.append(payload_b)
+                if fin:
+                    return json.loads(b"".join(fragments).decode("utf-8"))
+
+        msg_counter = 0
+
+        def _handle_binding_event(ev_msg: dict[str, Any]) -> None:
+            if (
+                ev_msg.get("method") == "Runtime.bindingCalled"
+                and ev_msg.get("params", {}).get("name") == "__fvpHostFetch"
+            ):
+                req_info = json.loads(ev_msg["params"]["payload"])
+                parsed_u = _urlparse.urlsplit(req_info["url"])
+                path_qs = parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")
+                j_body = json.loads(req_info["body"]) if req_info.get("body") else None
+                resp_obj = active_browser_client.request(
+                    req_info["method"],
+                    path_qs,
+                    json_body=j_body,
+                    headers=req_info.get("headers") or {},
+                )
+                nonlocal msg_counter
+                msg_counter += 1
+                expr = (
+                    f"window.__fvpResolveFetch({int(req_info['id'])}, "
+                    f"{int(resp_obj.status_code)}, {json.dumps(dict(resp_obj.headers))}, {json.dumps(resp_obj.text)});"
+                )
+                _ws_send_json({"id": msg_counter, "method": "Runtime.evaluate", "params": {"expression": expr}})
+
+        def _cdp_call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            nonlocal msg_counter
+            msg_counter += 1
+            target_id = msg_counter
+            _ws_send_json({"id": target_id, "method": method, "params": params or {}})
+            while True:
+                incoming = _ws_recv_msg()
+                if "method" in incoming:
+                    _handle_binding_event(incoming)
+                    continue
+                if incoming.get("id") == target_id:
+                    return incoming
+
+        def _cdp_eval(js_expr: str) -> Any:
+            res = _cdp_call(
+                "Runtime.evaluate",
+                {"expression": js_expr, "awaitPromise": True, "returnByValue": True},
+            )
+            inner = res.get("result", {})
+            if "exceptionDetails" in inner:
+                raise AssertionError(f"CDP JS exception: {inner['exceptionDetails']}")
+            return inner.get("result", {}).get("value")
+
+        _cdp_call("Page.enable")
+        _cdp_call("Runtime.enable")
+        _cdp_call("Runtime.addBinding", {"name": "__fvpHostFetch"})
+        frame_id = _cdp_call("Page.getFrameTree")["result"]["frameTree"]["frame"]["id"]
+
+        # 1. Desktop 1440x900: Verify R3 branding + unchanged below-hero surface colors, R4 disclaimers, and R2 multi-select UI
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False},
+        )
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 2), 30))"
+            ):
+                break
+
+        desk_audit = _cdp_eval(
+            """(() => {
+              const rootStyle = getComputedStyle(document.documentElement);
+              const hdrWordmark = document.querySelector('#app-header #header-title .brand-wordmark');
+              const heroBrand = document.querySelector('#vacation-hero #hero-eyebrow .hero-brand-inline');
+              const heroSvg = document.querySelector('#vacation-hero svg.hero-scenic-svg');
+              const footerDisc = document.getElementById('footer-elal-disclaimer');
+              const guestDisc = document.getElementById('profile-signin-disclaimer');
+              const userDisc = document.getElementById('profile-user-disclaimer');
+              return {
+                jsErrors: window.__fvpJsErrors,
+                hdrWordmarkTxt: hdrWordmark ? hdrWordmark.textContent.trim() : '',
+                hdrWordmarkVisible: Boolean(hdrWordmark && hdrWordmark.getBoundingClientRect().width > 0),
+                heroBrandTxt: heroBrand ? heroBrand.textContent.trim() : '',
+                heroSvgVisible: Boolean(heroSvg && heroSvg.getBoundingClientRect().height > 100),
+                thaiOnRoot: rootStyle.getPropertyValue('--thai-abyss-teal').trim(),
+                canvasToken: rootStyle.getPropertyValue('--canvas-limestone').trim(),
+                surfaceToken: rootStyle.getPropertyValue('--surface-boarding').trim(),
+                azureToken: rootStyle.getPropertyValue('--azure-elal').trim(),
+                bodyBg: getComputedStyle(document.body).backgroundColor,
+                bodyColor: getComputedStyle(document.body).color,
+                searchBg: getComputedStyle(document.getElementById('zone-search')).backgroundColor,
+                profileBg: getComputedStyle(document.getElementById('zone-profile')).backgroundColor,
+                resultsBg: getComputedStyle(document.getElementById('zone-results')).backgroundColor,
+                hhBarBg: getComputedStyle(document.getElementById('household-summary-bar')).backgroundColor,
+                modeTabsBg: getComputedStyle(document.querySelector('.mode-tabs')).backgroundColor,
+                authCardBg: getComputedStyle(document.getElementById('profile-auth-card')).backgroundColor,
+                proposalBg: getComputedStyle(document.querySelector('.proposal-card')).backgroundColor,
+                stubBg: getComputedStyle(document.querySelector('.proposal-pass-stub')).backgroundColor,
+                footerBg: getComputedStyle(document.getElementById('site-footer')).backgroundColor,
+                footerDiscVisible: Boolean(footerDisc && footerDisc.getBoundingClientRect().height > 0),
+                footerDiscTxt: footerDisc ? footerDisc.textContent.trim() : '',
+                guestDiscVisible: Boolean(guestDisc && guestDisc.getBoundingClientRect().height > 0),
+                userDiscHidden: Boolean(userDisc && userDisc.getBoundingClientRect().height === 0)
+              };
+            })()"""
+        )
+        self.assertEqual(desk_audit["jsErrors"], [])
+        self.assertEqual(desk_audit["hdrWordmarkTxt"], "breezyflights")
+        self.assertTrue(desk_audit["hdrWordmarkVisible"])
+        self.assertEqual(desk_audit["heroBrandTxt"], "breezyflights")
+        self.assertTrue(desk_audit["heroSvgVisible"])
+        self.assertEqual(desk_audit["thaiOnRoot"], "")
+        self.assertEqual(desk_audit["canvasToken"], "#F2F5F9")
+        self.assertEqual(desk_audit["surfaceToken"], "#FFFFFF")
+        self.assertEqual(desk_audit["azureToken"], "#1452A6")
+        self.assertEqual(desk_audit["bodyBg"], "rgb(242, 245, 249)")
+        self.assertEqual(desk_audit["bodyColor"], "rgb(11, 31, 58)")
+        for surface_key in ("searchBg", "profileBg", "resultsBg", "hhBarBg", "proposalBg", "footerBg"):
+            self.assertEqual(desk_audit[surface_key], "rgb(255, 255, 255)")
+        self.assertEqual(desk_audit["modeTabsBg"], "rgb(232, 238, 246)")
+        self.assertEqual(desk_audit["stubBg"], "rgb(232, 238, 246)")
+        self.assertEqual(desk_audit["authCardBg"], "rgb(234, 241, 251)")
+        self.assertTrue(desk_audit["footerDiscVisible"])
+        self.assertIn("אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על", desk_audit["footerDiscTxt"])
+        self.assertTrue(desk_audit["guestDiscVisible"])
+        self.assertTrue(desk_audit["userDiscHidden"])
+
+        # R2 UI Multi-Select: Select ROM + ATH + BKK, verify request & strictly filtered results, then reset to ANYWHERE
+        ms_flow = _cdp_eval(
+            """(async () => {
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ROM"]').click();
+              document.querySelector('[data-dest-option="ATH"]').click();
+              document.querySelector('[data-dest-option="BKK"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+              for (let i = 0; i < 60; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                const routes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
+                if (routes.length > 0 && routes.every((rt) => rt.includes('FCO') || rt.includes('ATH') || rt.includes('BKK'))) break;
+              }
+              const subsetReq = window.__fvpSearchRequests[window.__fvpSearchRequests.length - 1];
+              const subsetChips = Array.from(document.querySelectorAll('.dest-chip[data-remove-dest]')).map((el) => el.getAttribute('data-remove-dest'));
+              const subsetRoutes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
+
+              document.getElementById('btn-dest-clear-all').click();
+              for (let i = 0; i < 60; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                const lastReq = window.__fvpSearchRequests[window.__fvpSearchRequests.length - 1];
+                const routes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
+                if (lastReq && lastReq.destination_iatas[0] === 'ANYWHERE' && routes.some((rt) => !rt.includes('FCO') && !rt.includes('ATH') && !rt.includes('BKK'))) break;
+              }
+              const resetReq = window.__fvpSearchRequests[window.__fvpSearchRequests.length - 1];
+              const resetRoutes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
+              return { subsetReq, subsetChips, subsetRoutes, resetReq, resetRoutes };
+            })()"""
+        )
+        self.assertEqual(ms_flow["subsetChips"], ["ROM", "ATH", "BKK"])
+        self.assertEqual(ms_flow["subsetReq"]["destination_iatas"], ["ROM", "ATH", "BKK"])
+        self.assertGreater(len(ms_flow["subsetRoutes"]), 0)
+        self.assertTrue(
+            all(any(code in rt for code in ("FCO", "ATH", "BKK")) for rt in ms_flow["subsetRoutes"])
+        )
+        self.assertEqual(ms_flow["resetReq"]["destination_iatas"], ["ANYWHERE"])
+        self.assertGreater(len(set(ms_flow["resetRoutes"])), 2)
+
+        # Toggle locale to English (`ltr`) and verify `breezyflights` wordmark survives intact and disclaimers localize
+        en_check = _cdp_eval(
+            """(() => {
+              document.getElementById('btn-toggle-locale').click();
+              return {
+                dir: document.documentElement.dir,
+                hdrWordmark: document.querySelector('#app-header #header-title .brand-wordmark').textContent.trim(),
+                footerDiscEn: document.getElementById('footer-elal-disclaimer').textContent.trim(),
+                guestDiscEn: document.getElementById('profile-signin-disclaimer').textContent.trim()
+              };
+            })()"""
+        )
+        self.assertEqual(en_check["dir"], "ltr")
+        self.assertEqual(en_check["hdrWordmark"], "breezyflights")
+        self.assertIn("not affiliated with", en_check["footerDiscEn"])
+        self.assertIn("not affiliated with", en_check["guestDiscEn"])
+
+        # 2. Signed-in 360x800 mobile header non-overlap + signed-in profile sheet disclaimer
+        active_browser_client = authed_client
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 360, "height": 800, "deviceScaleFactor": 2, "mobile": True},
+        )
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(!document.getElementById('btn-header-signout').hasAttribute('hidden') && document.querySelectorAll('.proposal-card').length >= 1), 30))"
+            ):
+                break
+        mob_360 = _cdp_eval(
+            """(() => {
+              const doc = document.documentElement;
+              const hdr = document.getElementById('app-header').getBoundingClientRect();
+              const brand = document.getElementById('header-brand').getBoundingClientRect();
+              const pills = document.querySelector('.header-summary-pills').getBoundingClientRect();
+              const overlap = !(brand.right <= pills.left + 1 || pills.right <= brand.left + 1);
+              document.getElementById('btn-header-household').click();
+              const userDisc = document.getElementById('profile-user-disclaimer');
+              const userDiscH = userDisc ? userDisc.getBoundingClientRect().height : 0;
+              document.getElementById('btn-close-profile-sheet').click();
+              return {
+                scrollW: doc.scrollWidth,
+                clientW: doc.clientWidth,
+                headerH: hdr.height,
+                overlap,
+                userDiscH
+              };
+            })()"""
+        )
+        self.assertLessEqual(mob_360["scrollW"], mob_360["clientW"])
+        self.assertLessEqual(mob_360["headerH"], 68)
+        self.assertFalse(mob_360["overlap"])
+        self.assertGreater(mob_360["userDiscH"], 0)
+
+        # 3. Render local sign-in page HTML in Chrome (`he` & `en`) and confirm visible disclaimer
+        for oauth_html in (oauth_he_page.text, oauth_en_page.text):
+            _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": oauth_html})
+            ls_vis = _cdp_eval(
+                """(() => {
+                  const el = document.getElementById('local-signin-disclaimer');
+                  return Boolean(el && el.getBoundingClientRect().height > 0);
+                })()"""
+            )
+            self.assertTrue(ls_vis)
 
 
 if __name__ == "__main__":

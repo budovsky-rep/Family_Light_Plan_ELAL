@@ -5,8 +5,9 @@
  *   1. `SPECIFIC_DATES` (תאריכים ספציפיים)
  *   2. `HOLIDAY_DIRECT_INTENT` (תכנון לפי חג/חופשה ספציפיים ושנה — לדוגמה פסח 2027)
  * - 2 Airline Selection Modes:
- *   1. `EL_AL_ONLY` (התמקדות באל על + חיפוש כרטיסי בונוס ב-rbddataclients)
+ *   1. `EL_AL_ONLY` (התמקדות באל על + חיפוש כרטיסי בונוס)
  *   2. `ALL_AIRLINES` (כל חברות התעופה + נרמול עלויות כבודה משפחתית)
+ * - Multi-select destination pre-filtering (`destination_iatas`) with `ANYWHERE` default
  */
 
 import type {
@@ -39,3 +40,13 @@ export const DIRECT_HOLIDAY_LABELS_HE: Record<DirectHolidayCode, string> = {
   SUMMER_JULY: 'החופש הגדול — יולי',
   SUMMER_AUGUST: 'החופש הגדול — אוגוסט',
 };
+
+export function normalizeDestinationSelection(selectedCodes: string[]): string[] {
+  const cleaned = selectedCodes
+    .map((code) => code.trim().toUpperCase())
+    .filter((code) => code.length > 0);
+  if (cleaned.length === 0 || cleaned.includes('ANYWHERE') || cleaned.includes('ALL')) {
+    return ['ANYWHERE'];
+  }
+  return Array.from(new Set(cleaned));
+}

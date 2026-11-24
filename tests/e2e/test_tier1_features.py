@@ -50,7 +50,6 @@ from backend.app.schemas.domain import (
     MoEVacationWindow,
     MoEFrameworkType,
     PassengerLoyaltyWallet,
-    VacationComparisonMatrix,
     VacationOptionProposal,
     classify_passenger_type,
     suggest_framework_for_age,
@@ -3146,54 +3145,81 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
             expected = 0.55 * p.holiday_alignment_score + 0.45 * p.flight_bonus_value_score
             self.assertAlmostEqual(p.combined_trip_optimization_score, expected, delta=0.3)
 
-    def test_f28_2_compare_proposals_returns_comparison_matrix_and_best_ids(
+    def test_f28_2_compare_proposals_removed_from_service_api_and_frontend(
+        self,
+    ) -> None:
+        import backend.app.schemas.domain as domain_mod
+
+        planner = self.get_planner()
+        self.assertFalse(hasattr(planner, "compare_proposals"))
+        self.assertFalse(hasattr(domain_mod, "VacationComparisonMatrix"))
+
+        client = self.get_client()
+        proposals = planner.search_vacations(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "destination_iatas": ["FCO", "ATH"],
+            }
+        )
+        ids = [p.id for p in proposals[:2]]
+        self.assertEqual(
+            client.post("/api/v1/vacations/compare", json={"proposal_ids": ids}).status_code,
+            404,
+        )
+        for rel_ui in ("index.html", "src/app.js", "src/styles/app.css"):
+            ui_txt = (PROJECT_ROOT / "frontend" / rel_ui).read_text("utf-8")
+            for removed_cmp_tok in (
+                "btn-compare-selected",
+                "sticky-compare-bar",
+                "comparison-banner-container",
+                "data-compare-id",
+                "compare-check-label",
+                "/api/v1/vacations/compare",
+            ):
+                self.assertNotIn(removed_cmp_tok, ui_txt)
+
+    def test_f28_3_multi_select_destination_filtering_and_11plus_offline_cities(
         self,
     ) -> None:
         planner = self.get_planner()
-        proposals = planner.search_vacations(
+        subset_props = planner.search_vacations(
             {
                 "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
                 "airline_selection_mode": "EL_AL_ONLY",
                 "direct_holiday_code": "PESACH",
                 "direct_target_year": 2027,
-                "destination_iatas": ["FCO", "ATH"],
+                "destinations": ["ROM", "ATH"],
             }
         )
-        ids = [p.id for p in proposals[:3]]
-        cmp_res = _as_dict(planner.compare_proposals(ids))
-        self.assertEqual(len(cmp_res["proposals"]), len(ids))
-        self.assertGreater(len(cmp_res["comparison_rows"]), 0)
-        self.assertNotIn("best_by_per_id", cmp_res)
-        for key in (
-            "best_by_ctos_id",
-            "best_by_cash_savings_id",
-            "best_by_minimal_absence_id",
-        ):
-            self.assertIn(cmp_res[key], ids)
-        oop_row = next(
-            r for r in cmp_res["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd"
-        )
-        self.assertIn("הערכת תשלום במזומן", oop_row["label_he"])
+        self.assertGreater(len(subset_props), 0)
+        for p in subset_props:
+            assert p.itinerary is not None
+            self.assertIn(p.itinerary.destination_iata, {"FCO", "ATH"})
+            self.assertIn(
+                p.itinerary.return_origin_iata or p.itinerary.destination_iata,
+                {"FCO", "ATH"},
+            )
 
-    def test_f28_3_compare_proposals_winner_selection_correctness(self) -> None:
-        planner = self.get_planner()
-        proposals = planner.search_vacations(
+        eleven_non_flagship = [
+            "BCN", "AMS", "BER", "MUC", "FRA", "GVA",
+            "LIS", "NCE", "OTP", "SOF", "WAW",
+        ]
+        many_props = planner.search_vacations(
             {
                 "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
                 "airline_selection_mode": "EL_AL_ONLY",
                 "direct_holiday_code": "PESACH",
                 "direct_target_year": 2027,
-                "destination_iatas": ["FCO", "ATH"],
+                "destination_iatas": eleven_non_flagship,
             }
         )
-        top = proposals[:3]
-        ids = [p.id for p in top]
-        cmp_res = _as_dict(planner.compare_proposals(ids))
-        best_ctos = max(top, key=lambda p: p.combined_trip_optimization_score)
-        self.assertAlmostEqual(
-            next(p for p in top if p.id == cmp_res["best_by_ctos_id"]).combined_trip_optimization_score,
-            best_ctos.combined_trip_optimization_score,
-        )
+        self.assertGreater(len(many_props), 0)
+        for p in many_props:
+            assert p.itinerary is not None
+            self.assertIn(p.itinerary.destination_iata, set(eleven_non_flagship))
 
     def test_f28_4_cash_pricing_presented_as_non_binding_estimate_in_summary_and_comparison(
         self,
@@ -3214,11 +3240,7 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
             self.assertIn("לא מחייב", p.explanation_summary_he)
             assert p.itinerary is not None
             self.assertTrue(p.itinerary.to_dict()["is_cash_price_estimate"])
-        cmp_res = _as_dict(planner.compare_proposals([proposals[0].id, proposals[1].id]))
-        oop_row = next(
-            r for r in cmp_res["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd"
-        )
-        self.assertTrue(all(str(v).startswith("~$") for v in oop_row["values"].values()))
+        self.assertFalse(hasattr(planner, "compare_proposals"))
 
     def test_f28_5_ics_export_removed_from_planner_service_and_rest_api(self) -> None:
         planner = self.get_planner()
@@ -3328,8 +3350,7 @@ class TestTier1F29RestApiEndpoints(Tier1BaseTestCase):
         pids = [p["id"] for p in props[:2]]
 
         c_resp = client.post("/api/v1/vacations/compare", json={"proposal_ids": pids})
-        self.assertEqual(c_resp.status_code, 200)
-        self.assertIn(c_resp.json()["best_by_ctos_id"], pids)
+        self.assertEqual(c_resp.status_code, 404)
 
         i_resp = client.get(f"/api/v1/vacations/{pids[0]}/export.ics")
         self.assertEqual(i_resp.status_code, 404)
@@ -3907,14 +3928,15 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
 
     def test_f31_4_all_eight_component_files_exist_and_implement_ui_zones(self) -> None:
         comp_root = PROJECT_ROOT / "frontend" / "src" / "components"
+        self.assertFalse((comp_root / "results" / "BonusVacationComparisonModal.tsx").exists())
         rel_paths = [
             "layout/AppShell.tsx",
+            "layout/BreezyFlightsBrandHeader.tsx",
             "profile/FamilyProfileDrawer.tsx",
             "search/SearchControlPanel.tsx",
             "search/ElAlBonusSearchSubPanel.tsx",
             "calendar/MultiChildCalendarHeatmap.tsx",
             "results/BonusVacationOptionCard.tsx",
-            "results/BonusVacationComparisonModal.tsx",
             "results/AllAirlinesItineraryCard.tsx",
         ]
         for rp in rel_paths:
@@ -4072,6 +4094,57 @@ class TestTier1F32InstallablePwaAndDocsPreservation(Tier1BaseTestCase):
         ]
         for mod_name in modules:
             self.assertIsNotNone(importlib.import_module(mod_name))
+
+    def test_f32_6_run10_scoped_thailand_breezyflights_branding_and_three_surface_disclaimers(
+        self,
+    ) -> None:
+        import re
+        from bs4 import BeautifulSoup
+
+        html = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        soup = BeautifulSoup(html, "html.parser")
+
+        # R3: Top header & hero breezyflights branding + scoped --thai-* custom properties
+        hdr_wordmark = soup.select_one("#app-header #header-title .brand-wordmark")
+        self.assertIsNotNone(hdr_wordmark)
+        self.assertEqual(hdr_wordmark.get_text(strip=True), "breezyflights")
+        hero_brand = soup.select_one("#vacation-hero #hero-eyebrow .hero-brand-inline")
+        self.assertIsNotNone(hero_brand)
+        self.assertEqual(hero_brand.get_text(strip=True), "breezyflights")
+        self.assertIsNotNone(soup.select_one("#vacation-hero svg.hero-scenic-svg"))
+        hero_section = soup.find(id="vacation-hero")
+        self.assertIsNotNone(hero_section)
+        hero_txt = hero_section.get_text(" ", strip=True)
+        for forbidden_hero_term in ("תאילנד", "Thailand", "בנגקוק", "פוקט", "Bangkok", "Phuket"):
+            self.assertNotIn(forbidden_hero_term, hero_txt)
+        self.assertIsNone(soup.find(id="hero-highlights"))
+        self.assertEqual(soup.select("#vacation-hero .hero-highlight-chip"), [])
+
+        root_match = re.search(r":root\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(root_match)
+        self.assertNotIn("--thai-", root_match.group(1))
+        self.assertIn("--thai-abyss-teal", css)
+
+        # R2: Multi-select picker coexists with hidden <select id="select-destination" multiple>
+        self.assertIsNotNone(soup.find("div", id="destination-multiselect"))
+        dest_sel = soup.find("select", id="select-destination")
+        self.assertIsNotNone(dest_sel)
+        self.assertTrue(dest_sel.has_attr("multiple"))
+
+        # R4: Footer, profile sign-in box, and local test OAuth page disclaimers
+        for disc_id in (
+            "footer-elal-disclaimer",
+            "profile-signin-disclaimer",
+            "profile-user-disclaimer",
+        ):
+            disc_el = soup.find(id=disc_id)
+            self.assertIsNotNone(disc_el, f"Missing disclaimer #{disc_id}")
+            self.assertIn(
+                "אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על",
+                disc_el.get_text(" ", strip=True),
+            )
+            self.assertIn("not affiliated with", disc_el.get("data-en", ""))
 
 
 if __name__ == "__main__":

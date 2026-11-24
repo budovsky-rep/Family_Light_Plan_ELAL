@@ -13,7 +13,6 @@ Endpoints:
 6. `POST /api/v1/elal-bonus/sync`
 7. `GET  /api/v1/elal-bonus/availability`
 8. `POST /api/v1/vacations/search`
-9. `POST /api/v1/vacations/compare`
 """
 
 from __future__ import annotations
@@ -219,6 +218,62 @@ def _validate_destination_codes_strict(
             f"Invalid IATA or metropolitan code in {field_name}: {tok!r}"
         )
     return tokens
+
+
+def _validate_search_destinations_strict(
+    val: Any, field_name: str, allow_csv_str: bool = False
+) -> list[str]:
+    tokens: list[str] = []
+    if allow_csv_str and isinstance(val, str):
+        if "\x00" in val or len(val) > 1024:
+            raise ValueError(f"Invalid {field_name}")
+        if not val.strip():
+            return ["ANYWHERE"]
+        tokens = [tok.strip().upper() for tok in val.split(",") if tok.strip()]
+    elif isinstance(val, list):
+        if len(val) > 200:
+            raise ValueError(f"{field_name} exceeds maximum list length")
+        if not val:
+            return ["ANYWHERE"]
+        for idx, item in enumerate(val):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"{field_name}[{idx}] must be an IATA string, got {item!r}"
+                )
+            if "\x00" in item or len(item) > 64:
+                raise ValueError(f"Invalid {field_name}[{idx}]")
+            parts = (
+                [sub.strip().upper() for sub in item.split(",") if sub.strip()]
+                if allow_csv_str
+                else ([item.strip().upper()] if item.strip() else [])
+            )
+            if not parts:
+                raise ValueError(f"{field_name}[{idx}] cannot be empty")
+            tokens.extend(parts)
+    else:
+        raise ValueError(f"{field_name} must be a list of IATA codes")
+
+    if not tokens:
+        return ["ANYWHERE"]
+
+    valid_search_specials = _VALID_DEST_SPECIAL_TOKENS | {"*"}
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        if tok in valid_search_specials:
+            if tok in ("ANYWHERE", "ALL", "*"):
+                continue
+        elif not (len(tok) == 3 and tok.isalpha() and tok.isascii()):
+            raise ValueError(
+                f"Invalid IATA or metropolitan code in {field_name}: {tok!r}"
+            )
+        if tok not in seen:
+            seen.add(tok)
+            deduped.append(tok)
+
+    if any(t in ("ANYWHERE", "ALL", "*") for t in tokens):
+        return ["ANYWHERE"]
+    return deduped or ["ANYWHERE"]
 
 
 def _validate_rbd_payload_strict(raw_payload: Any) -> None:
@@ -831,12 +886,41 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
             payload["origin_iata"], "origin_iata"
         )
 
+    resolved_search_dests: Optional[list[str]] = None
     if "destination_iatas" in payload:
-        payload["destination_iatas"] = _validate_destination_codes_strict(
+        resolved_search_dests = _validate_search_destinations_strict(
             payload["destination_iatas"],
             "destination_iatas",
             allow_csv_str=False,
         )
+        payload["destination_iatas"] = resolved_search_dests
+
+    if "destinations" in payload:
+        validated_dests = _validate_search_destinations_strict(
+            payload["destinations"],
+            "destinations",
+            allow_csv_str=True,
+        )
+        if resolved_search_dests is None:
+            resolved_search_dests = validated_dests
+            payload["destination_iatas"] = resolved_search_dests
+        payload.pop("destinations", None)
+
+    if "destination" in payload:
+        _validate_optional_str(
+            payload["destination"], "destination", max_len=1024, non_empty=False
+        )
+        if payload["destination"] is None:
+            raise ValueError("destination must be a string")
+        validated_dest = _validate_search_destinations_strict(
+            payload["destination"],
+            "destination",
+            allow_csv_str=True,
+        )
+        if resolved_search_dests is None:
+            resolved_search_dests = validated_dest
+            payload["destination_iatas"] = resolved_search_dests
+        payload.pop("destination", None)
 
     if "destination_iatas_json" in payload and payload["destination_iatas_json"] is not None:
         raw_dj = payload["destination_iatas_json"]
@@ -845,9 +929,11 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
             parsed_dj = json.loads(raw_dj)
         except Exception as exc:
             raise ValueError("Invalid JSON in destination_iatas_json") from exc
-        _validate_destination_codes_strict(
+        validated_dj = _validate_search_destinations_strict(
             parsed_dj, "destination_iatas_json", allow_csv_str=False
         )
+        if resolved_search_dests is None:
+            payload["destination_iatas"] = validated_dj
 
     if "enabled_loyalty_programs" in payload and payload["enabled_loyalty_programs"] is not None:
         payload["enabled_loyalty_programs"] = _validate_enum_str_list_strict(
@@ -2031,52 +2117,6 @@ class VacationPlannerAPIRouter:
                     "destinations": items,
                 }
                 return 200, json_headers, json.dumps(resp_payload, ensure_ascii=False)
-
-            # 9. POST /api/v1/vacations/compare
-            if method_u == "POST" and path == "/api/v1/vacations/compare":
-                if not isinstance(json_body, dict):
-                    raise ValueError("Request body must be a JSON object")
-                body = dict(json_body)
-                proposal_ids = body.get("proposal_ids")
-                if (
-                    not isinstance(proposal_ids, list)
-                    or not proposal_ids
-                    or len(proposal_ids) > 100
-                ):
-                    raise ValueError("proposal_ids must be a non-empty list")
-                clean_pids: list[str] = []
-                for idx, pid in enumerate(proposal_ids):
-                    _validate_optional_str(
-                        pid,
-                        f"proposal_ids[{idx}]",
-                        max_len=128,
-                        non_empty=True,
-                    )
-                    clean_pids.append(pid.strip())
-                session = self.auth_service.resolve_session(request_headers)
-                try:
-                    matrix = self.planner_service.compare_proposals(
-                        clean_pids,
-                        requester_user_id=session["user_id"] if session else None,
-                        enforce_owner=True,
-                    )
-                except LookupError as exc:
-                    return (
-                        404,
-                        private_json_headers,
-                        json.dumps({"error": redact_pii(str(exc))}, ensure_ascii=False),
-                    )
-                matrix_dict = (
-                    matrix.to_dict() if hasattr(matrix, "to_dict") else dict(matrix)
-                )
-                matrix_dict["is_cash_price_estimate"] = True
-                matrix_dict["cash_pricing_disclaimer_he"] = _CASH_PRICING_DISCLAIMER_HE
-                matrix_dict["cash_pricing_disclaimer_en"] = _CASH_PRICING_DISCLAIMER_EN
-                return (
-                    200,
-                    private_json_headers,
-                    json.dumps(matrix_dict, ensure_ascii=False),
-                )
 
             return (
                 404,

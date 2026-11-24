@@ -765,8 +765,18 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             persisted = self.repo.get_proposal_by_id(proposals[0].id)
             self.assertIsNotNone(persisted)
 
-    def test_compare_proposals_matrix_and_best_winners_f28(self) -> None:
-        """14. Verify `F28` `compare_proposals` returns `VacationComparisonMatrix` and winner IDs."""
+    def test_compare_proposals_removed_and_compare_endpoint_returns_404_run10_r1(
+        self,
+    ) -> None:
+        """14. Verify `run10` `R1`: `compare_proposals` & `VacationComparisonMatrix` are removed and `/api/v1/vacations/compare` returns `404`."""
+        from backend.app.main import VacationPlannerTestClient
+        import backend.app.schemas as schemas_pkg
+        import backend.app.schemas.domain as domain_mod
+
+        self.assertFalse(hasattr(self.planner, "compare_proposals"))
+        self.assertFalse(hasattr(domain_mod, "VacationComparisonMatrix"))
+        self.assertFalse(hasattr(schemas_pkg, "VacationComparisonMatrix"))
+
         proposals = self.planner.search_vacations(
             {
                 "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
@@ -777,19 +787,17 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             },
             profile=self.default_profile,
         )
-        self.assertGreaterEqual(len(proposals), 3)
-        selected_ids = [p.id for p in proposals[:3]]
-        matrix = self.planner.compare_proposals(selected_ids)
-        self.assertEqual(len(matrix["proposals"]), 3)
-        self.assertGreaterEqual(len(matrix["comparison_rows"]), 7)
-        self.assertIn(matrix["best_by_ctos_id"], selected_ids)
-        self.assertIn(matrix["best_by_cash_savings_id"], selected_ids)
-        self.assertNotIn("best_by_per_id", matrix)
-        self.assertIn(matrix["best_by_minimal_absence_id"], selected_ids)
-        row_keys = {r["metric_key"] for r in matrix["comparison_rows"]}
-        self.assertNotIn("parent_pto_and_per", row_keys)
-        oop_row = next(r for r in matrix["comparison_rows"] if r["metric_key"] == "out_of_pocket_cash_usd")
-        self.assertIn("הערכת תשלום במזומן", oop_row["label_he"])
+        self.assertGreaterEqual(len(proposals), 2)
+        selected_ids = [p.id for p in proposals[:2]]
+
+        client = VacationPlannerTestClient(db_path=":memory:")
+        for body_payload in (
+            {"proposal_ids": selected_ids},
+            {"proposal_ids": []},
+            {},
+        ):
+            cmp_resp = client.post("/api/v1/vacations/compare", json=body_payload)
+            self.assertEqual(cmp_resp.status_code, 404)
 
     def test_ics_export_removed_and_estimated_cash_metadata_present_f28(self) -> None:
         """15. Verify `R3` ICS export removal (`-> 404`) and `R1` non-binding estimated cash metadata."""
@@ -2124,16 +2132,17 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                     ("PUT", "/api/v1/profile", json.dumps({**base_prof, "passenger_loyalty_wallets": [{"program_code": "ELAL_MATMID", "points_balance": 10**100}]}).encode()),
                     ("POST", "/api/v1/moe-calendar/sync/2026-2027", b"null"),
                     ("POST", "/api/v1/moe-calendar/sync/2026-2027", json.dumps({"force_remote_check": "yes"}).encode()),
-                    ("POST", "/api/v1/vacations/compare", b"null"),
-                    ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": [None]}).encode()),
-                    ("POST", "/api/v1/vacations/compare", json.dumps({"proposal_ids": ["   "]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": [None]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destinations": [None]}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination": 12345}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": ["ZZZZ"]}).encode()),
                     ("POST", "/api/v1/elal-bonus/sync", b"NaN"),
                     ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": [None, 123, {}]}).encode()),
                     ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "rbd_payload": False}).encode()),
                     ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "origin": 123}).encode()),
                     ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "force_refresh": "yes"}).encode()),
                     ("POST", "/api/v1/elal-bonus/sync", json.dumps({"destinations": ["FCO"], "months_ahead": 99}).encode()),
-                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": []}).encode()),
+                    ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": ["   "]}).encode()),
                     ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "destination_iatas": [123]}).encode()),
                     ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "target_holiday_codes": [None]}).encode()),
                     ("POST", "/api/v1/vacations/search", json.dumps({**base_spec, "include_sundor_flights": "yes"}).encode()),
@@ -2150,6 +2159,21 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                     )
                     err_obj = json.loads(resp_text)
                     self.assertIn("error", err_obj)
+
+                # Verify removed /api/v1/vacations/compare returns 404 for all payloads, while empty destination_iatas [] normalizes to ANYWHERE (200)
+                for cmp_bytes in (b"null", b"{}", json.dumps({"proposal_ids": ["p1"]}).encode()):
+                    cmp_st, _ = raw_req("POST", "/api/v1/vacations/compare", cmp_bytes)
+                    self.assertEqual(cmp_st, 404)
+                empty_dest_st, empty_dest_raw = raw_req(
+                    "POST",
+                    "/api/v1/vacations/search",
+                    json.dumps({**base_spec, "destination_iatas": []}).encode(),
+                )
+                self.assertEqual(empty_dest_st, 200)
+                self.assertEqual(
+                    json.loads(empty_dest_raw)["query"]["destination_iatas"],
+                    ["ANYWHERE"],
+                )
 
                 # Verify saved profile was NOT wiped by PUT b"null" or any invalid PUT
                 prof_after_code, prof_after_raw = raw_req("GET", "/api/v1/profile", b"")
@@ -2414,6 +2438,92 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 os.environ["ELAL_SYNC_API_TOKEN"] = old_tok
             import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run10_r2_multi_select_destinations_aliases_and_11plus_non_flagship_offline(
+        self,
+    ) -> None:
+        """28. Verify `run10` `R2` multi-select destination filtering, alias normalization, and `>10` non-flagship offline cities."""
+        from backend.app.main import VacationPlannerTestClient
+        from backend.app.schemas.domain import FlightSearchQuery
+
+        # 1. No-arg Python default remains ["FCO"], while explicit empty [] / "" normalizes to ["ANYWHERE"]
+        self.assertEqual(FlightSearchQuery().destination_iatas, ["FCO"])
+        self.assertEqual(FlightSearchQuery.from_dict({}).destination_iatas, ["FCO"])
+        self.assertEqual(
+            FlightSearchQuery.from_dict({"destination_iatas": []}).destination_iatas,
+            ["ANYWHERE"],
+        )
+        self.assertEqual(
+            FlightSearchQuery.from_dict({"destinations": ["rom", "ath", "ROM"]}).destination_iatas,
+            ["ROM", "ATH"],
+        )
+        self.assertEqual(
+            FlightSearchQuery.from_dict({"destination": "lon, bkk"}).destination_iatas,
+            ["LON", "BKK"],
+        )
+
+        client = VacationPlannerTestClient(db_path=":memory:")
+
+        # 2. Multi-select subset (2+ destinations including metro LON) returns proposals strictly in expanded subset
+        r_sub = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "destinations": ["LON", "ATH"],
+            },
+        )
+        self.assertEqual(r_sub.status_code, 200)
+        sub_body = r_sub.json()
+        self.assertEqual(sub_body["expanded_destinations"], ["LHR", "LTN", "ATH"])
+        self.assertGreater(len(sub_body["proposals"]), 0)
+        allowed_sub = {"LHR", "LTN", "ATH"}
+        for prop in sub_body["proposals"]:
+            itin = prop["itinerary"]
+            self.assertIn(itin["destination_iata"], allowed_sub)
+            self.assertIn(itin.get("return_origin_iata") or itin["destination_iata"], allowed_sub)
+
+        # 3. 11 non-flagship cities in offline mode must NOT collapse to [] via legacy `len > 10` pruning!
+        eleven_non_flagship = [
+            "BCN", "AMS", "BER", "MUC", "FRA", "GVA",
+            "LIS", "NCE", "OTP", "SOF", "WAW",
+        ]
+        r_11 = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "destination_iatas": eleven_non_flagship,
+            },
+        )
+        self.assertEqual(r_11.status_code, 200)
+        props_11 = r_11.json()["proposals"]
+        self.assertGreater(
+            len(props_11),
+            0,
+            "Selecting 11 non-flagship destinations offline must return matching proposals instead of collapsing to []",
+        )
+        allowed_11 = set(eleven_non_flagship)
+        for prop in props_11:
+            itin = prop["itinerary"]
+            self.assertIn(itin["destination_iata"], allowed_11)
+            self.assertIn(itin.get("return_origin_iata") or itin["destination_iata"], allowed_11)
+
+        # 4. Empty [] / ANYWHERE returns open-destination discovery across multiple cities
+        r_any = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "destination_iatas": [],
+            },
+        )
+        self.assertEqual(r_any.status_code, 200)
+        any_dests = {p["itinerary"]["destination_iata"] for p in r_any.json()["proposals"]}
+        self.assertGreaterEqual(len(any_dests), 3)
 
 
 if __name__ == "__main__":
