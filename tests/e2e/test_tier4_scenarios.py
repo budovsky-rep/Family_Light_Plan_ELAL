@@ -755,9 +755,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         # Desktop from 1180px (first two-column width), 1280x800 and 1440x900:
         # control rail (inline-start track) + deal stream (inline-end track)
         for vp_w, vp_h, expected_sidebar_px, expected_gap_px, expected_pad_px in (
-            (1180, 800, 424, 18, 24),
-            (1280, 800, 428, 18, 28),
-            (1440, 900, 472, 24, 36),
+            (1180, 800, 412, 18, 24),
+            (1280, 800, 414, 18, 28),
+            (1440, 900, 416, 24, 36),
         ):
             computed = compute_styles_for_viewport(vp_w)
             shell_style = computed.get(".dashboard-shell", {})
@@ -2037,7 +2037,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
         deadline = time.time() + 12.0
-        while time.time() < deadline and not active_port_file.exists():
+        while time.time() < deadline and not (active_port_file.exists() and active_port_file.read_text("utf-8").splitlines()):
             time.sleep(0.05)
         self.assertTrue(active_port_file.exists(), "Headless Chrome DevToolsActivePort did not appear")
         cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
@@ -2619,7 +2619,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
         deadline = time.time() + 12.0
-        while time.time() < deadline and not active_port_file.exists():
+        while time.time() < deadline and not (active_port_file.exists() and active_port_file.read_text("utf-8").splitlines()):
             time.sleep(0.05)
         self.assertTrue(active_port_file.exists())
         cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
@@ -3078,7 +3078,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
         deadline = time.time() + 12.0
-        while time.time() < deadline and not active_port_file.exists():
+        while time.time() < deadline and not (active_port_file.exists() and active_port_file.read_text("utf-8").splitlines()):
             time.sleep(0.05)
         self.assertTrue(active_port_file.exists())
         cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
@@ -3797,7 +3797,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
         deadline = time.time() + 12.0
-        while time.time() < deadline and not active_port_file.exists():
+        while time.time() < deadline and not (active_port_file.exists() and active_port_file.read_text("utf-8").splitlines()):
             time.sleep(0.05)
         self.assertTrue(active_port_file.exists())
         cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
@@ -3951,6 +3951,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               const holBtn = document.getElementById('tab-mode-holiday');
               const sr = specBtn.getBoundingClientRect();
               const hr = holBtn.getBoundingClientRect();
+              const depR = document.getElementById('input-dep-date').getBoundingClientRect();
+              const retR = document.getElementById('input-ret-date').getBoundingClientRect();
+              const flexR = document.getElementById('input-flex-days').getBoundingClientRect();
               const tabIds = Array.from(document.querySelectorAll('.mode-tabs .mode-tab-btn')).map((b) => b.id);
               return {
                 dir: document.documentElement.getAttribute('dir'),
@@ -3959,6 +3962,13 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 holActive: holBtn.classList.contains('active'),
                 specLeft: sr.left,
                 holRight: hr.right,
+                depTop: depR.top,
+                retTop: retR.top,
+                flexTop: flexR.top,
+                depLeft: depR.left,
+                retRight: retR.right,
+                retLeft: retR.left,
+                flexRight: flexR.right,
                 specControlsDisplay: getComputedStyle(document.getElementById('controls-specific-dates')).display,
                 holControlsDisplay: getComputedStyle(document.getElementById('controls-holiday-direct')).display,
                 holDurDisplay: getComputedStyle(document.getElementById('controls-holiday-duration')).display,
@@ -3971,6 +3981,10 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertTrue(boot_tabs["specActive"])
         self.assertFalse(boot_tabs["holActive"])
         self.assertGreaterEqual(boot_tabs["specLeft"], boot_tabs["holRight"])
+        self.assertLessEqual(abs(boot_tabs["depTop"] - boot_tabs["retTop"]), 2.0)
+        self.assertLessEqual(abs(boot_tabs["depTop"] - boot_tabs["flexTop"]), 2.0)
+        self.assertGreaterEqual(boot_tabs["depLeft"], boot_tabs["retRight"])
+        self.assertGreaterEqual(boot_tabs["retLeft"], boot_tabs["flexRight"])
         self.assertNotEqual(boot_tabs["specControlsDisplay"], "none")
         self.assertEqual(boot_tabs["holControlsDisplay"], "none")
         self.assertEqual(boot_tabs["holDurDisplay"], "none")

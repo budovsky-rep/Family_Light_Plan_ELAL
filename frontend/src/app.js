@@ -2442,17 +2442,17 @@
           dirInfo.outbound.twoPlus ||
           dirInfo.inbound.twoPlus ||
           Boolean(it.requires_two_plus_seat_verification);
-        const twoPlusTailText = isHe
+        const twoPlusTailHtml = isHe
           ? ' = לפחות 2 מושבי בונוס בטיסה; ייתכן שיש יותר.'
           : ' = at least 2 bonus seats on this flight; there may be more.';
-        const twoPlusPartyHint =
+        const twoPlusPartyHtml =
           seatedCount > 2
             ? (isHe
-                ? ` נדרשים ${seatedCount} מושבים — כדאי לבדוק הזמנה של 2 ועוד 2.`
-                : ` ${seatedCount} seats needed — try booking 2 and 2.`)
+                ? ` נדרשים ${escapeHtml(seatedCount)} מושבים — כדאי לבדוק הזמנה של <span class="two-plus-nowrap">2 ועוד 2\u200F.</span>`
+                : ` ${escapeHtml(seatedCount)} seats needed — try booking <span class="two-plus-nowrap">2 and 2.</span>`)
             : '';
         const twoPlusNoteHtml = showTwoPlusNote
-          ? `<p class="two-plus-note"><span dir="ltr">2+</span>${escapeHtml(twoPlusTailText + twoPlusPartyHint)}</p>`
+          ? `<p class="two-plus-note"><span dir="ltr">2+</span>${twoPlusTailHtml}${twoPlusPartyHtml}</p>`
           : '';
 
         const returnOriginLabel =

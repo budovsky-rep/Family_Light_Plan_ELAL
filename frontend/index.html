@@ -293,18 +293,27 @@
         </div>
 
         <!-- Mode-Specific Controls -->
-        <div id="controls-specific-dates" class="form-grid form-grid-2">
+        <div id="controls-specific-dates" class="form-grid form-grid-dates-flex">
           <div class="form-field">
-            <label for="input-dep-date" data-he="תאריך המראה:" data-en="Departure Date:">תאריך המראה:</label>
+            <label for="input-dep-date" data-he="המראה:" data-en="Departure:">המראה:</label>
             <input type="date" id="input-dep-date" value="2026-12-10" dir="ltr" />
           </div>
           <div class="form-field">
-            <label for="input-ret-date" data-he="תאריך חזרה:" data-en="Return Date:">תאריך חזרה:</label>
+            <label for="input-ret-date" data-he="חזרה:" data-en="Return:">חזרה:</label>
             <input type="date" id="input-ret-date" value="2026-12-17" dir="ltr" />
           </div>
-          <div class="form-field form-field-full">
-            <label for="input-flex-days" data-he="גמישות בתאריכים (עד ±7 ימים):" data-en="Date Flexibility (±0–7 days):">גמישות בתאריכים (עד ±7 ימים):</label>
-            <input type="number" id="input-flex-days" min="0" max="7" value="2" dir="ltr" />
+          <div class="form-field">
+            <label for="input-flex-days" title="גמישות בתאריכים (0 עד ±7 ימים)" data-he="גמישות:" data-en="Flex:">גמישות:</label>
+            <select id="input-flex-days">
+              <option value="0" data-he="0 ימים" data-en="0 days">0 ימים</option>
+              <option value="1" data-he="1 יום" data-en="1 day">1 יום</option>
+              <option value="2" selected data-he="2 ימים" data-en="2 days">2 ימים</option>
+              <option value="3" data-he="3 ימים" data-en="3 days">3 ימים</option>
+              <option value="4" data-he="4 ימים" data-en="4 days">4 ימים</option>
+              <option value="5" data-he="5 ימים" data-en="5 days">5 ימים</option>
+              <option value="6" data-he="6 ימים" data-en="6 days">6 ימים</option>
+              <option value="7" data-he="7 ימים" data-en="7 days">7 ימים</option>
+            </select>
           </div>
         </div>
 

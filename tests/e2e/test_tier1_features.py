@@ -29,6 +29,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import tests.e2e  # noqa: E402, F401
+
 from backend.app.schemas import domain as domain_mod
 from backend.app.schemas.domain import (
     AirlineSelectionMode,
@@ -4308,10 +4310,10 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
                 narrow.get("grid-template-columns"), "minmax(0, 1fr)", f"single column expected at {vp_width}px"
             )
         for vp_width, expected_tracks in (
-            (1180, "424px minmax(0, 1fr)"),
-            (1280, "428px minmax(0, 1fr)"),
-            (1440, "472px minmax(0, 1fr)"),
-            (1920, "472px minmax(0, 1fr)"),
+            (1180, "412px minmax(0, 1fr)"),
+            (1280, "414px minmax(0, 1fr)"),
+            (1440, "416px minmax(0, 1fr)"),
+            (1920, "416px minmax(0, 1fr)"),
         ):
             wide = shell_style_at(vp_width)
             self.assertEqual(wide.get("display"), "grid")
