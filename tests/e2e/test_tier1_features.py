@@ -137,17 +137,34 @@ RUN11_DIRECTION_STATEMENTS_HE = {
 
 
 def _run11_expected_bonus_score(
-    outbound_seats: Optional[int], inbound_seats: Optional[int], seated_passengers: int
+    outbound_seats: Optional[int],
+    inbound_seats: Optional[int],
+    seated_passengers: int,
+    outbound_two_plus: bool = False,
+    inbound_two_plus: bool = False,
 ) -> float:
-    """Documented seat-only bonus score: average share of the party each direction seats.
-
-    cov(d) = min(1, available bonus seats in d / seated passengers);
-    score = round(100 * (cov(OUT) + cov(IN)) / 2, 1).
+    """Documented seat-only bonus score: average share of the party each direction seats,
+    with EL AL `2+` (`is_two_plus=True` and `seats >= 2`) counting as full 100% directional availability.
     """
     party = max(1, int(seated_passengers or 0))
-    cov_out = min(1.0, (outbound_seats or 0) / party)
-    cov_in = min(1.0, (inbound_seats or 0) / party)
-    return round(100.0 * (cov_out + cov_in) / 2.0, 1)
+
+    def _cov(seats: Optional[int], is_two_plus: bool) -> float:
+        s = max(0, int(seats or 0))
+        if s <= 0:
+            return 0.0
+        if is_two_plus and s >= 2:
+            return 1.0
+        return min(1.0, s / party)
+
+    return round(
+        100.0
+        * (
+            _cov(outbound_seats, outbound_two_plus)
+            + _cov(inbound_seats, inbound_two_plus)
+        )
+        / 2.0,
+        1,
+    )
 
 
 def _assert_run11_itinerary_contract(tc: unittest.TestCase, itinerary: Any) -> dict[str, Any]:
@@ -211,13 +228,15 @@ def _assert_run11_proposal_contract(tc: unittest.TestCase, proposal: Any) -> dic
     statement = RUN11_DIRECTION_STATEMENTS_HE.get(itin["bonus_direction_coverage"])
     if statement is not None:
         tc.assertIn(statement, explanation)
-    # The bonus score is the documented function of seats per direction and party size
+    # The bonus score is the documented function of seats per direction, 2+ flag, and party size
     tc.assertAlmostEqual(
         _get_field(proposal, "flight_bonus_value_score"),
         _run11_expected_bonus_score(
             itin["outbound_bonus_seats"],
             itin["inbound_bonus_seats"],
             itin["seated_passengers_count"],
+            bool(itin.get("outbound_bonus_seats_is_two_plus")),
+            bool(itin.get("inbound_bonus_seats_is_two_plus")),
         ),
         places=1,
     )
@@ -3309,10 +3328,18 @@ class TestTier1F26StrategyCashAndPoints(Tier1BaseTestCase):
             ],
             passenger_loyalty_wallets=[],
         )
-        scores: dict[tuple[int, int], tuple[float, float]] = {}
-        for out_s, in_s in ((1, 1), (2, 2), (4, 4), (2, 0)):
+        scores: dict[tuple[int, int, bool], tuple[float, float]] = {}
+        for out_s, in_s, is_tp in (
+            (1, 1, False),
+            (2, 2, False),
+            (2, 0, True),
+            (2, 2, True),
+            (4, 4, True),
+        ):
             out_a, _ = self._make_award_pair(econ_seats=out_s, prem_seats=0, biz_seats=0)
             _, in_a = self._make_award_pair(econ_seats=in_s, prem_seats=0, biz_seats=0)
+            out_a.economy_seats_is_two_plus = bool(is_tp and out_s >= 2)
+            in_a.economy_seats_is_two_plus = bool(is_tp and in_s >= 2)
             with patch.object(
                 planner, "_ensure_award_rows_for_window", return_value=([out_a], [in_a])
             ):
@@ -3329,21 +3356,28 @@ class TestTier1F26StrategyCashAndPoints(Tier1BaseTestCase):
                     persist_results=False,
                 )
             self.assertGreaterEqual(len(props), 1)
-            expected_fbvs = _run11_expected_bonus_score(out_s, in_s, 4)
+            expected_fbvs = _run11_expected_bonus_score(
+                out_s,
+                in_s,
+                4,
+                out_a.economy_seats_is_two_plus,
+                in_a.economy_seats_is_two_plus,
+            )
             self.assertAlmostEqual(props[0].flight_bonus_value_score, expected_fbvs, places=1)
-            scores[(out_s, in_s)] = (
+            scores[(out_s, in_s, is_tp)] = (
                 props[0].flight_bonus_value_score,
                 props[0].combined_trip_optimization_score,
             )
 
-        self.assertEqual(scores[(1, 1)][0], 25.0)
-        self.assertEqual(scores[(2, 2)][0], 50.0)
-        self.assertEqual(scores[(4, 4)][0], 100.0)
-        self.assertEqual(scores[(2, 0)][0], 25.0)
-        self.assertLess(scores[(1, 1)][0], scores[(2, 2)][0])
-        self.assertLess(scores[(2, 2)][0], scores[(4, 4)][0])
-        self.assertLess(scores[(1, 1)][1], scores[(2, 2)][1])
-        self.assertLess(scores[(2, 2)][1], scores[(4, 4)][1])
+        self.assertEqual(scores[(1, 1, False)][0], 25.0)
+        self.assertEqual(scores[(2, 2, False)][0], 50.0)
+        self.assertEqual(scores[(2, 0, True)][0], 50.0)
+        self.assertEqual(scores[(2, 2, True)][0], 100.0)
+        self.assertEqual(scores[(4, 4, True)][0], 100.0)
+        self.assertLess(scores[(1, 1, False)][0], scores[(2, 2, False)][0])
+        self.assertLess(scores[(2, 2, False)][0], scores[(2, 2, True)][0])
+        self.assertLess(scores[(1, 1, False)][1], scores[(2, 2, False)][1])
+        self.assertLess(scores[(2, 2, False)][1], scores[(2, 2, True)][1])
 
         # Changing destination cash reference values does not change scores
         inflated = {
@@ -3375,7 +3409,7 @@ class TestTier1F26StrategyCashAndPoints(Tier1BaseTestCase):
             )
         self.assertEqual(
             (props_inflated[0].flight_bonus_value_score, props_inflated[0].combined_trip_optimization_score),
-            scores[(2, 2)],
+            scores[(2, 2, True)],
         )
 
     def test_f26_3_cash_and_points_carries_no_points_figure_or_low_value_penalty(
@@ -4303,8 +4337,10 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "bonus-direction-statement",
             "bonus-lane",
             "bonus-lane-seats",
+            "bonus-flight-num",
+            "bonus-flight-times",
             "min-points-ticket",
-            'data-kpi="bonus-value"',
+            "renderWeatherTooltipHtml",
             "בונוס בשני הכיוונים",
             "בונוס בכיוון אחד בלבד — הלוך",
             "בונוס בכיוון אחד בלבד — חזור",
@@ -4389,10 +4425,11 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             'data-kpi="school-fit"',
             "data-school-missed",
             "kpi-missed-paren",
-            'data-kpi="bonus-value"',
+            "weather-tooltip",
             "kpi-tooltip",
         ):
             self.assertIn(vtype_token, combined)
+        self.assertNotIn('data-kpi="bonus-value"', app_js)
 
         # Verify live-fetch mode (`ELAL_LIVE_FETCH_ENABLED=1`) never returns fictitious flights
         # even when an existing database already had seeded proposals/itineraries referencing bonus rows
@@ -4686,20 +4723,23 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertIn("resolveStrategyBadgeHe", subpanel_tsx)
         self.assertGreater(len(subpanel_tsx.encode("utf-8")), 100)
 
-        # R3: 2 compact stub KPI cells (with missed days in parentheses inside school-fit), calculation + meaning tooltips, and CSS rules
+        # R3: compact stub KPI cell (with missed days in parentheses inside school-fit), weather + KPI tooltips, and CSS rules
         self.assertGreater(app_js.index('class="stub-kpi-grid"'), stub_idx)
         self.assertNotIn('data-kpi="school-missed"', app_js)
+        self.assertNotIn('data-kpi="bonus-value"', app_js)
         for req_js in (
             'data-kpi="school-fit"',
             "data-school-missed",
             "kpi-missed-paren",
-            'data-kpi="bonus-value"',
+            "weather-tooltip",
+            "bonus-flight-num",
+            "bonus-flight-times",
             'role="tooltip"',
             'התאמה לחופשת בי"ס',
             "התאמה לחופשת בית ספר וחיסורים",
-            "כדאיות בונוס",
+            "מומלץ ביעד במזג אוויר זה:",
+            "What to do in this weather:",
             "School Break Fit",
-            "Award Value",
             "איך חושב:",
             "משמעות:",
             "How calculated:",
@@ -4796,13 +4836,15 @@ class TestTier1F32InstallablePwaAndDocsPreservation(Tier1BaseTestCase):
         css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
         soup = BeautifulSoup(html, "html.parser")
 
-        # R3: Top header & hero breezyflights branding + scoped --thai-* custom properties
+        # R3: Top header breezyflights branding (single wordmark, not duplicated inside #hero-eyebrow) + scoped --thai-* custom properties
         hdr_wordmark = soup.select_one("#app-header #header-title .brand-wordmark")
         self.assertIsNotNone(hdr_wordmark)
         self.assertEqual(hdr_wordmark.get_text(strip=True), "breezyflights")
         hero_brand = soup.select_one("#vacation-hero #hero-eyebrow .hero-brand-inline")
-        self.assertIsNotNone(hero_brand)
-        self.assertEqual(hero_brand.get_text(strip=True), "breezyflights")
+        self.assertIsNone(hero_brand)
+        hero_eyebrow_el = soup.select_one("#vacation-hero #hero-eyebrow")
+        self.assertIsNotNone(hero_eyebrow_el)
+        self.assertNotIn("breezyflights", hero_eyebrow_el.get_text(" ", strip=True).lower())
         self.assertIsNotNone(soup.select_one("#vacation-hero svg.hero-scenic-svg"))
         hero_section = soup.find(id="vacation-hero")
         self.assertIsNotNone(hero_section)

@@ -549,7 +549,10 @@ input[type="date"] {
   line-height: 1.24;
 }
 
-.hero-eyebrow-short,
+.hero-eyebrow-short {
+  display: inline;
+}
+
 .hero-eyebrow-sub {
   display: none;
 }
@@ -2746,11 +2749,14 @@ body.is-keyboard-open .mobile-thumb-dock {
 
 .bonus-lane-flight {
   min-width: 0;
-  display: inline-block;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   align-self: flex-start;
+  gap: 1px;
   max-width: 100%;
-  padding-block: 1px;
-  padding-inline: 5px;
+  padding-block: 2px;
+  padding-inline: 6px;
   border-radius: 5px;
   background: var(--surface-boarding);
   border: 1px solid var(--pine-border);
@@ -2760,11 +2766,27 @@ body.is-keyboard-open .mobile-thumb-dock {
   font-size: var(--fs-tag);
   font-weight: 700;
   letter-spacing: -0.02em;
-  line-height: 1.3;
+  line-height: 1.25;
   overflow-wrap: break-word;
 }
 
+.bonus-flight-num,
+.bonus-flight-times {
+  display: block;
+  white-space: nowrap;
+}
+
+.bonus-flight-times {
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.bonus-flight-sep {
+  display: none;
+}
+
 .bonus-lane-flight-commercial {
+  display: inline-block;
   font-family: var(--font-body);
   font-weight: 600;
   letter-spacing: 0;
@@ -2824,6 +2846,7 @@ body.is-keyboard-open .mobile-thumb-dock {
 }
 
 .stub-weather-card {
+  position: relative;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2834,6 +2857,20 @@ body.is-keyboard-open .mobile-thumb-dock {
   border-radius: var(--radius-sm);
   padding-block: 6px;
   padding-inline: 9px;
+  cursor: help;
+}
+
+.stub-weather-card:focus-visible {
+  outline: 2px solid var(--azure-elal);
+  outline-offset: 2px;
+}
+
+.stub-weather-card:hover,
+.stub-weather-card:focus-visible,
+.stub-weather-card:focus-within,
+.stub-weather-card.is-tooltip-open {
+  z-index: 34;
+  border-color: var(--azure-border);
 }
 
 .stub-weather-main {
@@ -3015,8 +3052,37 @@ body.is-keyboard-open .mobile-thumb-dock {
 .kpi-cell:hover > .kpi-tooltip,
 .kpi-cell:focus-visible > .kpi-tooltip,
 .kpi-cell:focus-within > .kpi-tooltip,
-.kpi-cell.is-tooltip-open > .kpi-tooltip {
+.kpi-cell.is-tooltip-open > .kpi-tooltip,
+.stub-weather-card:hover > .kpi-tooltip,
+.stub-weather-card:focus-visible > .kpi-tooltip,
+.stub-weather-card:focus-within > .kpi-tooltip,
+.stub-weather-card.is-tooltip-open > .kpi-tooltip {
   display: flex;
+}
+
+.stub-weather-card > .kpi-tooltip {
+  inset-block-start: calc(100% + 7px);
+  inset-block-end: auto;
+}
+
+.kpi-tooltip-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-block-start: 2px;
+}
+
+.kpi-tooltip-pill {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 1px;
+  padding-inline: 6px;
+  border-radius: 999px;
+  background: var(--azure-tint);
+  border: 1px solid var(--azure-border);
+  color: var(--azure-elal);
+  font-size: var(--fs-tag);
+  font-weight: 700;
 }
 
 .kpi-tooltip-title {
@@ -3187,6 +3253,36 @@ body.is-keyboard-open .mobile-thumb-dock {
     grid-template-areas: "from arc to";
     column-gap: 12px;
     padding-inline: 12px;
+  }
+
+  .bonus-lane-flight {
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0;
+    padding-block: 1px;
+    padding-inline: 5px;
+    line-height: 1.3;
+  }
+
+  .bonus-lane-flight-commercial {
+    display: inline-block;
+  }
+
+  .bonus-flight-num,
+  .bonus-flight-times {
+    display: inline;
+  }
+
+  .bonus-flight-times {
+    font-weight: 700;
+    color: var(--ink-flightdeck);
+  }
+
+  .bonus-flight-sep {
+    display: inline;
+    white-space: pre;
   }
 }
 

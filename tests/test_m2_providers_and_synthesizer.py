@@ -88,12 +88,29 @@ RUN11_NEW_ITINERARY_KEYS = (
 RUN11_FORBIDDEN_PRICE_TEXT = ("$", "¢", "הערכת", "חיסכון", "מזומן", "Est. Cash", "נקודות:")
 
 
-def _seat_score(out_seats, in_seats, seated: int) -> float:
-    """Expected bonus score: mean share of the party that has a bonus seat per direction."""
-    def _cov(seats) -> float:
-        return min(1.0, max(0, int(seats or 0)) / float(max(1, seated)))
+def _seat_score(
+    out_seats,
+    in_seats,
+    seated: int,
+    out_two_plus: bool | None = None,
+    in_two_plus: bool | None = None,
+) -> float:
+    """Expected bonus score: mean share of the party that has a bonus seat per direction,
+    with EL AL `2+` (`seats >= 2` when `is_two_plus` is True) counting as 100% directional coverage.
+    """
+    def _cov(seats, two_plus: bool | None) -> float:
+        s = max(0, int(seats or 0))
+        if s <= 0:
+            return 0.0
+        eff_tp = (s >= 2) if two_plus is None else bool(two_plus)
+        if eff_tp and s >= 2:
+            return 1.0
+        return min(1.0, s / float(max(1, seated)))
 
-    return round(100.0 * (_cov(out_seats) + _cov(in_seats)) / 2.0, 1)
+    return round(
+        100.0 * (_cov(out_seats, out_two_plus) + _cov(in_seats, in_two_plus)) / 2.0,
+        1,
+    )
 
 
 def _make_mock_token_exchanger(email: str = "family@gmail.com", name: str = "Test Family"):
@@ -3147,11 +3164,10 @@ class TestRun11SeatBasedResults(unittest.TestCase):
             scores_by_seats[(out_seats, in_seats)] = proposals[0].flight_bonus_value_score
 
         self.assertEqual(scores_by_seats[(1, 1)], 25.0)
-        self.assertEqual(scores_by_seats[(2, 2)], 50.0)
+        self.assertEqual(scores_by_seats[(2, None)], 50.0)
+        self.assertEqual(scores_by_seats[(2, 2)], 100.0)
         self.assertEqual(scores_by_seats[(4, 4)], 100.0)
-        self.assertEqual(scores_by_seats[(2, None)], 25.0)
-        self.assertLess(scores_by_seats[(1, 1)], scores_by_seats[(2, 2)])
-        self.assertLess(scores_by_seats[(2, 2)], scores_by_seats[(4, 4)])
+        self.assertLess(scores_by_seats[(1, 1)], scores_by_seats[(2, None)])
         self.assertLess(scores_by_seats[(2, None)], scores_by_seats[(2, 2)])
 
     def test_r3_scores_and_order_do_not_move_when_only_cash_reference_values_change(self) -> None:
@@ -3641,7 +3657,11 @@ class TestRun12ConsistentBonusBadges(unittest.TestCase):
         self.assertTrue(itin.requires_two_plus_seat_verification)
         self.assertEqual(itin.min_points_per_bonus_ticket, 18000)
         self.assertEqual(itin.min_points_basis, "ROUND_TRIP")
-        self.assertEqual(oj.flight_bonus_value_score, 50.0)
+        self.assertEqual(oj.flight_bonus_value_score, 100.0)
+        assert oj.weather_metrics is not None
+        self.assertIn("כף גרקו", oj.weather_metrics.activity_recommendations_he)
+        self.assertIn("Larnaca", oj.weather_metrics.activity_recommendations_en)
+        self.assertIn("Expected weather:", oj.weather_metrics.weather_summary_en)
         self.assertIn("מסלול משולב בבונוס (הלוך ל-LCA, חזור מ-PFO)", oj.explanation_summary_he)
         self.assertIn("בונוס בשני הכיוונים", oj.explanation_summary_he)
         self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", oj.explanation_summary_he)

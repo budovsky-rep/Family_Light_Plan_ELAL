@@ -132,7 +132,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(it["min_points_per_bonus_ticket"], 30000)
         self.assertEqual(it["min_points_basis"], "ROUND_TRIP")
         self.assertIn("בונוס בשני הכיוונים", flagship["explanation_summary_he"])
-        self.assertEqual(flagship["flight_bonus_value_score"], 90.0)
+        self.assertEqual(flagship["flight_bonus_value_score"], 100.0)
         self.assertAlmostEqual(flagship["holiday_alignment_score"], 68.4, places=1)
         expected_ctos = round(
             0.55 * flagship["holiday_alignment_score"]
@@ -140,7 +140,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             1,
         )
         self.assertAlmostEqual(flagship["combined_trip_optimization_score"], expected_ctos, places=1)
-        self.assertAlmostEqual(flagship["combined_trip_optimization_score"], 78.1, delta=0.1)
+        self.assertAlmostEqual(flagship["combined_trip_optimization_score"], 82.6, delta=0.1)
 
         maximizer = self.get_maximizer(self.get_calendar_service(repo))
         prof_obj = self.get_default_profile(db_path)
@@ -1719,7 +1719,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 "בונוס בשני הכיוונים" in post_login_state["firstCardText"]
                 or "בונוס בכיוון אחד בלבד" in post_login_state["firstCardText"]
             )
-            self.assertIn("כדאיות בונוס", post_login_state["firstCardText"])
+            self.assertNotIn("כדאיות בונוס", post_login_state["firstCardText"])
+            self.assertIn('התאמה לחופשת בי"ס', post_login_state["firstCardText"])
             self.assertIn("/100", post_login_state["firstCardText"])
             self.assertFalse(post_login_state["feedbackHidden"])
             self.assertIn("נשמר", post_login_state["feedback"])
@@ -2790,7 +2791,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(desk_audit["jsErrors"], [])
         self.assertEqual(desk_audit["hdrWordmarkTxt"], "breezyflights")
         self.assertTrue(desk_audit["hdrWordmarkVisible"])
-        self.assertEqual(desk_audit["heroBrandTxt"], "breezyflights")
+        self.assertEqual(desk_audit["heroBrandTxt"], "")
         self.assertTrue(desk_audit["heroSvgVisible"])
         self.assertEqual(desk_audit["thaiOnRoot"], "")
         self.assertEqual(desk_audit["canvasToken"], "#F2F5F9")
@@ -3360,8 +3361,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 self.assertEqual(card["bonusDirections"], "both")
                 self.assertTrue(card["stmtVisible"])
                 self.assertEqual(card["stmtText"], expected_stmt)
-                self.assertTrue(card["hasKpiBonus"])
-                self.assertIn("/100", card["kpiBonusText"])
+                self.assertFalse(card["hasKpiBonus"])
                 self.assertTrue(card["hasCtosBadge"])
                 self.assertIn("/100", card["ctosText"])
                 self.assertEqual(len(card["lanes"]), 2)
@@ -3981,9 +3981,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 "both_stmt": "בונוס בשני הכיוונים",
                 "calc_kicker": "איך חושב:",
                 "meaning_kicker": "משמעות:",
+                "weather_forecast_kicker": "תחזית עונתית:",
+                "weather_act_kicker": "מומלץ ביעד במזג אוויר זה:",
+                "weather_dest_tok": "כף גרקו",
                 "kpi_labels": {
                     "school-fit": 'התאמה לחופשת בי"ס',
-                    "bonus-value": "כדאיות בונוס",
                 },
                 "paren_tok": "חיסור",
             },
@@ -3993,9 +3995,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 "both_stmt": "Bonus seats in both directions",
                 "calc_kicker": "How calculated:",
                 "meaning_kicker": "Meaning:",
+                "weather_forecast_kicker": "Seasonal forecast:",
+                "weather_act_kicker": "What to do in this weather:",
+                "weather_dest_tok": "Larnaca",
                 "kpi_labels": {
                     "school-fit": "School Break Fit",
-                    "bonus-value": "Award Value",
                 },
                 "paren_tok": "missed",
             },
@@ -4014,6 +4018,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     clientWidth: docEl.clientWidth,
                     oldWeatherCount: document.querySelectorAll('.weather-telemetry-strip').length,
                     legacyMissedCellCount: document.querySelectorAll('.kpi-cell[data-kpi="school-missed"]').length,
+                    legacyBonusCellCount: document.querySelectorAll('.kpi-cell[data-kpi="bonus-value"]').length,
                     mainKpiCount: document.querySelectorAll('.proposal-pass-main .kpi-cell').length,
                     cards: cards.map((c) => {
                       const mainEl = c.querySelector('.proposal-pass-main');
@@ -4021,7 +4026,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                       const paxEl = stubEl ? stubEl.querySelector('.stub-pax-summary') : null;
                       const wEl = stubEl ? stubEl.querySelector('.stub-weather-card[data-weather-compact="true"]') : null;
                       const fitEl = stubEl ? stubEl.querySelector('.kpi-cell[data-kpi="school-fit"]') : null;
-                      const bonusEl = stubEl ? stubEl.querySelector('.kpi-cell[data-kpi="bonus-value"]') : null;
                       const parenEl = fitEl ? fitEl.querySelector('.kpi-missed-paren') : null;
                       const seaEl = wEl ? wEl.querySelector('[data-weather-sea]') : null;
                       const mainRect = mainEl.getBoundingClientRect();
@@ -4040,7 +4044,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                         mainRight: mainRect.right,
                         stubLeft: stubRect.left,
                         stubRight: stubRect.right,
-                        hasPaxAndWeatherSameStub: Boolean(paxEl && wEl && fitEl && bonusEl && paxEl.closest('.proposal-pass-stub') === wEl.closest('.proposal-pass-stub')),
+                        hasPaxAndWeatherSameStub: Boolean(paxEl && wEl && fitEl && paxEl.closest('.proposal-pass-stub') === wEl.closest('.proposal-pass-stub')),
                         parenText: parenEl ? parenEl.textContent.trim() : '',
                         weatherVisible: Boolean(wRect && wRect.width > 0 && wRect.height > 0),
                         weatherText: wEl ? wEl.textContent.replace(/\\s+/g, ' ').trim() : '',
@@ -4055,6 +4059,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertLessEqual(snap["scrollWidth"], snap["clientWidth"])
             self.assertEqual(snap["oldWeatherCount"], 0)
             self.assertEqual(snap["legacyMissedCellCount"], 0)
+            self.assertEqual(snap["legacyBonusCellCount"], 0)
             self.assertEqual(snap["mainKpiCount"], 0)
             self.assertGreaterEqual(len(snap["cards"]), 2)
 
@@ -4092,7 +4097,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertTrue(oj_found, "Open-Jaw LCA/PFO card must render")
             self.assertTrue(vie_found, "Landlocked VIE card must render")
 
-            # R3: Real CDP mouse hover over each of the 3 KPI cells on Card #1
+            # R2 + R3: Real CDP mouse hover over `.stub-weather-card` AND `.kpi-cell[data-kpi="school-fit"]` on Card #1
             _cdp_call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 2, "y": 2})
             _cdp_eval(
                 """(() => {
@@ -4101,6 +4106,61 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   return true;
                 })()"""
             )
+            w_pre = _cdp_eval(
+                """(() => {
+                  const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                  const lcaCard = cards.find((c) => (c.textContent || '').includes('LCA')) || cards[0];
+                  lcaCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+                  const wCard = lcaCard.querySelector('.stub-weather-card');
+                  const tip = wCard.querySelector('.kpi-tooltip[role="tooltip"]');
+                  const r = wCard.getBoundingClientRect();
+                  return {
+                    preDisplay: tip ? getComputedStyle(tip).display : 'missing',
+                    cx: Math.round(r.left + r.width / 2),
+                    cy: Math.round(r.top + r.height / 2)
+                  };
+                })()"""
+            )
+            self.assertEqual(w_pre["preDisplay"], "none")
+            _cdp_call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": w_pre["cx"], "y": w_pre["cy"]})
+            w_hover = _cdp_eval(
+                """(() => {
+                  const docEl = document.documentElement;
+                  const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                  const lcaCard = cards.find((c) => (c.textContent || '').includes('LCA')) || cards[0];
+                  const tip = lcaCard.querySelector('.stub-weather-card .kpi-tooltip[role="tooltip"]');
+                  const cs = getComputedStyle(tip);
+                  const tr = tip.getBoundingClientRect();
+                  return {
+                    display: cs.display,
+                    visibility: cs.visibility,
+                    text: tip.textContent.replace(/\\s+/g, ' ').trim(),
+                    width: tr.width,
+                    height: tr.height,
+                    left: tr.left,
+                    right: tr.right,
+                    top: tr.top,
+                    bottom: tr.bottom,
+                    innerW: window.innerWidth,
+                    innerH: window.innerHeight,
+                    scrollWidth: docEl.scrollWidth,
+                    clientWidth: docEl.clientWidth
+                  };
+                })()"""
+            )
+            self.assertEqual(w_hover["display"], "flex")
+            self.assertEqual(w_hover["visibility"], "visible")
+            self.assertIn(locale_spec["weather_forecast_kicker"], w_hover["text"])
+            self.assertIn(locale_spec["weather_act_kicker"], w_hover["text"])
+            self.assertIn(locale_spec["weather_dest_tok"], w_hover["text"])
+            self.assertGreaterEqual(w_hover["left"], 0.0)
+            self.assertLessEqual(w_hover["right"], w_hover["innerW"])
+            self.assertGreaterEqual(w_hover["top"], 0.0)
+            self.assertLessEqual(w_hover["bottom"], w_hover["innerH"])
+            self.assertLessEqual(w_hover["scrollWidth"], w_hover["clientWidth"])
+            _cdp_call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 2, "y": 2})
+            _cdp_eval("document.querySelector('.proposal-card').scrollIntoView({ behavior: 'instant', block: 'center' }); true;")
+
             for kpi_key, expected_lbl in locale_spec["kpi_labels"].items():
                 pre_hover = _cdp_eval(
                     f"""(() => {{
@@ -4168,7 +4228,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 )
                 self.assertEqual(post_display, "none")
 
-        # Switch back to Hebrew RTL, test mobile `390x844` tap tooltips & zero overflow on LCA/PFO + VIE,
+        # Switch back to Hebrew RTL, test mobile `390x844` 2-line flight tags + tap tooltips & zero overflow on LCA/PFO + VIE,
         # AND verify `firstCardY < 900` in default Holiday Mode (`ANYWHERE`) in both `he` & `en`
         _cdp_eval("if (document.documentElement.getAttribute('dir') !== 'rtl') document.getElementById('btn-toggle-locale').click(); true;")
         _cdp_call(
@@ -4179,11 +4239,31 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             if mob_dir == "ltr":
                 _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
             _cdp_eval("document.querySelector('.proposal-card').scrollIntoView({ behavior: 'instant', block: 'center' }); true;")
-            for kpi_key in ("school-fit", "bonus-value"):
+            flight_stack = _cdp_eval(
+                """(() => {
+                  const fl = document.querySelector('.proposal-card .bonus-lane-flight:not(.bonus-lane-flight-commercial)');
+                  const numEl = fl ? fl.querySelector('.bonus-flight-num') : null;
+                  const timesEl = fl ? fl.querySelector('.bonus-flight-times') : null;
+                  const sepEl = fl ? fl.querySelector('.bonus-flight-sep') : null;
+                  const nr = numEl.getBoundingClientRect();
+                  const tr = timesEl.getBoundingClientRect();
+                  return {
+                    sepDisplay: sepEl ? getComputedStyle(sepEl).display : 'missing',
+                    numBottom: nr.bottom,
+                    timesTop: tr.top,
+                    timesHeight: tr.height
+                  };
+                })()"""
+            )
+            self.assertEqual(flight_stack["sepDisplay"], "none")
+            self.assertGreaterEqual(flight_stack["timesTop"], flight_stack["numBottom"] - 1.5)
+            self.assertLessEqual(flight_stack["timesHeight"], 22.0)
+
+            for sel in ('.stub-weather-card', '.kpi-cell[data-kpi="school-fit"]'):
                 tap_res = _cdp_eval(
                     f"""(() => {{
                       const docEl = document.documentElement;
-                      const cell = document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"]');
+                      const cell = document.querySelector('.proposal-card {sel}');
                       cell.click();
                       const tip = cell.querySelector('.kpi-tooltip');
                       const tr = tip.getBoundingClientRect();
@@ -4209,7 +4289,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
             # Escape closes open tooltip cleanly
             _cdp_eval("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true;")
-            open_cnt = _cdp_eval("document.querySelectorAll('.kpi-cell.is-tooltip-open').length")
+            open_cnt = _cdp_eval("document.querySelectorAll('.kpi-cell.is-tooltip-open, .stub-weather-card.is-tooltip-open').length")
             self.assertEqual(open_cnt, 0)
 
         # Verify `390x844` `firstCardY < 900` in default Holiday Mode (`ANYWHERE`) in both `he` RTL & `en` LTR
@@ -4248,7 +4328,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertLess(mob_top["firstCardY"], 900.0)
             self.assertLessEqual(mob_top["scrollWidth"], mob_top["clientWidth"])
 
-        # Also verify across responsive breakpoints (360, 560, 900, 1180, 1260, 2560) that KPI tooltips never overflow horizontally
+        # Also verify across responsive breakpoints (360, 560, 900, 1180, 1260, 2560) that weather + KPI tooltips never overflow horizontally
         for bp_w, bp_h, is_mob in (
             (360, 800, True),
             (560, 900, False),
@@ -4262,11 +4342,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 {"width": bp_w, "height": bp_h, "deviceScaleFactor": 1, "mobile": is_mob},
             )
             _cdp_eval("document.querySelector('.proposal-card').scrollIntoView({ behavior: 'instant', block: 'center' }); true;")
-            for kpi_key in ("school-fit", "bonus-value"):
+            for sel in ('.stub-weather-card', '.kpi-cell[data-kpi="school-fit"]'):
                 bp_chk = _cdp_eval(
                     f"""(() => {{
                       const docEl = document.documentElement;
-                      const cell = document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"]');
+                      const cell = document.querySelector('.proposal-card {sel}');
                       cell.click();
                       const tip = cell.querySelector('.kpi-tooltip');
                       const tr = tip.getBoundingClientRect();
@@ -4281,9 +4361,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                       return out;
                     }})()"""
                 )
-                self.assertGreaterEqual(bp_chk["left"], 0.0, f"bp={bp_w} {kpi_key}")
-                self.assertLessEqual(bp_chk["right"], bp_chk["innerW"], f"bp={bp_w} {kpi_key}")
-                self.assertLessEqual(bp_chk["scrollWidth"], bp_chk["clientWidth"], f"bp={bp_w} {kpi_key}")
+                self.assertGreaterEqual(bp_chk["left"], 0.0, f"bp={bp_w} {sel}")
+                self.assertLessEqual(bp_chk["right"], bp_chk["innerW"], f"bp={bp_w} {sel}")
+                self.assertLessEqual(bp_chk["scrollWidth"], bp_chk["clientWidth"], f"bp={bp_w} {sel}")
 
         # Switch back to Hebrew RTL and verify seeded same-city `FCO` (`2+`/`2+`) + 1-direction `ATH` (`2026-12-06..12`) have zero contradictory badges
         _cdp_eval(

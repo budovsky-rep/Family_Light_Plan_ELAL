@@ -1924,8 +1924,10 @@
     } else {
       const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
       const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
-      const times = depT && arrT ? ` · ${depT}–${arrT}` : depT ? ` · ${depT}` : '';
-      flightTagHtml = `<span class="bonus-lane-flight" dir="ltr">${escapeHtml(fn + times)}</span>`;
+      const timeRange = depT && arrT ? `${depT}–${arrT}` : depT;
+      flightTagHtml = timeRange
+        ? `<span class="bonus-lane-flight" dir="ltr"><span class="bonus-flight-num">${escapeHtml(fn)}</span><span class="bonus-flight-sep" aria-hidden="true"> · </span><span class="bonus-flight-times">${escapeHtml(timeRange)}</span></span>`
+        : `<span class="bonus-lane-flight" dir="ltr"><span class="bonus-flight-num">${escapeHtml(fn)}</span></span>`;
     }
 
     return `
@@ -1960,6 +1962,88 @@
     if (rainD >= 3.0) return '🌧️';
     if (sunH >= 7.5 && rainD <= 1.2) return '☀️';
     return '🌤️';
+  }
+
+  const WEATHER_STYLE_ACTIVITIES_FALLBACK_HE = {
+    BEACH_AND_POOL: 'רחצה בחופים מוגנים, בריכות, טיילת חוף ושייט משפחתי רגוע',
+    NATURE_TRIP: 'מסלולי הליכה קלים למשפחות, תצפיות פנורמיות ושמורות טבע',
+    URBAN_CULTURE: 'שיטוט בעיר העתיקה, מוזיאונים לכל המשפחה, שווקים ובתי קפה',
+    FAMILY_ATTRACTIONS_PARKS: 'אקווריומים, מוזיאוני מדע, פארקי חוויה ואטרקציות אינטראקטיביות לילדים',
+    SNOW_AND_SKI: 'מדרונות גלישה לכל הרמות, מזחלות שלג, רכבלים ועיירות אלפיניות',
+    WINTER_FESTIVE: 'דוכני חורף מוארים, החלקה על הקרח, מדרחובים חגיגיים ומוזיאונים חמימים'
+  };
+
+  const WEATHER_STYLE_ACTIVITIES_FALLBACK_EN = {
+    BEACH_AND_POOL: 'family beaches, resort pools, waterfront promenades, and calm boat outings',
+    NATURE_TRIP: 'scenic family trails, panoramic viewpoints, national parks, and nature reserves',
+    URBAN_CULTURE: 'historic old-town walks, interactive museums, local markets, and neighborhood cafes',
+    FAMILY_ATTRACTIONS_PARKS: 'theme parks, science museums, zoos, aquariums, and hands-on family attractions',
+    SNOW_AND_SKI: 'family ski slopes, snow tubing, alpine cable cars, and cozy mountain villages',
+    WINTER_FESTIVE: 'illuminated winter markets, outdoor ice rinks, festive plazas, and warm indoor museums'
+  };
+
+  function renderWeatherTooltipHtml(tooltipId, wm, cityTitle, wssVal, isHe) {
+    const highC = Number(wm.avg_day_high_c ?? wm.avg_max_temp_c ?? 0).toFixed(1);
+    const lowC = Number(wm.avg_night_low_c ?? wm.avg_min_temp_c ?? 0).toFixed(1);
+    const sunH = Number(wm.sunshine_hours_per_day || 0).toFixed(1);
+    const rainD = Number(wm.estimated_rain_days_in_trip ?? wm.expected_rain_days_in_trip ?? 0).toFixed(1);
+    const hasSea = wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined;
+    const seaC = hasSea ? Number(wm.sea_water_temp_c).toFixed(1) : null;
+    const recList = Array.isArray(wm.recommended_vacation_types) ? wm.recommended_vacation_types : [];
+    const primaryStyle = String(recList[0] || wm.best_matching_vacation_type || 'URBAN_CULTURE').toUpperCase();
+
+    const summaryText = isHe
+      ? (wm.weather_summary_he ||
+          `מזג אוויר צפוי: ${highC}°C ביום / ${lowC}°C בלילה${seaC ? `, טמפ׳ ים ${seaC}°C` : ''}, כ-${sunH} שעות שמש ביום וכ-${rainD} ימי גשם משוערים בטיול (${wssVal.toFixed(0)}/100).`)
+      : (wm.weather_summary_en ||
+          `Expected weather: ${highC}°C day / ${lowC}°C night${seaC ? `, sea ${seaC}°C` : ''}, about ${sunH}h daily sunshine and about ${rainD} expected rain days (${wssVal.toFixed(0)}/100).`);
+
+    const fallbackStyles = recList.length > 0 ? recList.slice(0, 2) : [primaryStyle];
+    const fallbackRecText = isHe
+      ? fallbackStyles
+          .map((vt) => {
+            const code = String(vt || '').toUpperCase();
+            const lbl = formatVacationTypeBadge(code);
+            const idea = WEATHER_STYLE_ACTIVITIES_FALLBACK_HE[code] || '';
+            return idea ? `${lbl} — ${idea}` : lbl;
+          })
+          .join(' · ')
+      : `In ${cityTitle}: ` +
+        fallbackStyles
+          .map((vt) => {
+            const code = String(vt || '').toUpperCase();
+            const lbl = formatVacationTypeBadge(code);
+            const idea = WEATHER_STYLE_ACTIVITIES_FALLBACK_EN[code] || 'local sights and family outings';
+            return `${lbl} (${idea})`;
+          })
+          .join(' · ') +
+        '.';
+
+    const activityText = isHe
+      ? (wm.activity_recommendations_he || fallbackRecText)
+      : (wm.activity_recommendations_en || fallbackRecText);
+
+    const titleText = isHe
+      ? `🌤️ מזג אוויר ומה לעשות ב${cityTitle}`
+      : `🌤️ Weather & What to Do in ${cityTitle}`;
+    const forecastKicker = isHe ? 'תחזית עונתית:' : 'Seasonal forecast:';
+    const activitiesKicker = isHe ? 'מומלץ ביעד במזג אוויר זה:' : 'What to do in this weather:';
+    const stylePillsHtml =
+      recList.length > 0
+        ? `<div class="kpi-tooltip-pills">${recList
+            .slice(0, 3)
+            .map((vt) => `<span class="kpi-tooltip-pill">${escapeHtml(formatVacationTypeBadge(vt))}</span>`)
+            .join('')}</div>`
+        : '';
+
+    return `
+      <div class="kpi-tooltip weather-tooltip" id="${escapeHtml(tooltipId)}" role="tooltip">
+        <strong class="kpi-tooltip-title">${escapeHtml(titleText)}</strong>
+        <p class="kpi-tooltip-line"><span class="kpi-tooltip-kicker">${escapeHtml(forecastKicker)}</span> ${escapeHtml(summaryText)}</p>
+        <p class="kpi-tooltip-line"><span class="kpi-tooltip-kicker">${escapeHtml(activitiesKicker)}</span> ${escapeHtml(activityText)}</p>
+        ${stylePillsHtml}
+      </div>
+    `;
   }
 
   function renderKpiTooltipHtml(tooltipId, titleText, calcText, meaningText, isHe) {
@@ -2217,6 +2301,9 @@
             0
         );
 
+        const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
+        const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
+
         let topStyleChipHtml = '';
         let stubWeatherHtml = '';
         if (wm) {
@@ -2240,8 +2327,16 @@
             wssVal >= 75
               ? 'stub-weather-score stub-weather-score-high'
               : 'stub-weather-score';
+          const tipIdWeather = `weather-tip-${idx}`;
+          const weatherTooltipHtml = renderWeatherTooltipHtml(
+            tipIdWeather,
+            wm,
+            cityTitle,
+            wssVal,
+            isHe
+          );
           stubWeatherHtml = `
-                <div class="stub-weather-card" data-weather-compact="true" data-weather-score="${wssVal.toFixed(0)}">
+                <div class="stub-weather-card" data-weather-compact="true" data-weather-score="${wssVal.toFixed(0)}" tabindex="0" aria-describedby="${tipIdWeather}">
                   <div class="stub-weather-main">
                     <span class="stub-weather-temp">
                       <span aria-hidden="true">${wIcon}</span>
@@ -2250,6 +2345,7 @@
                     <span class="${scoreCls}">
                       <span>${isHe ? 'אקלים' : 'Climate'}</span>
                       <strong class="num" dir="ltr">${wssVal.toFixed(0)}/100</strong>
+                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
                     </span>
                   </div>
                   <div class="stub-weather-meta">
@@ -2257,6 +2353,7 @@
                     <span class="stub-weather-datum">🌧️ <span class="num" dir="ltr">${rainD}</span> ${isHe ? 'ימי גשם' : 'rain d'}</span>
                     ${seaSpan}
                   </div>
+                  ${weatherTooltipHtml}
                 </div>`;
         }
 
@@ -2292,19 +2389,11 @@
           isHe
         );
         const tipIdFit = `kpi-tip-fit-${idx}`;
-        const tipIdBonus = `kpi-tip-bonus-${idx}`;
         const schoolFitTooltipHtml = renderKpiTooltipHtml(
           tipIdFit,
           kpiInfo.schoolFit.title,
           kpiInfo.schoolFit.calc,
           kpiInfo.schoolFit.meaning,
-          isHe
-        );
-        const bonusValueTooltipHtml = renderKpiTooltipHtml(
-          tipIdBonus,
-          kpiInfo.bonusValue.title,
-          kpiInfo.bonusValue.calc,
-          kpiInfo.bonusValue.meaning,
           isHe
         );
 
@@ -2320,8 +2409,6 @@
             ? 'bonus-direction-badge'
             : 'bonus-direction-badge bonus-direction-badge-partial';
 
-        const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
-        const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
         const elalBookUrl = resolveElAlBookingUrl(it);
         const outLeg = (it.outbound_legs && it.outbound_legs[0]) || null;
         const inLeg = (it.inbound_legs && it.inbound_legs[0]) || null;
@@ -2458,14 +2545,6 @@
                 ${stubWeatherHtml}
 
                 <div class="stub-kpi-grid">
-                  <div class="score-pill kpi-cell" data-kpi="bonus-value" tabindex="0" aria-describedby="${tipIdBonus}">
-                    <div class="kpi-cell-head">
-                      <span class="kpi-cell-label">💎 ${isHe ? 'כדאיות בונוס' : 'Award Value'}</span>
-                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
-                    </div>
-                    <strong class="kpi-cell-val" dir="ltr">${Number(fbvsVal).toFixed(1)}/100</strong>
-                    ${bonusValueTooltipHtml}
-                  </div>
                   <div class="score-pill kpi-cell" data-kpi="school-fit" data-school-missed="${schoolMissed}" tabindex="0" aria-describedby="${tipIdFit}">
                     <div class="kpi-cell-head">
                       <span class="kpi-cell-label">🏫 ${isHe ? 'התאמה לחופשת בי"ס' : 'School Break Fit'}</span>
@@ -2570,8 +2649,8 @@
     const heroEyebrow = document.getElementById('hero-eyebrow');
     if (heroEyebrow) {
       heroEyebrow.innerHTML = isHe
-        ? '🏝️ <span class="hero-brand-inline" dir="ltr">breezyflights</span><span class="hero-eyebrow-short"> · חופשות חכמות</span><span class="hero-eyebrow-sub"> · תכנון חכם לחופשה המשפחתית הבאה</span>'
-        : '🏝️ <span class="hero-brand-inline" dir="ltr">breezyflights</span><span class="hero-eyebrow-short"> · Smart Escapes</span><span class="hero-eyebrow-sub"> · Smart Family Vacation Planning</span>';
+        ? '🏝️ <span class="hero-eyebrow-short">חופשות חכמות</span><span class="hero-eyebrow-sub">תכנון חכם לחופשה המשפחתית הבאה</span>'
+        : '🏝️ <span class="hero-eyebrow-short">Smart Escapes</span><span class="hero-eyebrow-sub">Smart Family Vacation Planning</span>';
     }
     const heroHeadline = document.getElementById('hero-headline');
     if (heroHeadline) {
@@ -3306,7 +3385,7 @@
     }
 
     function closeAllKpiTooltips(exceptCell) {
-      document.querySelectorAll('.kpi-cell.is-tooltip-open').forEach((el) => {
+      document.querySelectorAll('.kpi-cell.is-tooltip-open, .stub-weather-card.is-tooltip-open').forEach((el) => {
         if (el !== exceptCell) {
           el.classList.remove('is-tooltip-open');
         }
@@ -3330,7 +3409,8 @@
         if (
           document.activeElement &&
           document.activeElement.classList &&
-          document.activeElement.classList.contains('kpi-cell')
+          (document.activeElement.classList.contains('kpi-cell') ||
+            document.activeElement.classList.contains('stub-weather-card'))
         ) {
           document.activeElement.blur();
         }
@@ -3565,7 +3645,10 @@
         renderProposals();
         return;
       }
-      const kpiCellEl = typeof target.closest === 'function' ? target.closest('.kpi-cell') : null;
+      const kpiCellEl =
+        typeof target.closest === 'function'
+          ? target.closest('.kpi-cell, .stub-weather-card')
+          : null;
       if (kpiCellEl) {
         const willOpen = !kpiCellEl.classList.contains('is-tooltip-open');
         closeAllKpiTooltips(willOpen ? kpiCellEl : null);
@@ -3592,7 +3675,7 @@
       if (ev.pointerType && ev.pointerType !== 'mouse') return;
       const target = ev.target;
       if (!target || typeof target.closest !== 'function') return;
-      const hoveredKpi = target.closest('.kpi-cell');
+      const hoveredKpi = target.closest('.kpi-cell, .stub-weather-card');
       if (hoveredKpi) {
         closeAllKpiTooltips(hoveredKpi);
       }

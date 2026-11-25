@@ -1610,24 +1610,35 @@ class BonusVacationPlannerService:
     ) -> float:
         """Compute the Flight Bonus Value Score (`FBVS` in `[0.0, 100.0]`) from bonus seats only.
 
-        `cov(d) = min(1.0, available bonus seats in direction d / seated passengers)` and
-        `FBVS = round(100 * (cov(OUT) + cov(IN)) / 2, 1)`.
+        When EL AL's feed reports `2+` (`is_two_plus=True` and `seats >= 2`) for a direction,
+        that direction receives full `1.0` (`100%`) availability credit because `2+` is the
+        maximum open-seat bucket published by the feed (so families of 3+ passengers are not
+        artificially capped below 100). Exact seat counts (`1`, `0`, or non-`2+` counts) scale
+        proportionally via `min(1.0, seats / seated_passengers)`.
 
-        The only inputs are the available bonus seats per direction (as carried by the
-        itinerary) and the party size, which only normalises them. Strategy, schedule,
-        points balance and any cash figure play no part; a result without bonus seats
-        scores 0.0.
+        `FBVS = round(100 * (cov(OUT) + cov(IN)) / 2, 1)`.
         """
         party_size = max(1, int(n_seated))
 
-        def _coverage(seats: Optional[int]) -> float:
-            return min(1.0, max(0, int(seats or 0)) / float(party_size))
+        def _coverage(seats: Optional[int], is_two_plus: bool) -> float:
+            s = max(0, int(seats or 0))
+            if s <= 0:
+                return 0.0
+            if is_two_plus and s >= 2:
+                return 1.0
+            return min(1.0, s / float(party_size))
 
         raw_score = (
             100.0
             * (
-                _coverage(itinerary.outbound_bonus_seats)
-                + _coverage(itinerary.inbound_bonus_seats)
+                _coverage(
+                    itinerary.outbound_bonus_seats,
+                    bool(itinerary.outbound_bonus_seats_is_two_plus),
+                )
+                + _coverage(
+                    itinerary.inbound_bonus_seats,
+                    bool(itinerary.inbound_bonus_seats_is_two_plus),
+                )
             )
             / 2.0
         )

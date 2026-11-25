@@ -2402,7 +2402,7 @@ class TestTier2F24HybridBonusPlusCashBoundaries(Tier2BoundaryTestBase):
         self.assertGreaterEqual(len(hybrids), 1)
         h_itin = _assert_run11_proposal_contract(self, hybrids[0])
         self.assertEqual((h_itin["outbound_bonus_seats"], h_itin["inbound_bonus_seats"]), (4, 5))
-        self.assertEqual(hybrids[0].flight_bonus_value_score, 90.0)
+        self.assertEqual(hybrids[0].flight_bonus_value_score, 100.0)
 
 
 class TestTier2F25OneWayAndOpenJawBonusBoundaries(Tier2BoundaryTestBase):

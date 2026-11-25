@@ -1684,6 +1684,9 @@ class DestinationWeatherMetrics(_DomainModelBase):
     snow_reliability_index: float = 0.0
     climate_zone_label_he: str = ""
     weather_summary_he: str = ""
+    weather_summary_en: str = ""
+    activity_recommendations_he: str = ""
+    activity_recommendations_en: str = ""
     below_threshold_warning: bool = False
     overall_weather_suitability_score: float = 0.0
     scores_by_vacation_type: dict[str, float] = field(default_factory=dict)
@@ -1708,6 +1711,9 @@ class DestinationWeatherMetrics(_DomainModelBase):
         self.snow_reliability_index = round(float(self.snow_reliability_index), 2)
         self.climate_zone_label_he = str(self.climate_zone_label_he or "")
         self.weather_summary_he = str(self.weather_summary_he or "")
+        self.weather_summary_en = str(self.weather_summary_en or "")
+        self.activity_recommendations_he = str(self.activity_recommendations_he or "")
+        self.activity_recommendations_en = str(self.activity_recommendations_en or "")
         self.below_threshold_warning = _parse_bool(self.below_threshold_warning, False)
         self.overall_weather_suitability_score = round(
             float(self.overall_weather_suitability_score or 0.0), 1
@@ -1753,6 +1759,9 @@ class DestinationWeatherMetrics(_DomainModelBase):
             "snow_reliability_index": self.snow_reliability_index,
             "climate_zone_label_he": self.climate_zone_label_he,
             "weather_summary_he": self.weather_summary_he,
+            "weather_summary_en": self.weather_summary_en,
+            "activity_recommendations_he": self.activity_recommendations_he,
+            "activity_recommendations_en": self.activity_recommendations_en,
             "below_threshold_warning": self.below_threshold_warning,
             "overall_weather_suitability_score": self.overall_weather_suitability_score,
             "scores_by_vacation_type": dict(self.scores_by_vacation_type),
@@ -1786,6 +1795,13 @@ class DestinationWeatherMetrics(_DomainModelBase):
             snow_reliability_index=float(data.get("snow_reliability_index", 0.0)),
             climate_zone_label_he=str(data.get("climate_zone_label_he") or ""),
             weather_summary_he=str(data.get("weather_summary_he") or ""),
+            weather_summary_en=str(data.get("weather_summary_en") or ""),
+            activity_recommendations_he=str(
+                data.get("activity_recommendations_he") or ""
+            ),
+            activity_recommendations_en=str(
+                data.get("activity_recommendations_en") or ""
+            ),
             below_threshold_warning=_parse_bool(
                 data.get("below_threshold_warning", False)
             ),

@@ -67,6 +67,24 @@ SPECIALIZED_VACATION_TYPES: tuple[str, ...] = (
     "WINTER_FESTIVE",
 )
 
+STYLE_ACTIVITY_FALLBACK_HE: dict[str, str] = {
+    "BEACH_AND_POOL": "רחצה בחופים מוגנים, בריכות, טיילת חוף ושייט משפחתי רגוע",
+    "NATURE_TRIP": "מסלולי הליכה קלים למשפחות, תצפיות פנורמיות ושמורות טבע",
+    "URBAN_CULTURE": "שיטוט בעיר העתיקה, מוזיאונים לכל המשפחה, שווקים ובתי קפה",
+    "FAMILY_ATTRACTIONS_PARKS": "אקווריומים, מוזיאוני מדע, פארקי חוויה ואטרקציות אינטראקטיביות לילדים",
+    "SNOW_AND_SKI": "מדרונות גלישה לכל הרמות, מזחלות שלג, רכבלים ועיירות אלפיניות",
+    "WINTER_FESTIVE": "דוכני חורף מוארים, החלקה על הקרח, מדרחובים חגיגיים ומוזיאונים חמימים",
+}
+
+STYLE_ACTIVITY_FALLBACK_EN: dict[str, str] = {
+    "BEACH_AND_POOL": "family beaches, resort pools, waterfront promenades, and calm boat outings",
+    "NATURE_TRIP": "scenic family trails, panoramic viewpoints, national parks, and nature reserves",
+    "URBAN_CULTURE": "historic old-town walks, interactive museums, local markets, and neighborhood cafes",
+    "FAMILY_ATTRACTIONS_PARKS": "theme parks, science museums, zoos, aquariums, and hands-on family attractions",
+    "SNOW_AND_SKI": "family ski slopes, snow tubing, alpine cable cars, and cozy mountain villages",
+    "WINTER_FESTIVE": "illuminated winter markets, outdoor ice rinks, festive plazas, and warm indoor museums",
+}
+
 
 def _clamp(val: float, low: float = 0.0, high: float = 100.0) -> float:
     return min(high, max(low, float(val)))
@@ -422,9 +440,12 @@ class DestinationWeatherSuitabilityEngine:
         avg_snow = round(accum_snow / float(total_days), 2)
 
         out_meta = self.catalog.get(out_iata) or {}
+        in_meta = self.catalog.get(in_iata) or {}
         c_prof = out_meta.get("climate_profile") or {}
+        in_c_prof = in_meta.get("climate_profile") or {}
         zone_label_he = str(c_prof.get("climate_zone_label_he") or "")
         highlights_map = c_prof.get("highlights_by_type_he") or {}
+        in_highlights_map = in_c_prof.get("highlights_by_type_he") or {}
 
         top_style = (
             clean_prefs[0]
@@ -432,13 +453,20 @@ class DestinationWeatherSuitabilityEngine:
             else (recommended[0] if recommended else "URBAN_CULTURE")
         )
         style_label_he = VACATION_TYPE_LABELS_HE.get(top_style, "חופשה משפחתית")
+        style_label_en = VACATION_TYPE_LABELS_EN.get(top_style, "Family Vacation")
         highlight_he = highlights_map.get(top_style) or ""
 
         sea_note = f", טמפ' ים {sea_c}°C" if sea_c is not None else ""
+        sea_note_en = f", sea {sea_c}°C" if sea_c is not None else ""
         hl_note = f" ({highlight_he})" if highlight_he else ""
         below_thresh = bool(clean_prefs and wss < effective_tau)
         warn_note = (
             f" ⚠️ שים לב: מזג האוויר במועד זה פחות אידיאלי עבור {style_label_he} (ציון {wss}/100 מתחת לסף {effective_tau})."
+            if below_thresh
+            else ""
+        )
+        warn_note_en = (
+            f" ⚠️ Note: seasonal weather is below ideal comfort for {style_label_en} ({wss}/100 vs {effective_tau} threshold)."
             if below_thresh
             else ""
         )
@@ -448,6 +476,55 @@ class DestinationWeatherSuitabilityEngine:
             f"כ-{avg_sun_h} שעות שמש ביום וכ-{exp_rain_days} ימי גשם משוערים בטיול. "
             f"התאמה ל{style_label_he}: {wss}/100{hl_note}.{warn_note}"
         )
+        summary_en = (
+            f"Expected weather: {avg_max_c}°C day / {avg_min_c}°C night{sea_note_en}, "
+            f"~{avg_sun_h}h daily sunshine and ~{exp_rain_days} expected rain days in trip. "
+            f"{style_label_en} suitability: {wss}/100.{warn_note_en}"
+        )
+
+        candidate_styles: list[str] = []
+        for vt in [*(clean_prefs or []), *recommended, top_style]:
+            if vt in SPECIALIZED_VACATION_TYPES and vt not in candidate_styles:
+                candidate_styles.append(vt)
+            if len(candidate_styles) >= 2:
+                break
+
+        rec_parts_he: list[str] = []
+        rec_parts_en: list[str] = []
+        for vt in candidate_styles:
+            vt_lbl_he = VACATION_TYPE_LABELS_HE.get(vt, "חופשה משפחתית")
+            vt_lbl_en = VACATION_TYPE_LABELS_EN.get(vt, "Family Trip")
+            out_hl = str(highlights_map.get(vt) or "").strip()
+            in_hl = (
+                str(in_highlights_map.get(vt) or "").strip()
+                if in_iata != out_iata
+                else ""
+            )
+            if out_hl and in_hl and in_hl != out_hl:
+                dest_hl_he = f"{out_hl}; {in_hl}"
+            elif out_hl:
+                dest_hl_he = out_hl
+            elif in_hl:
+                dest_hl_he = in_hl
+            else:
+                dest_hl_he = STYLE_ACTIVITY_FALLBACK_HE.get(vt, "")
+            rec_parts_he.append(
+                f"{vt_lbl_he} — {dest_hl_he}" if dest_hl_he else vt_lbl_he
+            )
+            fb_en = STYLE_ACTIVITY_FALLBACK_EN.get(
+                vt, "local highlights and family outings"
+            )
+            rec_parts_en.append(f"{vt_lbl_en} ({fb_en})")
+
+        out_city_en = str(out_meta.get("city_en") or out_iata).strip()
+        in_city_en = str(in_meta.get("city_en") or in_iata).strip()
+        loc_en = (
+            f"{out_city_en} & {in_city_en}"
+            if in_iata != out_iata and in_city_en and in_city_en != out_city_en
+            else out_city_en
+        )
+        activity_rec_he = " · ".join(rec_parts_he)
+        activity_rec_en = f"In {loc_en}: " + " · ".join(rec_parts_en) + "."
 
         metrics = DestinationWeatherMetrics(
             destination_iata=out_iata,
@@ -462,6 +539,9 @@ class DestinationWeatherSuitabilityEngine:
             snow_reliability_index=avg_snow,
             climate_zone_label_he=zone_label_he,
             weather_summary_he=summary_he,
+            weather_summary_en=summary_en,
+            activity_recommendations_he=activity_rec_he,
+            activity_recommendations_en=activity_rec_en,
             below_threshold_warning=below_thresh,
             overall_weather_suitability_score=round(wss, 1),
             scores_by_vacation_type=dict(type_scores),
