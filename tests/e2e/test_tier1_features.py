@@ -4229,9 +4229,21 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertEqual(len(selected_dest_opts), 1)
         self.assertEqual(selected_dest_opts[0].get("value"), "ANYWHERE")
 
-        tab_specific = soup.find("button", id="tab-mode-specific")
-        self.assertIsNotNone(tab_specific)
+        mode_tabs = soup.find(class_="mode-tabs")
+        self.assertIsNotNone(mode_tabs)
+        tab_btns = mode_tabs.find_all("button", class_="mode-tab-btn")
+        self.assertEqual([b.get("id") for b in tab_btns], ["tab-mode-specific", "tab-mode-holiday"])
+        tab_specific = tab_btns[0]
+        tab_holiday = tab_btns[1]
         self.assertFalse(tab_specific.has_attr("hidden"))
+        self.assertIn("active", tab_specific.get("class") or [])
+        self.assertNotIn("active", tab_holiday.get("class") or [])
+        c_spec = soup.find(id="controls-specific-dates")
+        c_hol = soup.find(id="controls-holiday-direct")
+        self.assertIsNotNone(c_spec)
+        self.assertIsNotNone(c_hol)
+        self.assertNotIn("display: none", c_spec.get("style") or "")
+        self.assertIn("display: none", c_hol.get("style") or "")
         for manual_id in ("input-dep-date", "input-ret-date", "input-flex-days", "prof-matmid-points"):
             self.assertIsNotNone(soup.find(id=manual_id), f"Missing #{manual_id}")
 
@@ -4727,6 +4739,9 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertGreater(app_js.index('class="stub-kpi-grid"'), stub_idx)
         self.assertNotIn('data-kpi="school-missed"', app_js)
         self.assertNotIn('data-kpi="bonus-value"', app_js)
+        self.assertNotIn("החופשה המומלצת ביותר", app_js)
+        self.assertNotIn("בחירה מובילה", app_js)
+        self.assertNotIn("formatRecommendationTierLabel", app_js)
         for req_js in (
             'data-kpi="school-fit"',
             "data-school-missed",

@@ -174,23 +174,38 @@
       <section class="zone-card" id="zone-search" aria-labelledby="zone-search-title">
         <div class="zone-header">
           <div class="zone-title-wrap">
-            <h2 id="zone-search-title">תכנון חופשה: לפי חג או תאריכים ידניים</h2>
+            <h2 id="zone-search-title">חיפוש חופשה וכרטיסי בונוס</h2>
           </div>
-          <span class="badge-vacation" id="active-mode-badge">תכנון לפי חג (שנה קדימה)</span>
+          <span class="badge-vacation" id="active-mode-badge">תאריכים ידניים (±גמישות)</span>
         </div>
 
-        <!-- Rolling 1-Year Holiday vs Manual Date Entry Modes -->
+        <!-- Manual Date Entry (Default, Right in RTL) vs Rolling 1-Year Holiday (Left in RTL) -->
         <div class="mode-tabs" role="tablist" aria-label="מצבי בחירת חופשה ותאריכים" data-aria-he="מצבי בחירת חופשה ותאריכים" data-aria-en="Date selection modes">
-          <button type="button" class="mode-tab-btn active" data-mode="HOLIDAY_DIRECT_INTENT" id="tab-mode-holiday" data-he="✨ לפי חג וחופשה" data-en="✨ By Holiday">
-            ✨ לפי חג וחופשה
-          </button>
-          <button type="button" class="mode-tab-btn" data-mode="SPECIFIC_DATES" id="tab-mode-specific" data-he="📅 תאריכים ידניים" data-en="📅 Manual Dates">
+          <button type="button" class="mode-tab-btn active" data-mode="SPECIFIC_DATES" id="tab-mode-specific" data-he="📅 תאריכים ידניים" data-en="📅 Manual Dates">
             📅 תאריכים ידניים
+          </button>
+          <button type="button" class="mode-tab-btn" data-mode="HOLIDAY_DIRECT_INTENT" id="tab-mode-holiday" data-he="✨ לפי חג וחופשה" data-en="✨ By Holiday">
+            ✨ לפי חג וחופשה
           </button>
         </div>
 
         <!-- Mode-Specific Controls -->
-        <div id="controls-holiday-direct" class="form-grid">
+        <div id="controls-specific-dates" class="form-grid form-grid-2">
+          <div class="form-field">
+            <label for="input-dep-date" data-he="תאריך המראה:" data-en="Departure Date:">תאריך המראה:</label>
+            <input type="date" id="input-dep-date" value="2026-12-10" dir="ltr" />
+          </div>
+          <div class="form-field">
+            <label for="input-ret-date" data-he="תאריך חזרה:" data-en="Return Date:">תאריך חזרה:</label>
+            <input type="date" id="input-ret-date" value="2026-12-17" dir="ltr" />
+          </div>
+          <div class="form-field form-field-full">
+            <label for="input-flex-days" data-he="גמישות בתאריכים (עד ±7 ימים):" data-en="Date Flexibility (±0–7 days):">גמישות בתאריכים (עד ±7 ימים):</label>
+            <input type="number" id="input-flex-days" min="0" max="7" value="2" dir="ltr" />
+          </div>
+        </div>
+
+        <div id="controls-holiday-direct" class="form-grid" style="display: none;">
           <div class="form-field">
             <label for="select-direct-holiday" data-he="חג / חופשה בשנה הקרובה:" data-en="Upcoming Holiday (Next 12 Months):">חג / חופשה בשנה הקרובה:</label>
             <select id="select-direct-holiday">
@@ -206,21 +221,6 @@
               <option value="YOM_KIPPUR_SUKKOT_BRIDGE" data-year="2027" data-days="14" data-he="גשר יום כיפור–סוכות 2027 (14 ימים)" data-en="Yom Kippur–Sukkot Bridge 2027 (14 days)">גשר יום כיפור–סוכות 2027 (14 ימים)</option>
               <option value="SUKKOT" data-year="2027" data-days="9" data-he="חופשת סוכות 2027 (9 ימים)" data-en="Sukkot Break 2027 (9 days)">חופשת סוכות 2027 (9 ימים)</option>
             </select>
-          </div>
-        </div>
-
-        <div id="controls-specific-dates" class="form-grid form-grid-2" style="display: none;">
-          <div class="form-field">
-            <label for="input-dep-date" data-he="תאריך המראה:" data-en="Departure Date:">תאריך המראה:</label>
-            <input type="date" id="input-dep-date" value="2026-12-10" dir="ltr" />
-          </div>
-          <div class="form-field">
-            <label for="input-ret-date" data-he="תאריך חזרה:" data-en="Return Date:">תאריך חזרה:</label>
-            <input type="date" id="input-ret-date" value="2026-12-17" dir="ltr" />
-          </div>
-          <div class="form-field form-field-full">
-            <label for="input-flex-days" data-he="גמישות בתאריכים (עד ±7 ימים):" data-en="Date Flexibility (±0–7 days):">גמישות בתאריכים (עד ±7 ימים):</label>
-            <input type="number" id="input-flex-days" min="0" max="7" value="2" dir="ltr" />
           </div>
         </div>
 
@@ -311,7 +311,7 @@
 
         <!-- Weather & Duration Progressive Disclosure (<768px) -->
         <button type="button" class="btn-secondary search-filters-toggle-btn" id="btn-toggle-search-filters" aria-expanded="false" aria-controls="search-secondary-drawer">
-          <span id="search-filters-summary-text">🌤️ סגנון: הכל · 🌙 4–7 לילות</span>
+          <span id="search-filters-summary-text">🌤️ סגנון: הכל</span>
           <span class="hh-caret" aria-hidden="true">▾</span>
         </button>
 
@@ -356,7 +356,7 @@
             </div>
           </div>
 
-          <div class="form-grid form-grid-3 compact-num-trio" id="controls-holiday-duration">
+          <div class="form-grid form-grid-3 compact-num-trio" id="controls-holiday-duration" style="display: none;">
             <div class="form-field">
               <label for="input-min-nights" data-he="מינ׳ לילות:" data-en="Min Nights:">מינ׳ לילות:</label>
               <input type="number" id="input-min-nights" min="1" max="45" value="4" dir="ltr" />

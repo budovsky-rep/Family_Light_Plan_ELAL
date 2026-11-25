@@ -3933,9 +3933,41 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
         for _ in range(80):
             if _cdp_eval(
-                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 1), 30))"
+                "new Promise((r) => setTimeout(() => r(Boolean(document.querySelector('[data-dest-option=\"LCA\"]') && (document.querySelector('.proposal-card') || document.querySelector('.empty-state-card')))), 30))"
             ):
                 break
+
+        # Verify boot search mode tab order & RTL geometry: Manual Dates active on RIGHT, By Holiday inactive on LEFT
+        boot_tabs = _cdp_eval(
+            """(() => {
+              const specBtn = document.getElementById('tab-mode-specific');
+              const holBtn = document.getElementById('tab-mode-holiday');
+              const sr = specBtn.getBoundingClientRect();
+              const hr = holBtn.getBoundingClientRect();
+              const tabIds = Array.from(document.querySelectorAll('.mode-tabs .mode-tab-btn')).map((b) => b.id);
+              return {
+                dir: document.documentElement.getAttribute('dir'),
+                tabIds,
+                specActive: specBtn.classList.contains('active'),
+                holActive: holBtn.classList.contains('active'),
+                specLeft: sr.left,
+                holRight: hr.right,
+                specControlsDisplay: getComputedStyle(document.getElementById('controls-specific-dates')).display,
+                holControlsDisplay: getComputedStyle(document.getElementById('controls-holiday-direct')).display,
+                holDurDisplay: getComputedStyle(document.getElementById('controls-holiday-duration')).display,
+                badgeTxt: (document.getElementById('active-mode-badge').textContent || '').trim()
+              };
+            })()"""
+        )
+        self.assertEqual(boot_tabs["dir"], "rtl")
+        self.assertEqual(boot_tabs["tabIds"], ["tab-mode-specific", "tab-mode-holiday"])
+        self.assertTrue(boot_tabs["specActive"])
+        self.assertFalse(boot_tabs["holActive"])
+        self.assertGreaterEqual(boot_tabs["specLeft"], boot_tabs["holRight"])
+        self.assertNotEqual(boot_tabs["specControlsDisplay"], "none")
+        self.assertEqual(boot_tabs["holControlsDisplay"], "none")
+        self.assertEqual(boot_tabs["holDurDisplay"], "none")
+        self.assertIn("תאריכים ידניים", boot_tabs["badgeTxt"])
 
         # Configure 4-pax family (2 adults + 2 children [5, 9]) and search 2026-12-10..14 on LCA, PFO, VIE
         _cdp_eval(
@@ -3986,6 +4018,12 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "ימי חופש",
             "יום חופש",
             "rbddataclients",
+            "החופשה המומלצת ביותר",
+            "בחירה מובילה",
+            "חלופה מומלצת",
+            "Best Overall Vacation",
+            "Top Choice",
+            "Alternative Option",
         )
 
         # Check R1, R2, and R3 real CDP mouse hover across both Hebrew (`rtl`) and English (`ltr`) at 1440x900

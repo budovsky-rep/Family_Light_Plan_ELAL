@@ -462,7 +462,7 @@
   const state = {
     locale: 'he',
     dir: 'rtl',
-    dateSelectionMode: 'HOLIDAY_DIRECT_INTENT',
+    dateSelectionMode: 'SPECIFIC_DATES',
     airlineSelectionMode: 'EL_AL_ONLY',
     selectedVacationTypes: [],
     weatherFilterMode: 'SOFT_PRIORITIZE',
@@ -1130,14 +1130,6 @@
       }
     }
     return formatStrategyLabel(strategyCode, it, dirInfo);
-  }
-
-  function formatRecommendationTierLabel(tierCode) {
-    const code = String(tierCode || '');
-    const isHe = state.locale === 'he';
-    if (code === 'RECOMMENDED') return isHe ? '🌟 החופשה המומלצת ביותר' : '🌟 Best Overall Vacation';
-    if (code === 'TOP_CHOICE') return isHe ? '✨ בחירה מובילה' : '✨ Top Choice';
-    return isHe ? '🏖️ חלופה מומלצת' : '🏖️ Alternative Option';
   }
 
   function classifyFareByAge(ageYears) {
@@ -2399,15 +2391,7 @@
         const paxInfo = buildHouseholdPassengerSummary(state.profile, it, isHe);
         const seatedCount = paxInfo.seatedCount;
 
-        const rankNum = p.rank_order || p.rank || (idx + 1);
         const tierCode = p.recommendation_tier || (idx === 0 ? 'RECOMMENDED' : idx < 4 ? 'TOP_CHOICE' : 'ALTERNATIVE');
-        const tierBadgeText = formatRecommendationTierLabel(tierCode);
-        const tierBadgeCls =
-          tierCode === 'RECOMMENDED'
-            ? 'badge-vacation'
-            : tierCode === 'TOP_CHOICE'
-              ? 'badge-camp'
-              : 'badge-tier-alt';
         const fbvsVal = p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0;
         const hasVal = Number(p.holiday_alignment_score ?? 0).toFixed(1);
         const schoolMissed = Number(p.total_school_days_missed_across_children || 0);
@@ -2524,7 +2508,6 @@
                   <div class="proposal-dest-header">
                     <span class="proposal-dest-icon" aria-hidden="true">${destIcon}</span>
                     <div class="proposal-title-group">
-                      <span class="${tierBadgeCls}">#${rankNum} ${escapeHtml(tierBadgeText)}</span>
                       <strong class="proposal-dest-title">${escapeHtml(cityTitle)}</strong>
                       <span class="proposal-route-pair"><span class="route-pair-origin" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')}</span> <span aria-hidden="true">⇄</span> <span class="route-pair-dest" dir="ltr">${escapeHtml(it.destination_iata)}</span></span>
                       ${topStyleChipHtml}
@@ -2718,8 +2701,8 @@
     const zSearch = document.getElementById('zone-search-title');
     if (zSearch) {
       zSearch.textContent = isHe
-        ? 'תכנון חופשה: לפי חג או תאריכים ידניים'
-        : 'Vacation Search: By Holiday or Manual Dates';
+        ? 'חיפוש חופשה וכרטיסי בונוס'
+        : 'Vacation & Award Flight Search';
     }
     const zProfile = document.getElementById('zone-profile-title');
     if (zProfile) {
@@ -2950,6 +2933,7 @@
   async function loadInitialData() {
     const refIso = getReferenceToday();
     initDefaultManualDates();
+    setDateMode(state.dateSelectionMode);
     state.validationErrorHe = null;
     state.validationErrorEn = null;
     state.proposals = [];
@@ -3615,7 +3599,7 @@
           birth_date: null,
           child_age_years: defaultAge,
           passenger_Current_type: 'CHILD',
-          framework_type: state.dateSelectionMode === 'SPECIFIC_DATES' ? null : suggestFrameworkByAge(defaultAge),
+          framework_type: suggestFrameworkByAge(defaultAge),
           school_week_days: 5,
           holiday_extension_mode: 'NITZANIM_FULL_WITH_JULY',
           treat_camp_as_vacation: true,
@@ -3651,7 +3635,10 @@
         state.profile.children[idx].child_age_years = newAge;
         state.profile.children[idx].passenger_Current_type =
           newAge < 2 ? 'INFANT_LAP' : newAge <= 11 ? 'CHILD' : 'YOUTH';
-        if (state.dateSelectionMode !== 'SPECIFIC_DATES') {
+        if (
+          state.profile.children[idx].framework_type !== null ||
+          state.dateSelectionMode !== 'SPECIFIC_DATES'
+        ) {
           state.profile.children[idx].framework_type = suggestFrameworkByAge(newAge);
         }
         state.profileDirty = true;
