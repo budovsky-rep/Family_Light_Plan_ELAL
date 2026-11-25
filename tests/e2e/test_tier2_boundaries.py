@@ -2119,7 +2119,8 @@ class TestTier2F22FullBonusSameCabinBoundaries(Tier2BoundaryTestBase):
         )
         below_strats = {_get_field(p.itinerary, "fulfillment_strategy") for p in below_one_ticket}
         self.assertNotIn("FULL_BONUS_SAME_CABIN", below_strats)
-        self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strats)
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strats)
+        self.assertIn("CASH_AND_POINTS", below_strats)
 
     def test_f22_04_infant_on_lap_does_not_consume_separate_award_seat_cap(self) -> None:
         eng = self.get_wallet_engine()
@@ -2604,7 +2605,7 @@ class TestTier2F26CashAndPointsBoundaries(Tier2BoundaryTestBase):
                 {it["fulfillment_strategy"] for it in itins_30k},
             )
 
-        # Boundary at 29,999 vs 15,000 vs 14,999
+        # Boundary at 29,999 on 2-direction FCO (round-trip 30,000 dropped; no spurious same-airport 1-way)
         r_29999 = client.post(
             "/api/v1/vacations/search",
             json={**base_payload, "matmid_points_balance": 29999},
@@ -2614,30 +2615,48 @@ class TestTier2F26CashAndPointsBoundaries(Tier2BoundaryTestBase):
         )
         self.assertEqual(
             {it["fulfillment_strategy"] for it in itins_29999},
-            {"ONE_WAY_BONUS_ONE_WAY_CASH", "CASH_AND_POINTS"},
+            {"CASH_AND_POINTS"},
         )
 
-        r_15000 = client.post(
-            "/api/v1/vacations/search",
-            json={**base_payload, "matmid_points_balance": 15000},
+        # Single-direction boundary on seeded 1-way Athens (`2026-12-06..12`)
+        ath_base = {
+            "date_selection_mode": "SPECIFIC_DATES",
+            "airline_selection_mode": "EL_AL_ONLY",
+            "specific_departure_date": "2026-12-06",
+            "specific_return_date": "2026-12-12",
+            "flex_days_plus_minus": 0,
+            "destination_iatas": ["ATH"],
+        }
+        r_ath_0 = client.post("/api/v1/vacations/search", json={**ath_base, "matmid_points_balance": 0})
+        ath_itins_0 = _assert_run11_search_response_contract(self, r_ath_0.json(), is_bonus_search=True)
+        ath_ow_pts = next(
+            it["min_points_per_bonus_ticket"]
+            for it in ath_itins_0
+            if it["fulfillment_strategy"] == "ONE_WAY_BONUS_ONE_WAY_CASH"
         )
-        itins_15000 = _assert_run11_search_response_contract(
-            self, r_15000.json(), is_bonus_search=True
+        self.assertGreater(ath_ow_pts, 0)
+
+        r_at_ow = client.post(
+            "/api/v1/vacations/search",
+            json={**ath_base, "matmid_points_balance": ath_ow_pts},
+        )
+        itins_at_ow = _assert_run11_search_response_contract(
+            self, r_at_ow.json(), is_bonus_search=True
         )
         self.assertIn(
             "ONE_WAY_BONUS_ONE_WAY_CASH",
-            {it["fulfillment_strategy"] for it in itins_15000},
+            {it["fulfillment_strategy"] for it in itins_at_ow},
         )
 
-        r_14999 = client.post(
+        r_below_ow = client.post(
             "/api/v1/vacations/search",
-            json={**base_payload, "matmid_points_balance": 14999},
+            json={**ath_base, "matmid_points_balance": ath_ow_pts - 1},
         )
-        itins_14999 = _assert_run11_search_response_contract(
-            self, r_14999.json(), is_bonus_search=True
+        itins_below_ow = _assert_run11_search_response_contract(
+            self, r_below_ow.json(), is_bonus_search=True
         )
         self.assertEqual(
-            {it["fulfillment_strategy"] for it in itins_14999},
+            {it["fulfillment_strategy"] for it in itins_below_ow},
             {"CASH_AND_POINTS"},
         )
 
@@ -2670,7 +2689,6 @@ class TestTier2F26CashAndPointsBoundaries(Tier2BoundaryTestBase):
                 "SPLIT_CABIN_BONUS",
                 "MULTI_CLUB_PER_PASSENGER_SPLIT",
                 "HYBRID_BONUS_PLUS_CASH",
-                "ONE_WAY_BONUS_ONE_WAY_CASH",
                 "CASH_AND_POINTS",
             ],
         )
@@ -3062,7 +3080,7 @@ class TestTier2F28ScoringComparisonAndIcsExportBoundaries(Tier2BoundaryTestBase)
                     "specific_departure_date": "2027-04-11",
                     "specific_return_date": "2027-04-18",
                     "flex_days_plus_minus": 0,
-                    "destination_iatas": ["FCO"],
+                    "destination_iatas": ["FCO", "MXP"],
                 },
                 True,
             ),

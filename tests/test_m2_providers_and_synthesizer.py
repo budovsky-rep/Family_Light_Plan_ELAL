@@ -2947,7 +2947,7 @@ class TestRun11SeatBasedResults(unittest.TestCase):
             "specific_departure_date": "2027-04-11",
             "specific_return_date": "2027-04-18",
             "flex_days_plus_minus": 0,
-            "destination_iatas": ["FCO"],
+            "destination_iatas": ["FCO", "MXP"],
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "run11_r1.db"
@@ -2961,6 +2961,14 @@ class TestRun11SeatBasedResults(unittest.TestCase):
                     **base_query,
                     "airline_selection_mode": "EL_AL_ONLY",
                     "enabled_loyalty_programs": [p.value for p in LoyaltyProgramCode],
+                },
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2026-12-06",
+                    "specific_return_date": "2026-12-12",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["ATH"],
+                    "airline_selection_mode": "EL_AL_ONLY",
                 },
                 {**base_query, "airline_selection_mode": "ALL_AIRLINES"},
                 {
@@ -3055,31 +3063,42 @@ class TestRun11SeatBasedResults(unittest.TestCase):
             min_pts = prop.itinerary.min_points_per_bonus_ticket
             self.assertTrue(min_pts is None or min_pts <= 30000)
 
-        # One point below that minimum: round-trip bonus results are left out, the one-way
-        # result (15,000 pts for one ticket) stays.
+        # One point below that round-trip minimum on 2-direction FCO: round-trip bonus
+        # strategies are left out (and same-airport 2-direction FCO never emits a spurious
+        # one-way commercial strategy per Run 12 R2); CASH_AND_POINTS (no points figure) stays.
         below_minimum = self._search(planner, *self.ROME, family, balance=29999)
         below_strategies = self._strategies(below_minimum)
         self.assertNotIn("FULL_BONUS_SAME_CABIN", below_strategies)
         self.assertNotIn("SPLIT_CABIN_BONUS", below_strategies)
         self.assertNotIn("HYBRID_BONUS_PLUS_CASH", below_strategies)
-        self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strategies)
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strategies)
+        self.assertIn("CASH_AND_POINTS", below_strategies)
         for prop in below_minimum:
             min_pts = prop.itinerary.min_points_per_bonus_ticket
             self.assertTrue(min_pts is None or min_pts <= 29999)
+
+        # Genuine single-direction route (ATH 2026-12-06..12, outbound bonus only):
+        # 1-ticket one-way minimum boundary keeps ONE_WAY_BONUS_ONE_WAY_CASH at minimum and
+        # drops it 1 point below.
+        ath_zero = self._search(planner, "ATH", "2026-12-06", "2026-12-12", family, balance=0)
         one_way = [
             p.itinerary
-            for p in below_minimum
+            for p in ath_zero
             if p.itinerary.fulfillment_strategy.value == "ONE_WAY_BONUS_ONE_WAY_CASH"
         ][0]
-        self.assertEqual(one_way.min_points_per_bonus_ticket, 15000)
+        ow_min_pts = int(one_way.min_points_per_bonus_ticket or 0)
+        self.assertGreater(ow_min_pts, 0)
         self.assertEqual(one_way.min_points_basis, "ONE_WAY")
-
-        # The one-way boundary: 15,000 keeps it, 14,999 drops every result with a points figure
+        self.assertEqual(one_way.bonus_direction_coverage, "OUTBOUND_ONLY")
         self.assertIn(
             "ONE_WAY_BONUS_ONE_WAY_CASH",
-            self._strategies(self._search(planner, *self.ROME, family, balance=15000)),
+            self._strategies(
+                self._search(planner, "ATH", "2026-12-06", "2026-12-12", family, balance=ow_min_pts)
+            ),
         )
-        for prop in self._search(planner, *self.ROME, family, balance=14999):
+        for prop in self._search(
+            planner, "ATH", "2026-12-06", "2026-12-12", family, balance=ow_min_pts - 1
+        ):
             self.assertIsNone(prop.itinerary.min_points_per_bonus_ticket)
 
         # Balance 0 and "no balance at all" mean "not entered": bonus results are returned
@@ -3091,11 +3110,11 @@ class TestRun11SeatBasedResults(unittest.TestCase):
                     "FULL_BONUS_SAME_CABIN",
                     "SPLIT_CABIN_BONUS",
                     "HYBRID_BONUS_PLUS_CASH",
-                    "ONE_WAY_BONUS_ONE_WAY_CASH",
                     "CASH_AND_POINTS",
                 }.issubset(strategies),
                 f"balance={balance}: {strategies}",
             )
+            self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", strategies)
             self.assertNotIn("COMMERCIAL_CASH_ONLY", strategies)
             for prop in not_entered:
                 if prop.itinerary.fulfillment_strategy.value == "CASH_AND_POINTS":
@@ -3204,7 +3223,8 @@ class TestRun11SeatBasedResults(unittest.TestCase):
         family = self._family_of_four()
         proposals = self._search(planner, *self.ROME, family, balance=30000)
         by_strategy = {p.itinerary.fulfillment_strategy.value: p for p in proposals}
-        for kind in ("HYBRID_BONUS_PLUS_CASH", "ONE_WAY_BONUS_ONE_WAY_CASH", "CASH_AND_POINTS"):
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", by_strategy)
+        for kind in ("HYBRID_BONUS_PLUS_CASH", "CASH_AND_POINTS"):
             self.assertIn(kind, by_strategy)
             prop = by_strategy[kind]
             itin_dict = prop.to_dict()["itinerary"]
@@ -3217,6 +3237,47 @@ class TestRun11SeatBasedResults(unittest.TestCase):
         # 4 confirmed round-trip seats for 4 passengers: the hybrid keeps one commercial ticket
         self.assertEqual((hybrid.bonus_tickets_count, hybrid.cash_tickets_count), (3, 1))
         self.assertIsNone(by_strategy["CASH_AND_POINTS"].itinerary.min_points_per_bonus_ticket)
+
+        # Open-Jaw Italy (`FCO` + `MXP`) returns round-trip Open-Jaw `ONE_WAY_BONUS_ONE_WAY_CASH`
+        oj_props = planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO", "MXP"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "matmid_points_balance": 30000,
+            },
+            profile=family,
+            persist_results=False,
+        )
+        oj_cards = [
+            p
+            for p in oj_props
+            if p.itinerary.fulfillment_strategy.value == "ONE_WAY_BONUS_ONE_WAY_CASH"
+            and p.itinerary.destination_iata != p.itinerary.return_origin_iata
+        ]
+        self.assertGreaterEqual(len(oj_cards), 1)
+        for ojp in oj_cards:
+            oj_dict = ojp.to_dict()["itinerary"]
+            for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+                self.assertNotIn(removed_key, oj_dict)
+            self.assertEqual(oj_dict["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+            self.assertEqual(oj_dict["min_points_basis"], "ROUND_TRIP")
+            self._assert_cash_free_text(ojp.explanation_summary_he)
+
+        # Seeded one-direction Athens (`2026-12-06..12`) & live one-direction Larnaca return
+        # single-direction `ONE_WAY_BONUS_ONE_WAY_CASH` without cash figures
+        ath_ow = [
+            p
+            for p in self._search(planner, "ATH", "2026-12-06", "2026-12-12", family, balance=0)
+            if p.itinerary.fulfillment_strategy.value == "ONE_WAY_BONUS_ONE_WAY_CASH"
+        ]
+        self.assertEqual(len(ath_ow), 1)
+        self.assertEqual(ath_ow[0].itinerary.bonus_direction_coverage, "OUTBOUND_ONLY")
+        self.assertEqual(ath_ow[0].itinerary.min_points_basis, "ONE_WAY")
+        self._assert_cash_free_text(ath_ow[0].explanation_summary_he)
 
         # The live one-direction case of `57ab331`: one-way bonus + commercial `LY_CASH` leg
         live_planner = self._live_only_planner(self._lca_rows(2, None))
@@ -3481,6 +3542,311 @@ class TestRun11SeatBasedResults(unittest.TestCase):
             self.assertEqual(
                 reloaded.flight_bonus_value_score, first["flight_bonus_value_score"]
             )
+
+
+class TestRun12ConsistentBonusBadges(unittest.TestCase):
+    """Run 12 (`M12`): non-contradictory bonus direction & strategy logic, R1 weather payload, R3 metric inputs."""
+
+    @staticmethod
+    def _family_of_four():
+        from backend.app.schemas.domain import FamilyProfile
+        from backend.app.storage_cache.seed_data import build_clean_guest_profile
+
+        return FamilyProfile.from_dict(
+            {
+                **build_clean_guest_profile().to_dict(),
+                "children": [
+                    {
+                        "id": "c1",
+                        "child_name": "ילד 1",
+                        "child_age_years": 5,
+                        "framework_type": "MUNICIPAL_GAN",
+                        "school_week_days": 5,
+                    },
+                    {
+                        "id": "c2",
+                        "child_name": "ילד 2",
+                        "child_age_years": 9,
+                        "framework_type": "ELEMENTARY_1_3",
+                        "school_week_days": 5,
+                    },
+                ],
+            }
+        )
+
+    @staticmethod
+    def _planner_for(repo: SQLiteRepository) -> BonusVacationPlannerService:
+        return TestRun11SeatBasedResults._planner_for(repo)
+
+    def test_run12_r2_four_pax_two_plus_open_jaw_lca_pfo_and_mixed_cabin_ltn_lhr_consistency(
+        self,
+    ) -> None:
+        """Exact screenshot route (`TLV->LCA` `2+` + `PFO->TLV` `2+` for 4 pax) and mixed-cabin Open-Jaw (`LTN`/`LHR`)."""
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        planner = self._planner_for(repo)
+        planner.elal_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "LCA",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY5131",
+                    "flight_date": "2026-12-10",
+                    "economy_seats": 2,
+                    "dep_time": "07:00",
+                    "arr_time": "08:05",
+                },
+                {
+                    "destination_iata": "PFO",
+                    "direction": "INBOUND",
+                    "flight_number": "LY5138",
+                    "flight_date": "2026-12-14",
+                    "economy_seats": 2,
+                    "dep_time": "08:15",
+                    "arr_time": "09:20",
+                },
+            ]
+        )
+        family = self._family_of_four()
+        proposals = planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA", "PFO"],
+                "specific_departure_date": "2026-12-10",
+                "specific_return_date": "2026-12-14",
+                "flex_days_plus_minus": 0,
+            },
+            profile=family,
+            persist_results=False,
+        )
+        self.assertGreaterEqual(len(proposals), 1)
+        oj_props = [
+            p
+            for p in proposals
+            if p.itinerary.destination_iata == "LCA"
+            and p.itinerary.return_origin_iata == "PFO"
+        ]
+        self.assertEqual(len(oj_props), 1)
+        oj = oj_props[0]
+        itin = oj.itinerary
+        assert itin is not None
+        self.assertEqual(itin.fulfillment_strategy.value, "ONE_WAY_BONUS_ONE_WAY_CASH")
+        self.assertEqual(itin.bonus_direction_coverage, "BOTH_DIRECTIONS")
+        self.assertEqual(itin.outbound_bonus_seats, 2)
+        self.assertEqual(itin.inbound_bonus_seats, 2)
+        self.assertTrue(itin.outbound_bonus_seats_is_two_plus)
+        self.assertTrue(itin.inbound_bonus_seats_is_two_plus)
+        self.assertEqual(itin.bonus_tickets_count, 4)
+        self.assertEqual(itin.cash_tickets_count, 0)
+        self.assertTrue(itin.requires_two_plus_seat_verification)
+        self.assertEqual(itin.min_points_per_bonus_ticket, 18000)
+        self.assertEqual(itin.min_points_basis, "ROUND_TRIP")
+        self.assertEqual(oj.flight_bonus_value_score, 50.0)
+        self.assertIn("מסלול משולב בבונוס (הלוך ל-LCA, חזור מ-PFO)", oj.explanation_summary_he)
+        self.assertIn("בונוס בשני הכיוונים", oj.explanation_summary_he)
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", oj.explanation_summary_he)
+        for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+            self.assertNotIn(forbidden, oj.explanation_summary_he)
+
+        # Mixed-cabin Open-Jaw (`LTN` Economy 2 + `LHR` Premium 2, Economy 0 on return) must NOT
+        # fall through into Case B `ONE_WAY`; it must stay `ROUND_TRIP` + `BOTH_DIRECTIONS`!
+        repo_lon = SQLiteRepository(":memory:", auto_seed=False)
+        planner_lon = self._planner_for(repo_lon)
+        planner_lon.elal_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "LTN",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY311",
+                    "flight_date": "2026-12-09",
+                    "economy_seats": 2,
+                    "dep_time": "05:30",
+                    "arr_time": "09:05",
+                },
+                {
+                    "destination_iata": "LHR",
+                    "direction": "INBOUND",
+                    "flight_number": "LY210",
+                    "flight_date": "2026-12-15",
+                    "premium_seats": 2,
+                    "dep_time": "16:20",
+                    "arr_time": "23:09",
+                },
+            ]
+        )
+        lon_props = planner_lon.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LTN", "LHR"],
+                "specific_departure_date": "2026-12-09",
+                "specific_return_date": "2026-12-15",
+                "flex_days_plus_minus": 0,
+                "preferred_cabins": ["ECONOMY", "PREMIUM"],
+            },
+            profile=family,
+            persist_results=False,
+        )
+        lon_oj = [
+            p
+            for p in lon_props
+            if p.itinerary.destination_iata == "LTN"
+            and p.itinerary.return_origin_iata == "LHR"
+        ]
+        self.assertEqual(len(lon_oj), 1)
+        self.assertEqual(lon_oj[0].itinerary.bonus_direction_coverage, "BOTH_DIRECTIONS")
+        self.assertEqual(lon_oj[0].itinerary.min_points_basis, "ROUND_TRIP")
+        self.assertEqual(lon_oj[0].itinerary.bonus_tickets_count, 2)
+        self.assertEqual(lon_oj[0].itinerary.cash_tickets_count, 2)
+
+        # Open-Jaw with 0 inbound seats returns None (never falls through to mismatched Case B)
+        out_ltn = planner_lon.elal_adapter.get_award_availability(
+            destinations=["LTN"],
+            start_date=date(2026, 12, 9),
+            end_date=date(2026, 12, 9),
+            direction="OUTBOUND",
+        )[0]
+        in_lhr_zero = copy.deepcopy(
+            planner_lon.elal_adapter.get_award_availability(
+                destinations=["LHR"],
+                start_date=date(2026, 12, 15),
+                end_date=date(2026, 12, 15),
+                direction="INBOUND",
+            )[0]
+        )
+        in_lhr_zero.economy_award_seats = 0
+        in_lhr_zero.premium_award_seats = 0
+        in_lhr_zero.business_award_seats = 0
+        self.assertIsNone(
+            planner_lon.wallet_engine.allocate_family_tickets(
+                family,
+                out_ltn,
+                in_lhr_zero,
+                0.0,
+                "ONE_WAY_BONUS_ONE_WAY_CASH",
+                ["ECONOMY", "PREMIUM"],
+                ["ELAL_MATMID"],
+            )
+        )
+
+    def test_run12_r2_same_airport_two_plus_both_directions_never_emits_one_way_while_single_direction_does(
+        self,
+    ) -> None:
+        """Same-airport 2-direction (`FCO`, `LCA` `2+`/`2+`) omits `ONE_WAY_BONUS_ONE_WAY_CASH`; 1-direction emits it."""
+        family = self._family_of_four()
+        seeded = self._planner_for(SQLiteRepository(":memory:", auto_seed=True))
+        fco_props = seeded.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+            },
+            profile=family,
+            persist_results=False,
+        )
+        self.assertGreaterEqual(len(fco_props), 3)
+        for p in fco_props:
+            self.assertEqual(p.itinerary.bonus_direction_coverage, "BOTH_DIRECTIONS")
+            self.assertNotEqual(p.itinerary.fulfillment_strategy.value, "ONE_WAY_BONUS_ONE_WAY_CASH")
+
+        # Single-cabin 2+/2+ same-city Larnaca for 4 pax
+        repo_lca = SQLiteRepository(":memory:", auto_seed=False)
+        planner_lca = self._planner_for(repo_lca)
+        planner_lca.elal_adapter.parse_and_import_external_rbd_payload(
+            TestRun11SeatBasedResults._lca_rows(2, 2)
+        )
+        lca_both = planner_lca.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA"],
+                "specific_departure_date": "2027-04-20",
+                "specific_return_date": "2027-04-26",
+                "flex_days_plus_minus": 0,
+            },
+            profile=family,
+            persist_results=False,
+        )
+        lca_strats = {p.itinerary.fulfillment_strategy.value for p in lca_both}
+        self.assertIn("FULL_BONUS_SAME_CABIN", lca_strats)
+        self.assertIn("HYBRID_BONUS_PLUS_CASH", lca_strats)
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", lca_strats)
+
+        # Single-direction Athens (`2026-12-06..12`) emits `ONE_WAY_BONUS_ONE_WAY_CASH` with `OUTBOUND_ONLY`
+        ath_props = seeded.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["ATH"],
+                "specific_departure_date": "2026-12-06",
+                "specific_return_date": "2026-12-12",
+                "flex_days_plus_minus": 0,
+            },
+            profile=family,
+            persist_results=False,
+        )
+        ath_ow = [
+            p
+            for p in ath_props
+            if p.itinerary.fulfillment_strategy.value == "ONE_WAY_BONUS_ONE_WAY_CASH"
+        ]
+        self.assertEqual(len(ath_ow), 1)
+        self.assertEqual(ath_ow[0].itinerary.bonus_direction_coverage, "OUTBOUND_ONLY")
+        self.assertEqual(ath_ow[0].itinerary.min_points_basis, "ONE_WAY")
+
+    def test_run12_r1_r3_weather_coastal_vs_landlocked_and_metric_payload_completeness(
+        self,
+    ) -> None:
+        """Verify R1 coastal (`LCA`) vs landlocked (`VIE`) `sea_water_temp_c` and R3 serialized metric inputs."""
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "run12_r1_r3.db")
+            hol_resp = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "PESACH",
+                    "direct_target_year": 2027,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["LCA", "VIE"],
+                    "inline_profile": {
+                        "adults_count": 2,
+                        "matmid_points_balance": 0,
+                        "children": [
+                            {"child_age_years": 6, "framework_type": "ELEMENTARY_1_3"},
+                            {"child_age_years": 10, "framework_type": "ELEMENTARY_4_6"},
+                        ],
+                    },
+                },
+            )
+            self.assertEqual(hol_resp.status_code, 200)
+            hol_props = hol_resp.json()["proposals"]
+            lca_props = [p for p in hol_props if p["itinerary"]["destination_iata"] == "LCA"]
+            vie_props = [p for p in hol_props if p["itinerary"]["destination_iata"] == "VIE"]
+            self.assertGreaterEqual(len(lca_props), 1)
+            self.assertGreaterEqual(len(vie_props), 1)
+            self.assertIsNotNone(lca_props[0]["weather_metrics"]["sea_water_temp_c"])
+            self.assertIsNone(vie_props[0]["weather_metrics"]["sea_water_temp_c"])
+
+            for prop in (lca_props[0], vie_props[0]):
+                for req_key in (
+                    "holiday_alignment_score",
+                    "total_school_days_missed_across_children",
+                    "max_single_child_school_days_missed",
+                    "per_child_impact",
+                    "childcare_coverage_gain",
+                    "school_absence_penalty",
+                    "window_set_type",
+                    "flight_bonus_value_score",
+                    "weather_suitability_score",
+                    "combined_trip_optimization_score",
+                ):
+                    self.assertIn(req_key, prop)
+                self.assertEqual(len(prop["per_child_impact"]), 2)
 
 
 if __name__ == "__main__":

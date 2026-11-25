@@ -2870,7 +2870,7 @@ class TestTier1F22StrategyFullBonusSameCabin(Tier1BaseTestCase):
         self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
         self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
 
-        # 29,999 pts is 1 point short of 1 round-trip ticket: round-trip dropped, one-way (15,000) kept
+        # 29,999 pts is 1 point short of 1 round-trip ticket on 2-direction FCO: round-trip dropped
         below_min = planner.search_vacations(
             {**base_query, "matmid_points_balance": 29999},
             profile=family_four,
@@ -2878,7 +2878,8 @@ class TestTier1F22StrategyFullBonusSameCabin(Tier1BaseTestCase):
         )
         below_strats = {_get_field(p.itinerary, "fulfillment_strategy") for p in below_min}
         self.assertNotIn("FULL_BONUS_SAME_CABIN", below_strats)
-        self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strats)
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strats)
+        self.assertIn("CASH_AND_POINTS", below_strats)
 
         # Balance 0 means "not entered" (U3): full bonus is returned
         zero_bal = planner.search_vacations(
@@ -3217,8 +3218,8 @@ class TestTier1F25StrategyOneWayAndOpenJaw(Tier1BaseTestCase):
         prof = self.get_default_profile(db_path)
         self.authenticate_test_client(client, email="f25_5_mixed@gmail.com", profile=prof)
 
-        # Both-directions Rome fixture returns HYBRID_BONUS_PLUS_CASH, ONE_WAY_BONUS_ONE_WAY_CASH,
-        # and CASH_AND_POINTS without any cash figures
+        # Both-directions same-airport Rome fixture returns HYBRID_BONUS_PLUS_CASH and
+        # CASH_AND_POINTS without any cash figures and without spurious 1-way strategy (Run 12 R2)
         fco_resp = client.post(
             "/api/v1/vacations/search",
             json={
@@ -3237,10 +3238,10 @@ class TestTier1F25StrategyOneWayAndOpenJaw(Tier1BaseTestCase):
         fco_strats = {it["fulfillment_strategy"] for it in fco_itins}
         for mixed_kind in (
             "HYBRID_BONUS_PLUS_CASH",
-            "ONE_WAY_BONUS_ONE_WAY_CASH",
             "CASH_AND_POINTS",
         ):
             self.assertIn(mixed_kind, fco_strats)
+        self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", fco_strats)
         for it in fco_itins:
             self.assertEqual(it["bonus_direction_coverage"], "BOTH_DIRECTIONS")
 
@@ -3745,7 +3746,7 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
                     "specific_departure_date": "2027-04-11",
                     "specific_return_date": "2027-04-18",
                     "flex_days_plus_minus": 0,
-                    "destination_iatas": ["FCO"],
+                    "destination_iatas": ["FCO", "MXP"],
                     "enabled_loyalty_programs": [
                         "ELAL_MATMID",
                         "BRITISH_AVIOS",
@@ -4373,6 +4374,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
                 )
         self.assertIn("אין משיכה של טיסות מהשרת", app_js)
         # Verify vacation style & weather suitability controls in UI
+        self.assertNotIn("weather-telemetry-strip", app_js)
         for vtype_token in (
             "BEACH_AND_POOL",
             "NATURE_TRIP",
@@ -4381,7 +4383,14 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "SNOW_AND_SKI",
             "WINTER_FESTIVE",
             "weather_suitability_score",
-            "weather-telemetry-strip",
+            "stub-weather-card",
+            "data-weather-compact",
+            "stub-kpi-grid",
+            'data-kpi="school-fit"',
+            "data-school-missed",
+            "kpi-missed-paren",
+            'data-kpi="bonus-value"',
+            "kpi-tooltip",
         ):
             self.assertIn(vtype_token, combined)
 
@@ -4651,6 +4660,62 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
                     ),
                     "balance 0 means not entered and returns bonus results with 1-ticket minimums",
                 )
+
+    def test_f31_7_run12_compact_stub_weather_non_contradictory_badges_and_kpi_tooltips(
+        self,
+    ) -> None:
+        """Run 12 (`M12`): compact side-stub weather, non-contradictory strategy badges & KPI tooltips."""
+        import re as _re
+
+        app_js = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+        css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        subpanel_tsx = (
+            PROJECT_ROOT / "frontend" / "src" / "components" / "search" / "ElAlBonusSearchSubPanel.tsx"
+        ).read_text("utf-8")
+
+        # R1: bottom weather block removed from app.js; compact weather inside `.proposal-pass-stub`
+        self.assertNotIn("weather-telemetry-strip", app_js)
+        self.assertIn('class="stub-weather-card" data-weather-compact="true"', app_js)
+        stub_idx = app_js.index('<div class="proposal-pass-stub">')
+        self.assertGreater(app_js.index("${stubWeatherHtml}"), stub_idx)
+
+        # R2: context-aware Open-Jaw & direction-consistent strategy badges in app.js + tsx
+        self.assertIn("resolveCardStrategyBadge", app_js)
+        self.assertIn("מסלול משולב (הלוך ל-", app_js)
+        self.assertIn("Open-jaw bonus (out to ", app_js)
+        self.assertIn("resolveStrategyBadgeHe", subpanel_tsx)
+        self.assertGreater(len(subpanel_tsx.encode("utf-8")), 100)
+
+        # R3: 2 compact stub KPI cells (with missed days in parentheses inside school-fit), calculation + meaning tooltips, and CSS rules
+        self.assertGreater(app_js.index('class="stub-kpi-grid"'), stub_idx)
+        self.assertNotIn('data-kpi="school-missed"', app_js)
+        for req_js in (
+            'data-kpi="school-fit"',
+            "data-school-missed",
+            "kpi-missed-paren",
+            'data-kpi="bonus-value"',
+            'role="tooltip"',
+            'התאמה לחופשת בי"ס',
+            "התאמה לחופשת בית ספר וחיסורים",
+            "כדאיות בונוס",
+            "School Break Fit",
+            "Award Value",
+            "איך חושב:",
+            "משמעות:",
+            "How calculated:",
+            "Meaning:",
+        ):
+            self.assertIn(req_js, app_js)
+
+        # CSS BiDi & unclipped overflow invariants
+        self.assertNotIn("left", css.lower())
+        self.assertNotIn("right", css.lower())
+        self.assertNotIn("ellipsis", css.lower())
+        self.assertIn("overflow: visible;", css)
+        self.assertIn(".stub-weather-card", css)
+        self.assertIn(".kpi-tooltip", css)
+        media_bp = [int(m) for m in _re.findall(r"@media\s*\(\s*min-width:\s*(\d+)px\s*\)", css)]
+        self.assertEqual(media_bp, sorted(media_bp))
 
 
 # ============================================================================

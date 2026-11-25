@@ -1249,43 +1249,96 @@ class MultiClubWalletAllocationEngine:
             )
             if is_open_jaw:
                 assert outbound_award is not None and inbound_award is not None
-                out_s, _, _out_rbd, out_pts = _cabin_award_info(outbound_award, "ECONOMY")
-                in_s, _, _in_rbd, in_pts = _cabin_award_info(inbound_award, "ECONOMY")
-                if out_s >= 1 and in_s >= 1 and out_pts > 0 and in_pts > 0:
-                    oj_slots: list[_BonusSlot] = []
-                    for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
-                        if cab not in pref_cabins:
-                            continue
-                        os_c, _, orbd_c, opts_c = _cabin_award_info(outbound_award, cab)
-                        is_c, _, _, ipts_c = _cabin_award_info(inbound_award, cab)
-                        if cab == "PREMIUM" and os_c >= 2 and is_c == 1:
-                            ib_s, _, _, _ = _cabin_award_info(inbound_award, "BUSINESS")
-                            is_c += 1 if ib_s >= 1 else 0
-                        for _ in range(min(os_c, is_c)):
-                            if opts_c > 0 and ipts_c > 0:
-                                oj_slots.append(
-                                    _BonusSlot(cab, orbd_c, opts_c + ipts_c)
-                                )
-                    k_oj = min(len(oj_slots), n_seated)
-                    partition = self._assign_passengers_with_pnr_safety(seated_passengers, k_oj)
-                    if partition is not None and k_oj >= 1:
-                        b_pax, c_pax = partition
-                        used_oj_slots = oj_slots[:k_oj]
-                        cab_set = {s.cabin_class for s in used_oj_slots}
-                        if c_pax:
-                            cab_set.add("ECONOMY")
-                        prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
+                bookable_out: list[tuple[str, int, bool, str, int]] = []
+                bookable_in: list[tuple[str, int, bool, str, int]] = []
+                for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
+                    if cab not in pref_cabins:
+                        continue
+                    os_c, o2p_c, orbd_c, opts_c = _cabin_award_info(outbound_award, cab)
+                    if os_c >= 1 and opts_c > 0:
+                        bookable_out.append((cab, os_c, o2p_c, orbd_c, opts_c))
+                    is_c, i2p_c, irbd_c, ipts_c = _cabin_award_info(inbound_award, cab)
+                    if is_c >= 1 and ipts_c > 0:
+                        bookable_in.append((cab, is_c, i2p_c, irbd_c, ipts_c))
+
+                if not bookable_out or not bookable_in:
+                    return None
+
+                min_rt_pts = min(x[4] for x in bookable_out) + min(x[4] for x in bookable_in)
+
+                # Consistent with FULL_BONUS_SAME_CABIN: if a single preferred cabin has `2+` in
+                # both directions (or covers a solo traveler), allocate all seated passengers as
+                # round-trip Open-Jaw bonus tickets with `requires_verify = (n_seated >= 3)`.
+                for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
+                    if cab not in pref_cabins:
+                        continue
+                    os_c, o2p_c, _, opts_c = _cabin_award_info(outbound_award, cab)
+                    is_c, i2p_c, _, ipts_c = _cabin_award_info(inbound_award, cab)
+                    if opts_c <= 0 or ipts_c <= 0:
+                        continue
+                    if n_seated == 1 and os_c >= 1 and is_c >= 1:
                         return _finalize_result(
-                            bonus_tickets_count=len(b_pax),
-                            cash_tickets_count=len(c_pax),
-                            primary_cabin=prim_cab,
+                            bonus_tickets_count=1,
+                            cash_tickets_count=0,
+                            primary_cabin=cab,
                             requires_verify=False,
                             utilizes_bonus=True,
-                            min_points=min(s.points_cost for s in used_oj_slots),
+                            min_points=opts_c + ipts_c,
+                            min_points_basis="ROUND_TRIP",
+                        )
+                    if (
+                        n_seated >= 2
+                        and os_c >= 2
+                        and o2p_c
+                        and is_c >= 2
+                        and i2p_c
+                        and not ((os_c > 2 and os_c < n_seated) or (is_c > 2 and is_c < n_seated))
+                    ):
+                        return _finalize_result(
+                            bonus_tickets_count=n_seated,
+                            cash_tickets_count=0,
+                            primary_cabin=cab,
+                            requires_verify=(n_seated >= 3),
+                            utilizes_bonus=True,
+                            min_points=opts_c + ipts_c,
                             min_points_basis="ROUND_TRIP",
                         )
 
+                sum_out_seats = sum(x[1] for x in bookable_out)
+                sum_in_seats = sum(x[1] for x in bookable_in)
+                if "PREMIUM" in pref_cabins and "BUSINESS" not in pref_cabins:
+                    os_p, _, _, opts_p = _cabin_award_info(outbound_award, "PREMIUM")
+                    is_p, _, _, ipts_p = _cabin_award_info(inbound_award, "PREMIUM")
+                    ib_s, _, _, _ = _cabin_award_info(inbound_award, "BUSINESS")
+                    if os_p >= 2 and is_p == 1 and opts_p > 0 and ipts_p > 0 and ib_s >= 1:
+                        sum_in_seats += 1
+
+                max_k_oj = min(n_seated, min(sum_out_seats, sum_in_seats))
+                for k_oj in range(max_k_oj, 0, -1):
+                    partition = self._assign_passengers_with_pnr_safety(seated_passengers, k_oj)
+                    if partition is None:
+                        continue
+                    b_pax, c_pax = partition
+                    cab_set = {x[0] for x in bookable_out} | {x[0] for x in bookable_in}
+                    if c_pax:
+                        cab_set.add("ECONOMY")
+                    prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
+                    return _finalize_result(
+                        bonus_tickets_count=len(b_pax),
+                        cash_tickets_count=len(c_pax),
+                        primary_cabin=prim_cab,
+                        requires_verify=False,
+                        utilizes_bonus=True,
+                        min_points=min_rt_pts,
+                        min_points_basis="ROUND_TRIP",
+                    )
+                return None
+
             # Case B: One-Way Bonus on one direction + a commercial ticket on the other direction
+            # Strictly gated to genuine single-direction bonus availability so a same-airport
+            # 2-direction bonus flight pair never emits a contradictory one-way commercial strategy.
+            if (out_bonus_seats or 0) > 0 and (in_bonus_seats or 0) > 0:
+                return None
             best_dir: Optional[str] = None
             chosen_award: Optional[ElAlBonusAvailability] = None
             chosen_cabin = "ECONOMY"
@@ -1627,8 +1680,19 @@ class BonusVacationPlannerService:
             "INBOUND_ONLY": "בונוס בכיוון אחד בלבד — חזור",
         }.get(str(itinerary.bonus_direction_coverage), "ללא מושבי בונוס")
 
+        is_open_jaw_itin = itinerary.destination_iata != itinerary.return_origin_iata
+        strat_display = strat
         open_jaw_note = ""
-        if itinerary.destination_iata != itinerary.return_origin_iata:
+        if (
+            is_open_jaw_itin
+            and strat == "ONE_WAY_BONUS_ONE_WAY_CASH"
+            and str(itinerary.bonus_direction_coverage) == "BOTH_DIRECTIONS"
+        ):
+            strat_display = (
+                f"מסלול משולב בבונוס (הלוך ל-{itinerary.destination_iata}, "
+                f"חזור מ-{itinerary.return_origin_iata})"
+            )
+        elif is_open_jaw_itin:
             open_jaw_note = (
                 f" [מסלול Open-Jaw: הלוך ל-{itinerary.destination_iata}, "
                 f"חזור מ-{itinerary.return_origin_iata}]"
@@ -1643,7 +1707,7 @@ class BonusVacationPlannerService:
             f"{itinerary.destination_city_he} ({itinerary.destination_iata}) | "
             f"{window.start_date.isoformat()} עד {window.end_date.isoformat()} "
             f"({itinerary.trip_nights} לילות) | "
-            f"אסטרטגיה: {strat}{open_jaw_note} | "
+            f"אסטרטגיה: {strat_display}{open_jaw_note} | "
             f"{coverage_he} | "
             f"ציונים: התאמת חופשת בי״ס={window.holiday_alignment_score:.1f}/100, FBVS={fbvs}{weather_note}, CTOS={ctos}"
             f"{weather_tail}"

@@ -882,6 +882,8 @@
     }
   }
 
+  let pendingDestSearchQueued = false;
+
   function toggleDestinationSelection(code, triggerSearch) {
     const norm = String(code || '').trim().toUpperCase();
     if (!norm || norm === 'ANYWHERE' || norm === 'ALL') {
@@ -900,8 +902,12 @@
     }
     syncNativeSelectFromDestState();
     renderDestinationMultiSelect();
-    if (triggerSearch) {
-      runVacationSearch();
+    if (triggerSearch && !pendingDestSearchQueued) {
+      pendingDestSearchQueued = true;
+      Promise.resolve().then(() => {
+        pendingDestSearchQueued = false;
+        runVacationSearch();
+      });
     }
   }
 
@@ -1021,9 +1027,40 @@
     return { adults, infantsLap, seatedChildren, seatedCount, totalTravelers, paxSummaryText };
   }
 
-  function formatStrategyLabel(strategyCode) {
+  function formatStrategyLabel(strategyCode, itineraryObj, dirInfo) {
     const code = String(strategyCode || '');
     const isHe = state.locale === 'he';
+    const it = itineraryObj || null;
+    const destIata = String((it && it.destination_iata) || '').trim().toUpperCase();
+    const retOrigIata = String((it && it.return_origin_iata) || destIata).trim().toUpperCase();
+    const isOpenJaw = Boolean(destIata && retOrigIata && destIata !== retOrigIata);
+    const cov = String(
+      (dirInfo && dirInfo.coverage) || (it && it.bonus_direction_coverage) || ''
+    )
+      .trim()
+      .toUpperCase();
+
+    if (code === 'ONE_WAY_BONUS_ONE_WAY_CASH') {
+      if (isOpenJaw && cov === 'BOTH_DIRECTIONS') {
+        if (Number((it && it.cash_tickets_count) || 0) > 0) {
+          return isHe
+            ? `מסלול משולב (${destIata}/${retOrigIata}) · בונוס לחלק מהנוסעים`
+            : `Open-jaw (${destIata}/${retOrigIata}) · partial-party bonus`;
+        }
+        return isHe
+          ? `מסלול משולב (הלוך ל-${destIata}, חזור מ-${retOrigIata})`
+          : `Open-jaw bonus (out to ${destIata}, back from ${retOrigIata})`;
+      }
+      if (cov === 'BOTH_DIRECTIONS') {
+        return isHe ? 'מימוש נקודות לכיוון אחד' : 'One-direction points option';
+      }
+      if (isOpenJaw) {
+        return isHe
+          ? `מסלול משולב (${destIata}/${retOrigIata}) · כיוון אחד בבונוס + כיוון אחד מסחרי`
+          : `Open-jaw (${destIata}/${retOrigIata}) · one way on bonus + one way commercial`;
+      }
+    }
+
     const labelsHe = {
       FULL_BONUS_SAME_CABIN: 'בונוס מלא באותה מחלקה',
       SPLIT_CABIN_BONUS: 'בונוס מפוצל בין מחלקות (אותה טיסה)',
@@ -1043,6 +1080,37 @@
       COMMERCIAL_CASH_ONLY: 'Commercial tickets (no bonus)'
     };
     return (isHe ? labelsHe[code] : labelsEn[code]) || code;
+  }
+
+  function resolveCardStrategyBadge(itineraryObj, dirInfo, isHe) {
+    const it = itineraryObj || {};
+    const strategyCode = String(it.fulfillment_strategy || 'FULL_BONUS_SAME_CABIN');
+    const destIata = String(it.destination_iata || '').trim().toUpperCase();
+    const retOrigIata = String(it.return_origin_iata || destIata).trim().toUpperCase();
+    const isOpenJaw = Boolean(destIata && retOrigIata && destIata !== retOrigIata);
+    const cov = String(
+      (dirInfo && dirInfo.coverage) || it.bonus_direction_coverage || ''
+    )
+      .trim()
+      .toUpperCase();
+
+    if (strategyCode === 'FULL_BONUS_SAME_CABIN') {
+      if (!isOpenJaw) return '';
+      return isHe
+        ? `מסלול משולב (הלוך ל-${destIata}, חזור מ-${retOrigIata})`
+        : `Open-jaw bonus (out to ${destIata}, back from ${retOrigIata})`;
+    }
+    if (strategyCode === 'ONE_WAY_BONUS_ONE_WAY_CASH') {
+      if (!isOpenJaw && cov !== 'BOTH_DIRECTIONS') {
+        return '';
+      }
+      if (isOpenJaw && cov !== 'BOTH_DIRECTIONS') {
+        return isHe
+          ? `מסלול משולב (הלוך ל-${destIata}, חזור מ-${retOrigIata})`
+          : `Open-jaw route (out to ${destIata}, back from ${retOrigIata})`;
+      }
+    }
+    return formatStrategyLabel(strategyCode, it, dirInfo);
   }
 
   function formatRecommendationTierLabel(tierCode) {
@@ -1882,6 +1950,136 @@
       : `Ranked Vacation Proposals & Award Fulfillment${countSuffix}`;
   }
 
+  function pickCompactWeatherIcon(wm) {
+    if (!wm) return '🌤️';
+    const snowIdx = Number(wm.snow_reliability_index || 0);
+    const highC = Number(wm.avg_day_high_c ?? wm.avg_max_temp_c ?? 0);
+    const rainD = Number(wm.estimated_rain_days_in_trip ?? wm.expected_rain_days_in_trip ?? 0);
+    const sunH = Number(wm.sunshine_hours_per_day || 0);
+    if (snowIdx >= 0.45 || highC <= 3) return '❄️';
+    if (rainD >= 3.0) return '🌧️';
+    if (sunH >= 7.5 && rainD <= 1.2) return '☀️';
+    return '🌤️';
+  }
+
+  function renderKpiTooltipHtml(tooltipId, titleText, calcText, meaningText, isHe) {
+    const calcKicker = isHe ? 'איך חושב:' : 'How calculated:';
+    const meaningKicker = isHe ? 'משמעות:' : 'Meaning:';
+    return `
+      <div class="kpi-tooltip" id="${escapeHtml(tooltipId)}" role="tooltip">
+        <strong class="kpi-tooltip-title">${escapeHtml(titleText)}</strong>
+        <p class="kpi-tooltip-line"><span class="kpi-tooltip-kicker">${escapeHtml(calcKicker)}</span> ${escapeHtml(calcText)}</p>
+        <p class="kpi-tooltip-line"><span class="kpi-tooltip-kicker">${escapeHtml(meaningKicker)}</span> ${escapeHtml(meaningText)}</p>
+      </div>
+    `;
+  }
+
+  function buildKpiExplanations(p, it, dirInfo, seatedCount, hasVal, schoolMissed, fbvsVal, isHe) {
+    const totalDays = Math.max(1, diffDaysIso(it.departure_date, it.return_date) + 1);
+    const impacts = Array.isArray(p && p.per_child_impact) ? p.per_child_impact : [];
+    const fwImpacts = impacts.filter((c) => c && c.framework_type);
+    const ccgPct = Math.round(Number((p && p.childcare_coverage_gain) ?? 1) * 100);
+    const hasNum = Number(hasVal) || 0;
+
+    let fitCalc = '';
+    if (p && p.window_set_type === 'SPECIFIC_USER_WINDOW') {
+      const q = state.lastSearchQuery || null;
+      const shiftDays =
+        q && q.specific_departure_date && q.specific_return_date
+          ? Math.abs(diffDaysIso(q.specific_departure_date, it.departure_date)) +
+            Math.abs(diffDaysIso(q.specific_return_date, it.return_date))
+          : 0;
+      fitCalc = isHe
+        ? `ציון מ-100 לחלון של ${totalDays} ימי טיול בתאריכים שבחרתם (סטייה של ${shiftDays} ימים מתאריכי היעד ו-${schoolMissed} ימי חיסור מצטברים מלימודים).`
+        : `Scored out of 100 for this ${totalDays}-day window (${shiftDays}-day shift from requested dates and ${schoolMissed} combined missed school days).`;
+    } else if (fwImpacts.length > 0) {
+      fitCalc = isHe
+        ? `מחושב על פני ${totalDays} ימי טיול עבור ${fwImpacts.length} ילדים מול לוח משרד החינוך: 65% כיסוי חופשת לימודים, סופ״ש וקייטנות (${ccgPct}% בטיול זה) + 35% חפיפה משותפת, בניכוי ימי חיסור (${schoolMissed}).`
+        : `Computed across ${totalDays} trip days for ${fwImpacts.length} school-age children against the MoE calendar: 65% break/weekend/camp coverage (${ccgPct}% here) + 35% shared break overlap, minus missed school days (${schoolMissed}).`;
+    } else {
+      fitCalc = isHe
+        ? `מחושב על פני ${totalDays} ימי טיול מול לוח החופשות הרשמי של משרד החינוך: 80% חפיפה לפגרה הרשמית + 20% התאמה לאורך הטיול המבוקש.`
+        : `Computed across ${totalDays} trip days against the official MoE break calendar: 80% overlap with official school break dates + 20% requested duration fit.`;
+    }
+
+    let fitMeaning = '';
+    if (hasNum >= 85) {
+      fitMeaning = isHe
+        ? `התאמה גבוהה מאוד (${hasVal}/100) — הטיול יושב ברובו על חופשת בית הספר הרשמית וסופי שבוע.`
+        : `Excellent fit (${hasVal}/100) — almost the entire trip sits inside official school break dates and weekends.`;
+    } else if (hasNum >= 60) {
+      fitMeaning = isHe
+        ? `התאמה טובה (${hasVal}/100) — רוב הטיול מכוסה בחופשת לימודים או קייטנה עם גלישה מתונה לימי לימודים.`
+        : `Good fit (${hasVal}/100) — most trip days sit on school break or camp dates with modest bridge overlap.`;
+    } else {
+      fitMeaning = isHe
+        ? `חפיפה חלקית (${hasVal}/100) — חלק ניכר מהטיול חורג מחופשת בית הספר הרשמית ודורש ימי גשר.`
+        : `Partial overlap (${hasVal}/100) — a sizable share of the trip falls outside the official school break.`;
+    }
+
+    const maxSingle = Number((p && p.max_single_child_school_days_missed) || 0);
+    const missedCalcAddon =
+      fwImpacts.length > 0
+        ? (isHe
+            ? ` בסוגריים: ימי לימודים פעילים (ללא חגים, שישי-שבת וקייטנות) שמוחסרים על ידי ${fwImpacts.length} ילדים (עד ${maxSingle} לילד/ה).`
+            : ` In parentheses: active classroom days (excluding breaks, weekends, and camps) missed across ${fwImpacts.length} children (up to ${maxSingle} per child).`)
+        : (isHe
+            ? ' בסוגריים: ימי לימודים פעילים שמוחסרים (כרגע 0 ילדים במסגרת חינוכית בפרופיל).'
+            : ' In parentheses: active classroom days missed (0 active school frameworks in profile).');
+    const missedMeaningAddon =
+      schoolMissed === 0
+        ? (isHe
+            ? ' אפס ימי חיסור משנת הלימודים.'
+            : ' Zero missed school days.')
+        : (isHe
+            ? ` סה״כ ${schoolMissed} ימי היעדרות מצטברים (${maxSingle} בפועל לילד/ה) כימי גשר.`
+            : ` ${schoolMissed} combined child-day absences (${maxSingle} actual day(s) per child) as bridge days.`);
+
+    const safeSeated = Math.max(1, Number(seatedCount) || 1);
+    const outS = dirInfo.outbound.seats;
+    const inS = dirInfo.inbound.seats;
+    const outLblHe = !dirInfo.outbound.hasBonus ? '0' : (dirInfo.outbound.twoPlus ? '\u20662+\u2069' : String(outS));
+    const inLblHe = !dirInfo.inbound.hasBonus ? '0' : (dirInfo.inbound.twoPlus ? '\u20662+\u2069' : String(inS));
+    const outLblEn = !dirInfo.outbound.hasBonus ? '0' : (dirInfo.outbound.twoPlus ? '2+' : String(outS));
+    const inLblEn = !dirInfo.inbound.hasBonus ? '0' : (dirInfo.inbound.twoPlus ? '2+' : String(inS));
+    const outPct = Math.round(Math.min(1, outS / safeSeated) * 100);
+    const inPct = Math.round(Math.min(1, inS / safeSeated) * 100);
+    const fbvsNum = Number(fbvsVal) || 0;
+    const fbvsStr = fbvsNum.toFixed(1);
+
+    const bonusCalc = isHe
+      ? `ממוצע כיסוי מושבי הבונוס הפנויים בשני הכיוונים מול ${safeSeated} נוסעים בעלי מושב: הלוך ${outLblHe} מושבים (${outPct}%) וחזור ${inLblHe} מושבים (${inPct}%) ← ${fbvsStr}/100`
+      : `Average open bonus-seat coverage across both legs for ${safeSeated} seated travelers: outbound ${outLblEn} seats (${outPct}%) and return ${inLblEn} seats (${inPct}%) → ${fbvsStr}/100.`;
+
+    let bonusMeaning = '';
+    if (fbvsNum >= 100) {
+      bonusMeaning = isHe
+        ? 'כיסוי בונוס מלא (100/100) — קיימים מספיק מושבי בונוס פתוחים לכל הנוסעים בהלוך ובחזור.'
+        : 'Full award seat coverage (100/100) — enough open bonus seats for every seated traveler both ways.';
+    } else if (fbvsNum >= 50) {
+      bonusMeaning = isHe
+        ? `כיסוי בונוס משמעותי (${fbvsStr}/100) — מושבי הבונוס מכסים כיוון מלא או חלק מהמשפחה בשני הכיוונים (בסימון \u20662+\u2069 ייתכן שיש מושבים נוספים).`
+        : `Substantial award seat coverage (${fbvsStr}/100) — open bonus seats cover one full leg or part of the family both ways (2+ flights may hold more seats).`;
+    } else {
+      bonusMeaning = isHe
+        ? `כיסוי בונוס חלקי (${fbvsStr}/100) — מספר מושבי הבונוס הפתוחים נמוך ממספר הנוסעים הזקוקים למושב.`
+        : `Partial award seat coverage (${fbvsStr}/100) — open bonus seats cover only a fraction of your party's needed seats.`;
+    }
+
+    return {
+      schoolFit: {
+        title: isHe ? 'התאמה לחופשת בית ספר וחיסורים' : 'School Break Fit & Absences',
+        calc: fitCalc + missedCalcAddon,
+        meaning: fitMeaning + missedMeaningAddon
+      },
+      bonusValue: {
+        title: isHe ? 'כדאיות בונוס' : 'Award Value',
+        calc: bonusCalc,
+        meaning: bonusMeaning
+      }
+    };
+  }
+
   function renderProposals() {
     const container = document.getElementById('proposals-container');
     if (!container) return;
@@ -2020,55 +2218,46 @@
         );
 
         let topStyleChipHtml = '';
-        let weatherStripHtml = '';
+        let stubWeatherHtml = '';
         if (wm) {
-          const scoresByType = wm.scores_by_vacation_type || {};
           const recList = wm.recommended_vacation_types || [];
           if (recList.length > 0) {
             topStyleChipHtml = `<span class="weather-badge-tag">${formatVacationTypeBadge(recList[0])}</span>`;
           }
-          const recTypes = recList
-            .slice(0, 3)
-            .map((vt) => `<span class="weather-badge-tag">${formatVacationTypeBadge(vt)}</span>`)
-            .join('');
-          const seaTempChip =
-            wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined
-              ? `<span class="weather-metric-chip">🌊 ${isHe ? 'ים:' : 'Sea:'} <strong dir="ltr">${Number(wm.sea_water_temp_c).toFixed(0)}°C</strong></span>`
-              : '';
-          const extraSelectedChips = (state.selectedVacationTypes || [])
-            .filter((vt) => vt !== 'ANY')
-            .slice(0, 2)
-            .map(
-              (vt) =>
-                `<span class="weather-metric-chip">${formatVacationTypeBadge(vt)}: <strong dir="ltr">${Number(scoresByType[vt] ?? 0).toFixed(0)}</strong></span>`
-            )
-            .join('');
-          const summaryNoteText = isHe
-            ? (wm.weather_summary_he || '')
-            : (wm.weather_summary_en ||
-              `Expected ${Number(wm.avg_day_high_c || 0).toFixed(0)}°C day / ${Number(wm.avg_night_low_c || 0).toFixed(0)}°C night` +
-                (wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined ? `, sea ${Number(wm.sea_water_temp_c).toFixed(0)}°C` : '') +
-                ', ~' +
-                Number(wm.sunshine_hours_per_day || 0).toFixed(1) +
-                'h daily sunshine & ~' +
-                Number(wm.estimated_rain_days_in_trip || 0).toFixed(1) +
-                ' rain days.');
-          weatherStripHtml = `
-            <div class="weather-telemetry-strip">
-              <div class="weather-telemetry-row">
-                <span class="weather-metric-chip">🌤️ ${isHe ? 'ציון אקלים:' : 'Climate:'} <strong dir="ltr">${wssVal.toFixed(0)}/100</strong></span>
-                <span class="weather-metric-chip">🌡️ <strong dir="ltr">${Number(wm.avg_day_high_c || 0).toFixed(0)}°/${Number(wm.avg_night_low_c || 0).toFixed(0)}°C</strong></span>
-                ${seaTempChip}
-                <span class="weather-metric-chip">☀️ <strong dir="ltr">${Number(wm.sunshine_hours_per_day || 0).toFixed(1)}h</strong></span>
-                <span class="weather-metric-chip">🌧️ <strong dir="ltr">${Number(wm.estimated_rain_days_in_trip || 0).toFixed(1)}${isHe ? ' ימי גשם' : 'd rain'}</strong></span>
-                ${extraSelectedChips}
-              </div>
-              <div class="weather-telemetry-footer">
-                <span class="weather-summary-note">${escapeHtml(summaryNoteText)}</span>
-                <div class="weather-rec-tags">${recTypes}</div>
-              </div>
-            </div>
-          `;
+          const wIcon = pickCompactWeatherIcon(wm);
+          const highC = Math.round(Number(wm.avg_day_high_c ?? wm.avg_max_temp_c ?? 0));
+          const lowC = Math.round(Number(wm.avg_night_low_c ?? wm.avg_min_temp_c ?? 0));
+          const sunH = Number(wm.sunshine_hours_per_day || 0).toFixed(1);
+          const rainD = Number(
+            wm.estimated_rain_days_in_trip ?? wm.expected_rain_days_in_trip ?? 0
+          ).toFixed(1);
+          const hasSea = wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined;
+          const seaC = hasSea ? Math.round(Number(wm.sea_water_temp_c)) : 0;
+          const seaSpan = hasSea
+            ? `<span class="stub-weather-datum" data-weather-sea="${seaC}">🌊 <span class="num" dir="ltr">${seaC}°C</span></span>`
+            : '';
+          const scoreCls =
+            wssVal >= 75
+              ? 'stub-weather-score stub-weather-score-high'
+              : 'stub-weather-score';
+          stubWeatherHtml = `
+                <div class="stub-weather-card" data-weather-compact="true" data-weather-score="${wssVal.toFixed(0)}">
+                  <div class="stub-weather-main">
+                    <span class="stub-weather-temp">
+                      <span aria-hidden="true">${wIcon}</span>
+                      <strong class="num" dir="ltr">${highC}°/${lowC}°C</strong>
+                    </span>
+                    <span class="${scoreCls}">
+                      <span>${isHe ? 'אקלים' : 'Climate'}</span>
+                      <strong class="num" dir="ltr">${wssVal.toFixed(0)}/100</strong>
+                    </span>
+                  </div>
+                  <div class="stub-weather-meta">
+                    <span class="stub-weather-datum">☀️ <span class="num" dir="ltr">${sunH}h</span></span>
+                    <span class="stub-weather-datum">🌧️ <span class="num" dir="ltr">${rainD}</span> ${isHe ? 'ימי גשם' : 'rain d'}</span>
+                    ${seaSpan}
+                  </div>
+                </div>`;
         }
 
         const paxInfo = buildHouseholdPassengerSummary(state.profile, it, isHe);
@@ -2086,17 +2275,44 @@
         const fbvsVal = p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0;
         const hasVal = Number(p.holiday_alignment_score ?? 0).toFixed(1);
         const schoolMissed = Number(p.total_school_days_missed_across_children || 0);
-        const schoolCellCls = schoolMissed === 0 ? 'score-pill kpi-cell kpi-cell-pine' : 'score-pill kpi-cell';
-        const schoolHtml = schoolMissed === 0
-          ? `<span class="num">0</span> ${isHe ? 'ימים ✓' : 'days ✓'}`
-          : `<span class="num">${escapeHtml(schoolMissed)}</span> ${isHe ? 'ימים' : 'days'}`;
+        const missedParenText = isHe
+          ? (schoolMissed === 1 ? 'חיסור 1' : `${schoolMissed} חיסורים`)
+          : `${schoolMissed} missed`;
+        const missedParenCls =
+          schoolMissed === 0 ? 'kpi-missed-paren kpi-missed-zero' : 'kpi-missed-paren';
+
+        const kpiInfo = buildKpiExplanations(
+          p,
+          it,
+          dirInfo,
+          seatedCount,
+          hasVal,
+          schoolMissed,
+          fbvsVal,
+          isHe
+        );
+        const tipIdFit = `kpi-tip-fit-${idx}`;
+        const tipIdBonus = `kpi-tip-bonus-${idx}`;
+        const schoolFitTooltipHtml = renderKpiTooltipHtml(
+          tipIdFit,
+          kpiInfo.schoolFit.title,
+          kpiInfo.schoolFit.calc,
+          kpiInfo.schoolFit.meaning,
+          isHe
+        );
+        const bonusValueTooltipHtml = renderKpiTooltipHtml(
+          tipIdBonus,
+          kpiInfo.bonusValue.title,
+          kpiInfo.bonusValue.calc,
+          kpiInfo.bonusValue.meaning,
+          isHe
+        );
 
         const strategyCode = String(it.fulfillment_strategy || 'FULL_BONUS_SAME_CABIN');
-        const stratText = formatStrategyLabel(strategyCode);
-        const strategyTagHtml =
-          strategyCode !== 'FULL_BONUS_SAME_CABIN'
-            ? `<span class="bonus-strategy-tag" title="${escapeHtml(stratText)}">${escapeHtml(stratText)}</span>`
-            : '';
+        const stratBadgeText = resolveCardStrategyBadge(it, dirInfo, isHe);
+        const strategyTagHtml = stratBadgeText
+          ? `<span class="bonus-strategy-tag" title="${escapeHtml(stratBadgeText)}">${escapeHtml(stratBadgeText)}</span>`
+          : '';
 
         const directionStatementText = formatBonusDirectionStatement(dirInfo.coverage, isHe);
         const directionBadgeCls =
@@ -2225,23 +2441,6 @@
                   </div>
                   ${twoPlusNoteHtml}
                 </div>
-
-                <div class="score-strip pass-kpi-grid">
-                  <div class="score-pill kpi-cell">
-                    <span class="kpi-cell-label">🏫 ${isHe ? 'התאמה לחופשת בי״ס' : 'School Break Fit'}</span>
-                    <strong class="kpi-cell-val" dir="ltr">${hasVal}/100</strong>
-                  </div>
-                  <div class="${schoolCellCls}">
-                    <span class="kpi-cell-label">🎒 ${isHe ? 'חיסור מבי״ס' : 'School Missed'}</span>
-                    <strong class="kpi-cell-val kpi-cell-val-text">${schoolHtml}</strong>
-                  </div>
-                  <div class="score-pill kpi-cell" data-kpi="bonus-value">
-                    <span class="kpi-cell-label">💎 ${isHe ? 'כדאיות בונוס' : 'Award Value'}</span>
-                    <strong class="kpi-cell-val" dir="ltr">${Number(fbvsVal).toFixed(1)}/100</strong>
-                  </div>
-                </div>
-
-                ${weatherStripHtml}
               </div>
 
               <div class="proposal-pass-stub">
@@ -2255,6 +2454,26 @@
 
                 <div class="stub-fare-ledger">
                   <div class="stub-pax-summary">👥 ${escapeHtml(paxInfo.paxSummaryText)}</div>${minPointsRowHtml}
+                </div>
+                ${stubWeatherHtml}
+
+                <div class="stub-kpi-grid">
+                  <div class="score-pill kpi-cell" data-kpi="bonus-value" tabindex="0" aria-describedby="${tipIdBonus}">
+                    <div class="kpi-cell-head">
+                      <span class="kpi-cell-label">💎 ${isHe ? 'כדאיות בונוס' : 'Award Value'}</span>
+                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
+                    </div>
+                    <strong class="kpi-cell-val" dir="ltr">${Number(fbvsVal).toFixed(1)}/100</strong>
+                    ${bonusValueTooltipHtml}
+                  </div>
+                  <div class="score-pill kpi-cell" data-kpi="school-fit" data-school-missed="${schoolMissed}" tabindex="0" aria-describedby="${tipIdFit}">
+                    <div class="kpi-cell-head">
+                      <span class="kpi-cell-label">🏫 ${isHe ? 'התאמה לחופשת בי"ס' : 'School Break Fit'}</span>
+                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
+                    </div>
+                    <strong class="kpi-cell-val"><span class="num" dir="ltr">${hasVal}/100</span> <span class="${missedParenCls}">(${escapeHtml(missedParenText)})</span></strong>
+                    ${schoolFitTooltipHtml}
+                  </div>
                 </div>
 
                 ${elalBookBtnHtml ? `<div class="stub-actions-stack">${elalBookBtnHtml}</div>` : ''}
@@ -2813,6 +3032,7 @@
     try {
       const res = await apiSend('POST', '/api/v1/vacations/search', payload);
       if (mySearchSeq !== latestSearchSeq) return;
+      state.lastSearchQuery = res.query || payload || null;
       state.proposals = res.proposals || [];
       state.showAllProposals = false;
       state.statusMessageHe = res.status_message_he || null;
@@ -3085,6 +3305,19 @@
       });
     }
 
+    function closeAllKpiTooltips(exceptCell) {
+      document.querySelectorAll('.kpi-cell.is-tooltip-open').forEach((el) => {
+        if (el !== exceptCell) {
+          el.classList.remove('is-tooltip-open');
+        }
+      });
+      document.querySelectorAll('.proposal-card.has-open-tooltip').forEach((cardEl) => {
+        if (!exceptCell || !cardEl.contains(exceptCell)) {
+          cardEl.classList.remove('has-open-tooltip');
+        }
+      });
+    }
+
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
         if (state.isDestPickerOpen) {
@@ -3092,6 +3325,14 @@
         }
         if (state.isProfileSheetOpen) {
           setProfileSheetOpen(false);
+        }
+        closeAllKpiTooltips(null);
+        if (
+          document.activeElement &&
+          document.activeElement.classList &&
+          document.activeElement.classList.contains('kpi-cell')
+        ) {
+          document.activeElement.blur();
         }
       }
     });
@@ -3324,6 +3565,18 @@
         renderProposals();
         return;
       }
+      const kpiCellEl = typeof target.closest === 'function' ? target.closest('.kpi-cell') : null;
+      if (kpiCellEl) {
+        const willOpen = !kpiCellEl.classList.contains('is-tooltip-open');
+        closeAllKpiTooltips(willOpen ? kpiCellEl : null);
+        kpiCellEl.classList.toggle('is-tooltip-open', willOpen);
+        const parentCard = kpiCellEl.closest('.proposal-card');
+        if (parentCard) {
+          parentCard.classList.toggle('has-open-tooltip', willOpen);
+        }
+        return;
+      }
+      closeAllKpiTooltips(null);
       if (!state.profile) return;
       const removeChildBtn = target.closest('[data-remove-child]');
       if (removeChildBtn) {
@@ -3332,6 +3585,16 @@
         state.profileDirty = true;
         renderProfileControls();
         refreshClientHolidaysOnProfileEdit();
+      }
+    });
+
+    document.body.addEventListener('pointerover', (ev) => {
+      if (ev.pointerType && ev.pointerType !== 'mouse') return;
+      const target = ev.target;
+      if (!target || typeof target.closest !== 'function') return;
+      const hoveredKpi = target.closest('.kpi-cell');
+      if (hoveredKpi) {
+        closeAllKpiTooltips(hoveredKpi);
       }
     });
 

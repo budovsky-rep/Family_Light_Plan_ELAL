@@ -2816,7 +2816,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               document.querySelector('[data-dest-option="ATH"]').click();
               document.querySelector('[data-dest-option="BKK"]').click();
               document.getElementById('btn-dest-popover-done').click();
-              for (let i = 0; i < 60; i++) {
+              for (let i = 0; i < 150; i++) {
                 await new Promise((r) => setTimeout(r, 30));
                 const routes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
                 if (routes.length > 0 && routes.every((rt) => rt.includes('FCO') || rt.includes('ATH') || rt.includes('BKK'))) break;
@@ -2826,7 +2826,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               const subsetRoutes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
 
               document.getElementById('btn-dest-clear-all').click();
-              for (let i = 0; i < 60; i++) {
+              for (let i = 0; i < 150; i++) {
                 await new Promise((r) => setTimeout(r, 30));
                 const lastReq = window.__fvpSearchRequests[window.__fvpSearchRequests.length - 1];
                 const routes = Array.from(document.querySelectorAll('.proposal-route-pair')).map((el) => el.textContent.trim());
@@ -3324,9 +3324,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             })()"""
         )
 
-        for expected_dir, expected_stmt, expected_min_30k, expected_min_15k, expected_seats_lbl in (
-            ("rtl", "בונוס בשני הכיוונים", "החל מ-30,000", "החל מ-15,000", "2+ מושבי בונוס"),
-            ("ltr", "Bonus seats in both directions", "from 30,000", "from 15,000", "2+ bonus seats"),
+        for expected_dir, expected_stmt, expected_min_30k, expected_seats_lbl in (
+            ("rtl", "בונוס בשני הכיוונים", "החל מ-30,000", "2+ מושבי בונוס"),
+            ("ltr", "Bonus seats in both directions", "from 30,000", "2+ bonus seats"),
         ):
             if expected_dir == "ltr":
                 _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
@@ -3334,19 +3334,27 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(fco_snap["jsErrors"], [])
             self.assertEqual(fco_snap["dir"], expected_dir)
             self.assertEqual(fco_snap["legacyDomCount"], 0)
-            self.assertGreaterEqual(len(fco_snap["cards"]), 4)
+            self.assertGreaterEqual(len(fco_snap["cards"]), 3)
 
             by_strat = {c["strategy"]: c for c in fco_snap["cards"]}
             for req_strat in (
                 "FULL_BONUS_SAME_CABIN",
                 "HYBRID_BONUS_PLUS_CASH",
-                "ONE_WAY_BONUS_ONE_WAY_CASH",
                 "CASH_AND_POINTS",
             ):
                 self.assertIn(req_strat, by_strat)
+            self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", by_strat)
 
             for card in fco_snap["cards"]:
-                for bad_tok in (*forbidden_ui_tokens, "120,000", "מחיר", "price"):
+                for bad_tok in (
+                    *forbidden_ui_tokens,
+                    "120,000",
+                    "מחיר",
+                    "price",
+                    "כיוון אחד בבונוס",
+                    "כיוון אחד בונוס",
+                    "One way on bonus",
+                ):
                     self.assertNotIn(bad_tok, card["text"])
                     self.assertNotIn(bad_tok, card["bookTitle"])
                 self.assertEqual(card["bonusDirections"], "both")
@@ -3385,9 +3393,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             )
             self.assertIsNotNone(by_strat["HYBRID_BONUS_PLUS_CASH"]["stratTagText"])
             self.assertEqual(by_strat["HYBRID_BONUS_PLUS_CASH"]["minPoints"]["pointsAttr"], "30000")
-            self.assertEqual(by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]["minPoints"]["pointsAttr"], "15000")
-            self.assertEqual(by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]["minPoints"]["scopeAttr"], "one_way")
-            self.assertEqual(by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]["minPoints"]["valText"], expected_min_15k)
             # R3 / E4: CASH_AND_POINTS carries no points row
             self.assertIsNone(by_strat["CASH_AND_POINTS"]["minPoints"])
 
@@ -3415,18 +3420,23 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             })()"""
         )
 
-        for expected_dir, expected_stmt, expected_no_bonus, expected_comm_flight in (
-            ("rtl", "בונוס בכיוון אחד בלבד — הלוך", "אין בונוס", "טיסה מסחרית (אין בונוס)"),
-            ("ltr", "Bonus seats one way only — outbound", "No bonus seats", "Commercial flight (no bonus)"),
+        for expected_dir, expected_stmt, expected_no_bonus, expected_comm_flight, expected_ow_prefix in (
+            ("rtl", "בונוס בכיוון אחד בלבד — הלוך", "אין בונוס", "טיסה מסחרית (אין בונוס)", "החל מ-"),
+            ("ltr", "Bonus seats one way only — outbound", "No bonus seats", "Commercial flight (no bonus)", "from "),
         ):
             if expected_dir == "ltr":
                 _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
             ath_snap = _cdp_eval(card_inspector_js)
             self.assertEqual(ath_snap["jsErrors"], [])
             self.assertGreaterEqual(len(ath_snap["cards"]), 2)
-            ath_strats = {c["strategy"] for c in ath_snap["cards"]}
-            self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", ath_strats)
-            self.assertIn("CASH_AND_POINTS", ath_strats)
+            ath_by_strat = {c["strategy"]: c for c in ath_snap["cards"]}
+            self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", ath_by_strat)
+            self.assertIn("CASH_AND_POINTS", ath_by_strat)
+            ow_card = ath_by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]
+            self.assertIsNone(ow_card["stratTagText"])
+            self.assertIsNotNone(ow_card["minPoints"])
+            self.assertEqual(ow_card["minPoints"]["scopeAttr"], "one_way")
+            self.assertTrue(ow_card["minPoints"]["valText"].startswith(expected_ow_prefix))
             for card in ath_snap["cards"]:
                 for bad_tok in forbidden_ui_tokens:
                     self.assertNotIn(bad_tok, card["text"])
@@ -3564,6 +3574,764 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 self.assertEqual(in_lane["seatsAttr"], "1")
                 self.assertEqual(in_lane["twoPlusAttr"], "false")
                 self.assertEqual(in_lane["seatsText"], expected_one_seat)
+
+    def test_scenario_25_run12_compact_stub_weather_consistent_badges_and_kpi_hover_e2e(
+        self,
+    ) -> None:
+        """Scenario 25 (`M12`): Real Headless Chrome CDP verification of compact side-stub weather, non-contradictory bonus badges (`LCA/PFO` `2+`/`2+`, `FCO` `2+`/`2+`, `ATH` 1-way), and unclipped KPI hover/tap explanations in `he` & `en`."""
+        import base64 as _b64
+        import re as _re
+        import shutil as _shutil
+        import signal as _signal
+        import socket
+        import struct as _struct
+        import subprocess
+        import time
+        import urllib.parse as _urlparse
+        import urllib.request
+
+        chrome_bin = Path("/usr/bin/google-chrome")
+        self.assertTrue(chrome_bin.exists(), "Headless Chrome binary required at /usr/bin/google-chrome")
+
+        old_lf = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+
+        def _restore_lf() -> None:
+            if old_lf is None:
+                os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            else:
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_lf
+
+        self.addCleanup(_restore_lf)
+
+        seeded_db_path, _repo = self.make_isolated_env(auto_seed=True)
+        seeded_client = self.get_client(seeded_db_path)
+
+        # Also prepare isolated live-mode client seeded with exact screenshot LCA/PFO 2+/2+ + landlocked VIE
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
+        oj_db_path, _oj_repo = self.make_isolated_env(auto_seed=False)
+        oj_client = self.get_client(oj_db_path)
+        oj_sync = oj_client.post(
+            "/api/v1/elal-bonus/sync",
+            json={
+                "origin": "TLV",
+                "destinations": ["LCA", "PFO", "VIE"],
+                "start_date": "2026-12-09",
+                "end_date": "2026-12-15",
+                "force_refresh": True,
+                "rbd_payload": [
+                    {
+                        "destination_iata": "LCA",
+                        "direction": "OUTBOUND",
+                        "flight_number": "LY5131",
+                        "flight_date": "2026-12-10",
+                        "economy_seats": 2,
+                        "dep_time": "07:00",
+                        "arr_time": "08:05",
+                    },
+                    {
+                        "destination_iata": "PFO",
+                        "direction": "INBOUND",
+                        "flight_number": "LY5138",
+                        "flight_date": "2026-12-14",
+                        "economy_seats": 2,
+                        "dep_time": "08:15",
+                        "arr_time": "09:20",
+                    },
+                    {
+                        "destination_iata": "VIE",
+                        "direction": "OUTBOUND",
+                        "flight_number": "LY0361",
+                        "flight_date": "2026-12-10",
+                        "economy_seats": 2,
+                        "dep_time": "06:15",
+                        "arr_time": "09:10",
+                    },
+                    {
+                        "destination_iata": "VIE",
+                        "direction": "INBOUND",
+                        "flight_number": "LY0364",
+                        "flight_date": "2026-12-14",
+                        "economy_seats": 2,
+                        "dep_time": "20:30",
+                        "arr_time": "00:55",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(oj_sync.status_code, 200)
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+
+        chrome_tmp = tempfile.TemporaryDirectory(
+            prefix="tier4_scen25_chrome_", ignore_cleanup_errors=True
+        )
+        self.addCleanup(lambda: _shutil.rmtree(chrome_tmp.name, ignore_errors=True))
+        self.addCleanup(chrome_tmp.cleanup)
+
+        html_text = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        css_text = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        js_text = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+
+        inlined_html = _re.sub(
+            r'<link[^>]+(?:fonts\.googleapis\.com|fonts\.gstatic\.com|manifest\.webmanifest)[^>]*>',
+            "",
+            html_text,
+        )
+        inlined_html = _re.sub(r"<noscript>.*?</noscript>", "", inlined_html, flags=_re.S)
+        inlined_html = inlined_html.replace(
+            '<link rel="stylesheet" href="/src/styles/app.css" />',
+            f"<style>{css_text}</style>",
+        )
+        inlined_html = _re.sub(
+            r'<script[^>]+src="/src/app\.js"[^>]*></script>', "", inlined_html
+        )
+        bridge_preamble = """<script>
+(function() {
+  window.__FVP_REFERENCE_DATE__ = '2026-11-19';
+  window.__fvpJsErrors = [];
+  window.addEventListener('error', function(e) { window.__fvpJsErrors.push(String(e.message || e)); });
+  window.addEventListener('unhandledrejection', function(e) { window.__fvpJsErrors.push(String(e.reason || e)); });
+  const _ss = {};
+  const _ls = {};
+  function _mkStore(backing) {
+    return {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(backing, k) ? backing[k] : null; },
+      setItem(k, v) { backing[String(k)] = String(v); },
+      removeItem(k) { delete backing[k]; },
+      clear() { Object.keys(backing).forEach((k) => delete backing[k]); },
+      get length() { return Object.keys(backing).length; }
+    };
+  }
+  Object.defineProperty(window, 'sessionStorage', { value: _mkStore(_ss), configurable: true });
+  Object.defineProperty(window, 'localStorage', { value: _mkStore(_ls), configurable: true });
+  let _reqSeq = 0;
+  const _pending = new Map();
+  window.__fvpResolveFetch = function(id, status, headersObj, bodyText) {
+    const p = _pending.get(id);
+    if (!p) return;
+    _pending.delete(id);
+    p.resolve(new Response(bodyText, { status: status, headers: headersObj || {} }));
+  };
+  window.fetch = function(input, init) {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    if (urlStr.endsWith('/sw.js')) {
+      return Promise.resolve(new Response('', { status: 200, headers: { 'Content-Type': 'application/javascript' } }));
+    }
+    const opts = init || {};
+    const id = ++_reqSeq;
+    return new Promise((resolve, reject) => {
+      _pending.set(id, { resolve, reject });
+      window.__fvpHostFetch(JSON.stringify({
+        id: id,
+        method: opts.method || 'GET',
+        url: urlStr,
+        headers: opts.headers || {},
+        body: opts.body || null
+      }));
+    });
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register = function() { return Promise.resolve({}); };
+  }
+})();
+</script>"""
+        mounted_doc = inlined_html.replace("<head>", "<head>" + bridge_preamble, 1).replace(
+            "</body>", f"<script>{js_text}</script></body>", 1
+        )
+
+        active_browser_client = oj_client
+        active_live_flag = "1"
+        proc_c = subprocess.Popen(
+            [
+                str(chrome_bin),
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={chrome_tmp.name}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        def _kill_chrome() -> None:
+            try:
+                os.killpg(proc_c.pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc_c.wait(timeout=3.0)
+            except Exception:
+                pass
+
+        self.addCleanup(_kill_chrome)
+
+        active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
+        deadline = time.time() + 12.0
+        while time.time() < deadline and not active_port_file.exists():
+            time.sleep(0.05)
+        self.assertTrue(active_port_file.exists())
+        cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5.0) as r_list:
+            targets = json.loads(r_list.read().decode("utf-8"))
+        page_target = next(t for t in targets if t.get("type") == "page")
+        ws_parsed = _urlparse.urlsplit(page_target["webSocketDebuggerUrl"])
+
+        sock = socket.create_connection(("127.0.0.1", cdp_port), timeout=10.0)
+        self.addCleanup(sock.close)
+        ws_key = _b64.b64encode(os.urandom(16)).decode("ascii")
+        sock.sendall(
+            (
+                f"GET {ws_parsed.path} HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{cdp_port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {ws_key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("ascii")
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        ws_leftover = bytearray(buf[buf.index(b"\r\n\r\n") + 4 :])
+
+        def _ws_send_json(obj: dict[str, Any]) -> None:
+            raw_b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            mask = os.urandom(4)
+            ln = len(raw_b)
+            if ln < 126:
+                hdr = bytes([0x81, 0x80 | ln]) + mask
+            elif ln < 65536:
+                hdr = bytes([0x81, 0x80 | 126]) + _struct.pack("!H", ln) + mask
+            else:
+                hdr = bytes([0x81, 0x80 | 127]) + _struct.pack("!Q", ln) + mask
+            sock.sendall(hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(raw_b)))
+
+        def _ws_recv_exact(n: int) -> bytes:
+            while len(ws_leftover) < n:
+                more = sock.recv(65536)
+                if not more:
+                    raise EOFError("CDP WebSocket closed unexpectedly")
+                ws_leftover.extend(more)
+            out_b = bytes(ws_leftover[:n])
+            del ws_leftover[:n]
+            return out_b
+
+        def _ws_recv_msg() -> dict[str, Any]:
+            fragments: list[bytes] = []
+            while True:
+                b0, b1 = _ws_recv_exact(2)
+                fin = bool(b0 & 0x80)
+                opcode = b0 & 0x0F
+                masked_flag = bool(b1 & 0x80)
+                ln = b1 & 0x7F
+                if ln == 126:
+                    ln = _struct.unpack("!H", _ws_recv_exact(2))[0]
+                elif ln == 127:
+                    ln = _struct.unpack("!Q", _ws_recv_exact(8))[0]
+                mkey = _ws_recv_exact(4) if masked_flag else b""
+                payload_b = _ws_recv_exact(ln)
+                if masked_flag:
+                    payload_b = bytes(b ^ mkey[i % 4] for i, b in enumerate(payload_b))
+                if opcode == 0x9:
+                    mask_p = os.urandom(4)
+                    sock.sendall(
+                        bytes([0x8A, 0x80 | len(payload_b)])
+                        + mask_p
+                        + bytes(b ^ mask_p[i % 4] for i, b in enumerate(payload_b))
+                    )
+                    continue
+                fragments.append(payload_b)
+                if fin:
+                    return json.loads(b"".join(fragments).decode("utf-8"))
+
+        msg_counter = 0
+
+        def _handle_binding_event(ev_msg: dict[str, Any]) -> None:
+            if (
+                ev_msg.get("method") == "Runtime.bindingCalled"
+                and ev_msg.get("params", {}).get("name") == "__fvpHostFetch"
+            ):
+                req_info = json.loads(ev_msg["params"]["payload"])
+                parsed_u = _urlparse.urlsplit(req_info["url"])
+                path_qs = parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")
+                j_body = json.loads(req_info["body"]) if req_info.get("body") else None
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = active_live_flag
+                resp_obj = active_browser_client.request(
+                    req_info["method"],
+                    path_qs,
+                    json_body=j_body,
+                    headers=req_info.get("headers") or {},
+                )
+                nonlocal msg_counter
+                msg_counter += 1
+                expr = (
+                    f"window.__fvpResolveFetch({int(req_info['id'])}, "
+                    f"{int(resp_obj.status_code)}, {json.dumps(dict(resp_obj.headers))}, {json.dumps(resp_obj.text)});"
+                )
+                _ws_send_json({"id": msg_counter, "method": "Runtime.evaluate", "params": {"expression": expr}})
+
+        def _cdp_call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            nonlocal msg_counter
+            msg_counter += 1
+            target_id = msg_counter
+            _ws_send_json({"id": target_id, "method": method, "params": params or {}})
+            while True:
+                incoming = _ws_recv_msg()
+                if "method" in incoming:
+                    _handle_binding_event(incoming)
+                    continue
+                if incoming.get("id") == target_id:
+                    return incoming
+
+        def _cdp_eval(js_expr: str) -> Any:
+            res = _cdp_call(
+                "Runtime.evaluate",
+                {"expression": js_expr, "awaitPromise": True, "returnByValue": True},
+            )
+            inner = res.get("result", {})
+            if "exceptionDetails" in inner:
+                raise AssertionError(f"CDP JS exception: {inner['exceptionDetails']}")
+            return inner.get("result", {}).get("value")
+
+        _cdp_call("Page.enable")
+        _cdp_call("Runtime.enable")
+        _cdp_call("Runtime.addBinding", {"name": "__fvpHostFetch"})
+        frame_id = _cdp_call("Page.getFrameTree")["result"]["frameTree"]["frame"]["id"]
+
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False},
+        )
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 1), 30))"
+            ):
+                break
+
+        # Configure 4-pax family (2 adults + 2 children [5, 9]) and search 2026-12-10..14 on LCA, PFO, VIE
+        _cdp_eval(
+            """(async () => {
+              document.getElementById('btn-add-child').click();
+              document.getElementById('btn-add-child').click();
+              const c0 = document.querySelector('[data-child-age="0"]');
+              c0.value = '5'; c0.dispatchEvent(new Event('input', { bubbles: true })); c0.dispatchEvent(new Event('change', { bubbles: true }));
+              const c1 = document.querySelector('[data-child-age="1"]');
+              c1.value = '9'; c1.dispatchEvent(new Event('input', { bubbles: true })); c1.dispatchEvent(new Event('change', { bubbles: true }));
+              document.querySelector('[data-mode="SPECIFIC_DATES"]').click();
+              document.getElementById('input-dep-date').value = '2026-12-10';
+              document.getElementById('input-ret-date').value = '2026-12-14';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="LCA"]').click();
+              document.querySelector('[data-dest-option="PFO"]').click();
+              document.querySelector('[data-dest-option="VIE"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+              for (let i = 0; i < 80; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                if (cards.some((el) => (el.textContent || '').includes('LCA/PFO')) && cards.some((el) => (el.textContent || '').includes('VIE'))) break;
+              }
+              const toggleBtn = document.querySelector('[data-toggle-all-proposals]');
+              if (toggleBtn) toggleBtn.click();
+            })()"""
+        )
+
+        contradictory_pairs = (
+            ("בונוס בשני הכיוונים", "כיוון אחד בבונוס"),
+            ("בונוס בשני הכיוונים", "כיוון אחד בונוס"),
+            ("Bonus seats in both directions", "One way on bonus"),
+        )
+        forbidden_card_tokens = (
+            "הערכת מחיר במזומן",
+            "חיסכון משוער",
+            "¢",
+            "~$",
+            "Est. Cash",
+            "Est. Net Saved",
+            "נקודות מתמיד",
+            "Matmid Points",
+            "120,000",
+            "מחיר",
+            "price",
+            "ימי החופש",
+            "ימי חופש",
+            "יום חופש",
+            "rbddataclients",
+        )
+
+        # Check R1, R2, and R3 real CDP mouse hover across both Hebrew (`rtl`) and English (`ltr`) at 1440x900
+        for locale_spec in (
+            {
+                "dir": "rtl",
+                "oj_tag": "מסלול משולב (הלוך ל-LCA, חזור מ-PFO)",
+                "both_stmt": "בונוס בשני הכיוונים",
+                "calc_kicker": "איך חושב:",
+                "meaning_kicker": "משמעות:",
+                "kpi_labels": {
+                    "school-fit": 'התאמה לחופשת בי"ס',
+                    "bonus-value": "כדאיות בונוס",
+                },
+                "paren_tok": "חיסור",
+            },
+            {
+                "dir": "ltr",
+                "oj_tag": "Open-jaw bonus (out to LCA, back from PFO)",
+                "both_stmt": "Bonus seats in both directions",
+                "calc_kicker": "How calculated:",
+                "meaning_kicker": "Meaning:",
+                "kpi_labels": {
+                    "school-fit": "School Break Fit",
+                    "bonus-value": "Award Value",
+                },
+                "paren_tok": "missed",
+            },
+        ):
+            if locale_spec["dir"] == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+
+            snap = _cdp_eval(
+                """(() => {
+                  const docEl = document.documentElement;
+                  const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                  return {
+                    jsErrors: window.__fvpJsErrors,
+                    dir: docEl.getAttribute('dir'),
+                    scrollWidth: docEl.scrollWidth,
+                    clientWidth: docEl.clientWidth,
+                    oldWeatherCount: document.querySelectorAll('.weather-telemetry-strip').length,
+                    legacyMissedCellCount: document.querySelectorAll('.kpi-cell[data-kpi="school-missed"]').length,
+                    mainKpiCount: document.querySelectorAll('.proposal-pass-main .kpi-cell').length,
+                    cards: cards.map((c) => {
+                      const mainEl = c.querySelector('.proposal-pass-main');
+                      const stubEl = c.querySelector('.proposal-pass-stub');
+                      const paxEl = stubEl ? stubEl.querySelector('.stub-pax-summary') : null;
+                      const wEl = stubEl ? stubEl.querySelector('.stub-weather-card[data-weather-compact="true"]') : null;
+                      const fitEl = stubEl ? stubEl.querySelector('.kpi-cell[data-kpi="school-fit"]') : null;
+                      const bonusEl = stubEl ? stubEl.querySelector('.kpi-cell[data-kpi="bonus-value"]') : null;
+                      const parenEl = fitEl ? fitEl.querySelector('.kpi-missed-paren') : null;
+                      const seaEl = wEl ? wEl.querySelector('[data-weather-sea]') : null;
+                      const mainRect = mainEl.getBoundingClientRect();
+                      const stubRect = stubEl.getBoundingClientRect();
+                      const wRect = wEl ? wEl.getBoundingClientRect() : null;
+                      const stmtEl = c.querySelector('.bonus-direction-statement');
+                      const stratEl = c.querySelector('.bonus-strategy-tag');
+                      return {
+                        text: c.textContent || '',
+                        routeText: (c.querySelector('.boarding-route-bar') || {}).textContent || '',
+                        strategy: c.getAttribute('data-strategy'),
+                        bonusDirections: c.getAttribute('data-bonus-directions'),
+                        stmtText: stmtEl ? stmtEl.textContent.trim() : '',
+                        stratText: stratEl ? stratEl.textContent.trim() : null,
+                        mainLeft: mainRect.left,
+                        mainRight: mainRect.right,
+                        stubLeft: stubRect.left,
+                        stubRight: stubRect.right,
+                        hasPaxAndWeatherSameStub: Boolean(paxEl && wEl && fitEl && bonusEl && paxEl.closest('.proposal-pass-stub') === wEl.closest('.proposal-pass-stub')),
+                        parenText: parenEl ? parenEl.textContent.trim() : '',
+                        weatherVisible: Boolean(wRect && wRect.width > 0 && wRect.height > 0),
+                        weatherText: wEl ? wEl.textContent.replace(/\\s+/g, ' ').trim() : '',
+                        hasSea: Boolean(seaEl)
+                      };
+                    })
+                  };
+                })()"""
+            )
+            self.assertEqual(snap["jsErrors"], [])
+            self.assertEqual(snap["dir"], locale_spec["dir"])
+            self.assertLessEqual(snap["scrollWidth"], snap["clientWidth"])
+            self.assertEqual(snap["oldWeatherCount"], 0)
+            self.assertEqual(snap["legacyMissedCellCount"], 0)
+            self.assertEqual(snap["mainKpiCount"], 0)
+            self.assertGreaterEqual(len(snap["cards"]), 2)
+
+            oj_found = False
+            vie_found = False
+            for card in snap["cards"]:
+                for bad_tok in forbidden_card_tokens:
+                    self.assertNotIn(bad_tok, card["text"])
+                for stmt_a, tag_b in contradictory_pairs:
+                    self.assertFalse(
+                        stmt_a in card["text"] and tag_b in card["text"],
+                        f"Contradictory bonus badges on card: {card}",
+                    )
+                self.assertTrue(card["hasPaxAndWeatherSameStub"])
+                self.assertTrue(card["parenText"].startswith("(") and card["parenText"].endswith(")"))
+                self.assertIn(locale_spec["paren_tok"], card["parenText"])
+                self.assertTrue(card["weatherVisible"])
+                self.assertIn("°C", card["weatherText"])
+                self.assertIn("/100", card["weatherText"])
+                if locale_spec["dir"] == "rtl":
+                    # Side stub (with passenger count + compact weather) sits visually on the LEFT in Hebrew RTL
+                    self.assertLessEqual(card["stubRight"], card["mainLeft"] + 2.0)
+                else:
+                    self.assertGreaterEqual(card["stubLeft"], card["mainRight"] - 2.0)
+
+                if "LCA/PFO" in card["routeText"]:
+                    oj_found = True
+                    self.assertEqual(card["stmtText"], locale_spec["both_stmt"])
+                    self.assertEqual(card["stratText"], locale_spec["oj_tag"])
+                    self.assertTrue(card["hasSea"])
+                if "VIE" in card["routeText"] and "LCA" not in card["routeText"]:
+                    vie_found = True
+                    self.assertFalse(card["hasSea"], "Landlocked VIE omits sea temperature")
+
+            self.assertTrue(oj_found, "Open-Jaw LCA/PFO card must render")
+            self.assertTrue(vie_found, "Landlocked VIE card must render")
+
+            # R3: Real CDP mouse hover over each of the 3 KPI cells on Card #1
+            _cdp_call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 2, "y": 2})
+            _cdp_eval(
+                """(() => {
+                  const c0 = document.querySelector('.proposal-card');
+                  c0.scrollIntoView({ behavior: 'instant', block: 'center' });
+                  return true;
+                })()"""
+            )
+            for kpi_key, expected_lbl in locale_spec["kpi_labels"].items():
+                pre_hover = _cdp_eval(
+                    f"""(() => {{
+                      const cell = document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"]');
+                      const lbl = cell ? cell.querySelector('.kpi-cell-label') : null;
+                      const tip = cell ? cell.querySelector('.kpi-tooltip[role="tooltip"]') : null;
+                      const r = cell.getBoundingClientRect();
+                      return {{
+                        labelText: lbl ? lbl.textContent.replace(/\\s+/g, ' ').trim() : '',
+                        preDisplay: tip ? getComputedStyle(tip).display : 'missing',
+                        cx: Math.round(r.left + r.width / 2),
+                        cy: Math.round(r.top + r.height / 2)
+                      }};
+                    }})()"""
+                )
+                self.assertIn(expected_lbl, pre_hover["labelText"])
+                self.assertEqual(pre_hover["preDisplay"], "none")
+
+                _cdp_call(
+                    "Input.dispatchMouseEvent",
+                    {"type": "mouseMoved", "x": pre_hover["cx"], "y": pre_hover["cy"]},
+                )
+                hover_state = _cdp_eval(
+                    f"""(() => {{
+                      const docEl = document.documentElement;
+                      const cell = document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"]');
+                      const tip = cell.querySelector('.kpi-tooltip[role="tooltip"]');
+                      const cs = getComputedStyle(tip);
+                      const tr = tip.getBoundingClientRect();
+                      return {{
+                        display: cs.display,
+                        visibility: cs.visibility,
+                        text: tip.textContent.replace(/\\s+/g, ' ').trim(),
+                        width: tr.width,
+                        height: tr.height,
+                        left: tr.left,
+                        right: tr.right,
+                        top: tr.top,
+                        bottom: tr.bottom,
+                        innerW: window.innerWidth,
+                        innerH: window.innerHeight,
+                        scrollH: tip.scrollHeight,
+                        clientH: tip.clientHeight,
+                        scrollWidth: docEl.scrollWidth,
+                        clientWidth: docEl.clientWidth
+                      }};
+                    }})()"""
+                )
+                self.assertEqual(hover_state["display"], "flex", kpi_key)
+                self.assertEqual(hover_state["visibility"], "visible", kpi_key)
+                self.assertGreaterEqual(hover_state["width"], 180.0, kpi_key)
+                self.assertGreaterEqual(hover_state["height"], 44.0, kpi_key)
+                self.assertIn(locale_spec["calc_kicker"], hover_state["text"])
+                self.assertIn(locale_spec["meaning_kicker"], hover_state["text"])
+                self.assertLessEqual(hover_state["scrollH"], hover_state["clientH"] + 2, kpi_key)
+                self.assertGreaterEqual(hover_state["left"], 0.0, kpi_key)
+                self.assertLessEqual(hover_state["right"], hover_state["innerW"], kpi_key)
+                self.assertGreaterEqual(hover_state["top"], 0.0, kpi_key)
+                self.assertLessEqual(hover_state["bottom"], hover_state["innerH"], kpi_key)
+                self.assertLessEqual(hover_state["scrollWidth"], hover_state["clientWidth"], kpi_key)
+
+                _cdp_call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 2, "y": 2})
+                post_display = _cdp_eval(
+                    f"""getComputedStyle(document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"] .kpi-tooltip')).display"""
+                )
+                self.assertEqual(post_display, "none")
+
+        # Switch back to Hebrew RTL, test mobile `390x844` tap tooltips & zero overflow on LCA/PFO + VIE,
+        # AND verify `firstCardY < 900` in default Holiday Mode (`ANYWHERE`) in both `he` & `en`
+        _cdp_eval("if (document.documentElement.getAttribute('dir') !== 'rtl') document.getElementById('btn-toggle-locale').click(); true;")
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True},
+        )
+        for mob_dir in ("rtl", "ltr"):
+            if mob_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+            _cdp_eval("document.querySelector('.proposal-card').scrollIntoView({ behavior: 'instant', block: 'center' }); true;")
+            for kpi_key in ("school-fit", "bonus-value"):
+                tap_res = _cdp_eval(
+                    f"""(() => {{
+                      const docEl = document.documentElement;
+                      const cell = document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"]');
+                      cell.click();
+                      const tip = cell.querySelector('.kpi-tooltip');
+                      const tr = tip.getBoundingClientRect();
+                      return {{
+                        isOpen: cell.classList.contains('is-tooltip-open'),
+                        display: getComputedStyle(tip).display,
+                        left: tr.left,
+                        right: tr.right,
+                        innerW: window.innerWidth,
+                        scrollH: tip.scrollHeight,
+                        clientH: tip.clientHeight,
+                        scrollWidth: docEl.scrollWidth,
+                        clientWidth: docEl.clientWidth
+                      }};
+                    }})()"""
+                )
+                self.assertTrue(tap_res["isOpen"])
+                self.assertEqual(tap_res["display"], "flex")
+                self.assertGreaterEqual(tap_res["left"], 0.0)
+                self.assertLessEqual(tap_res["right"], tap_res["innerW"])
+                self.assertLessEqual(tap_res["scrollH"], tap_res["clientH"] + 2)
+                self.assertLessEqual(tap_res["scrollWidth"], tap_res["clientWidth"])
+
+            # Escape closes open tooltip cleanly
+            _cdp_eval("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true;")
+            open_cnt = _cdp_eval("document.querySelectorAll('.kpi-cell.is-tooltip-open').length")
+            self.assertEqual(open_cnt, 0)
+
+        # Verify `390x844` `firstCardY < 900` in default Holiday Mode (`ANYWHERE`) in both `he` RTL & `en` LTR
+        active_browser_client = seeded_client
+        active_live_flag = "0"
+        _cdp_eval(
+            """(async () => {
+              if (document.documentElement.getAttribute('dir') !== 'rtl') {
+                document.getElementById('btn-toggle-locale').click();
+              }
+              document.getElementById('btn-dest-clear-all').click();
+              document.querySelector('[data-mode="HOLIDAY_DIRECT_INTENT"]').click();
+              for (let i = 0; i < 80; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                if (document.querySelectorAll('.proposal-card').length >= 2) break;
+              }
+              window.scrollTo(0, 0);
+            })()"""
+        )
+        for mob_dir in ("rtl", "ltr"):
+            if mob_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); window.scrollTo(0, 0); true;")
+            mob_top = _cdp_eval(
+                """(() => {
+                  const docEl = document.documentElement;
+                  const c0 = document.querySelector('.proposal-card');
+                  return {
+                    dir: docEl.getAttribute('dir'),
+                    firstCardY: c0.getBoundingClientRect().top,
+                    scrollWidth: docEl.scrollWidth,
+                    clientWidth: docEl.clientWidth
+                  };
+                })()"""
+            )
+            self.assertEqual(mob_top["dir"], mob_dir)
+            self.assertLess(mob_top["firstCardY"], 900.0)
+            self.assertLessEqual(mob_top["scrollWidth"], mob_top["clientWidth"])
+
+        # Also verify across responsive breakpoints (360, 560, 900, 1180, 1260, 2560) that KPI tooltips never overflow horizontally
+        for bp_w, bp_h, is_mob in (
+            (360, 800, True),
+            (560, 900, False),
+            (900, 900, False),
+            (1180, 900, False),
+            (1260, 900, False),
+            (2560, 1440, False),
+        ):
+            _cdp_call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": bp_w, "height": bp_h, "deviceScaleFactor": 1, "mobile": is_mob},
+            )
+            _cdp_eval("document.querySelector('.proposal-card').scrollIntoView({ behavior: 'instant', block: 'center' }); true;")
+            for kpi_key in ("school-fit", "bonus-value"):
+                bp_chk = _cdp_eval(
+                    f"""(() => {{
+                      const docEl = document.documentElement;
+                      const cell = document.querySelector('.proposal-card .kpi-cell[data-kpi="{kpi_key}"]');
+                      cell.click();
+                      const tip = cell.querySelector('.kpi-tooltip');
+                      const tr = tip.getBoundingClientRect();
+                      const out = {{
+                        left: tr.left,
+                        right: tr.right,
+                        innerW: window.innerWidth,
+                        scrollWidth: docEl.scrollWidth,
+                        clientWidth: docEl.clientWidth
+                      }};
+                      cell.click();
+                      return out;
+                    }})()"""
+                )
+                self.assertGreaterEqual(bp_chk["left"], 0.0, f"bp={bp_w} {kpi_key}")
+                self.assertLessEqual(bp_chk["right"], bp_chk["innerW"], f"bp={bp_w} {kpi_key}")
+                self.assertLessEqual(bp_chk["scrollWidth"], bp_chk["clientWidth"], f"bp={bp_w} {kpi_key}")
+
+        # Switch back to Hebrew RTL and verify seeded same-city `FCO` (`2+`/`2+`) + 1-direction `ATH` (`2026-12-06..12`) have zero contradictory badges
+        _cdp_eval(
+            """(() => {
+              if (document.documentElement.getAttribute('dir') !== 'rtl') {
+                document.getElementById('btn-toggle-locale').click();
+              }
+              document.querySelector('[data-mode="SPECIFIC_DATES"]').click();
+              return true;
+            })()"""
+        )
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False},
+        )
+        active_browser_client = seeded_client
+        active_live_flag = "0"
+        for dest_opt, dep_d, ret_d in (("ROM", "2027-04-11", "2027-04-18"), ("ATH", "2026-12-06", "2026-12-12")):
+            _cdp_eval(
+                f"""(async () => {{
+                  const clr = document.getElementById('btn-dest-clear-all');
+                  if (clr) {{
+                    clr.click();
+                    await new Promise((r) => setTimeout(r, 60));
+                  }}
+                  document.getElementById('input-dep-date').value = '{dep_d}';
+                  document.getElementById('input-ret-date').value = '{ret_d}';
+                  document.getElementById('input-flex-days').value = '0';
+                  document.getElementById('btn-dest-picker-toggle').click();
+                  document.querySelector('[data-dest-option="{dest_opt}"]').click();
+                  document.getElementById('btn-dest-popover-done').click();
+                  for (let i = 0; i < 80; i++) {{
+                    await new Promise((r) => setTimeout(r, 30));
+                    const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                    if (cards.length > 0 && cards.every((el) => (el.textContent || '').includes('{dep_d}'))) break;
+                  }}
+                }})()"""
+            )
+            seeded_texts = _cdp_eval(
+                "Array.from(document.querySelectorAll('.proposal-card')).map((c) => c.textContent || '')"
+            )
+            self.assertGreaterEqual(len(seeded_texts), 2)
+            for c_txt in seeded_texts:
+                for stmt_a, tag_b in contradictory_pairs:
+                    self.assertFalse(stmt_a in c_txt and tag_b in c_txt)
+                if dest_opt == "ATH":
+                    self.assertNotIn("כיוון אחד בבונוס", c_txt)
+                    self.assertNotIn("One way on bonus", c_txt)
 
 
 if __name__ == "__main__":
