@@ -472,6 +472,7 @@
     isCalendarVisible: false,
     isSearchFiltersOpen: false,
     isProfileSheetOpen: false,
+    lastActiveMobileZone: 'zone-search',
     isDestPickerOpen: false,
     destFilterQuery: '',
     selectedDestinations: [],
@@ -629,7 +630,25 @@
       btnHeaderHh.setAttribute('aria-expanded', state.isProfileSheetOpen ? 'true' : 'false');
     }
     if (dockProfBtn) {
-      dockProfBtn.classList.toggle('active', state.isProfileSheetOpen);
+      if (state.isProfileSheetOpen) {
+        document.querySelectorAll('.mobile-dock-btn').forEach((b) => {
+          const z = b.getAttribute('data-dock-zone');
+          if (z !== 'zone-calendar' && z !== 'zone-profile') {
+            if (b.classList.contains('active')) {
+              state.lastActiveMobileZone = z;
+            }
+            b.classList.remove('active');
+          }
+        });
+        dockProfBtn.classList.add('active');
+      } else {
+        dockProfBtn.classList.remove('active');
+        const restoreZone = state.lastActiveMobileZone || 'zone-search';
+        const restoreBtn = document.querySelector(`.mobile-dock-btn[data-dock-zone="${restoreZone}"]`);
+        if (restoreBtn) {
+          restoreBtn.classList.add('active');
+        }
+      }
     }
     if (state.isProfileSheetOpen && options.focusMatmid) {
       const matmidEl = document.getElementById('prof-matmid-points');
@@ -2487,30 +2506,30 @@
                     <div class="proposal-title-group">
                       <span class="${tierBadgeCls}">#${rankNum} ${escapeHtml(tierBadgeText)}</span>
                       <strong class="proposal-dest-title">${escapeHtml(cityTitle)}</strong>
-                      <span class="proposal-route-pair" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')} ⇄ ${escapeHtml(it.destination_iata)}</span>
+                      <span class="proposal-route-pair"><span class="route-pair-origin" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')}</span> <span aria-hidden="true">⇄</span> <span class="route-pair-dest" dir="ltr">${escapeHtml(it.destination_iata)}</span></span>
                       ${topStyleChipHtml}
                     </div>
                   </div>
                 </div>
 
-                <div class="boarding-route-bar" dir="ltr">
+                <div class="boarding-route-bar">
                   <div class="route-endpoint">
-                    <span class="route-iata">${escapeHtml(it.origin_iata || 'TLV')}</span>
-                    <span class="route-date">${escapeHtml(it.departure_date)}</span>
+                    <span class="route-iata" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')}</span>
+                    <span class="route-date" dir="ltr">${escapeHtml(it.departure_date)}</span>
                   </div>
                   <div class="route-arc-Track">
                     <span class="route-nights-pill" dir="auto">${escapeHtml(it.trip_nights)} ${isHe ? 'לילות' : 'Nights'}</span>
                     <div class="route-arc-line">
                       <span>●</span>
                       <span class="route-arc-dash"></span>
-                      <span>✈️</span>
+                      <span class="route-arc-plane" aria-hidden="true">✈️</span>
                       <span class="route-arc-dash"></span>
                       <span>●</span>
                     </div>
                   </div>
                   <div class="route-endpoint route-endpoint-end">
-                    <span class="route-iata">${escapeHtml(returnOriginLabel)}</span>
-                    <span class="route-date">${escapeHtml(it.return_date)}</span>
+                    <span class="route-iata" dir="ltr">${escapeHtml(returnOriginLabel)}</span>
+                    <span class="route-date" dir="ltr">${escapeHtml(it.return_date)}</span>
                   </div>
                 </div>
 
@@ -3279,6 +3298,7 @@
         setProfileSheetOpen(false);
         await runVacationSearch();
         if (typeof window !== 'undefined' && window.innerWidth < 1180) {
+          state.lastActiveMobileZone = 'zone-results';
           document.querySelectorAll('.mobile-dock-btn').forEach((b) => {
             if (b.getAttribute('data-dock-zone') !== 'zone-calendar') {
               b.classList.toggle('active', b.getAttribute('data-dock-zone') === 'zone-results');
@@ -3371,6 +3391,7 @@
         setProfileSheetOpen(false);
         await runVacationSearch();
         if (typeof window !== 'undefined' && window.innerWidth < 1180) {
+          state.lastActiveMobileZone = 'zone-results';
           document.querySelectorAll('.mobile-dock-btn').forEach((b) => {
             if (b.getAttribute('data-dock-zone') !== 'zone-calendar') {
               b.classList.toggle('active', b.getAttribute('data-dock-zone') === 'zone-results');
@@ -3749,14 +3770,10 @@
           return;
         }
         if (zoneId === 'zone-profile') {
-          document.querySelectorAll('.mobile-dock-btn').forEach((b) => {
-            if (b.getAttribute('data-dock-zone') !== 'zone-calendar') {
-              b.classList.remove('active');
-            }
-          });
           setProfileSheetOpen(!state.isProfileSheetOpen, { focusMatmid: false });
           return;
         }
+        state.lastActiveMobileZone = zoneId;
         setProfileSheetOpen(false);
         document.querySelectorAll('.mobile-dock-btn').forEach((b) => {
           if (b.getAttribute('data-dock-zone') !== 'zone-calendar') {

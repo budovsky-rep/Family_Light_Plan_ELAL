@@ -2235,7 +2235,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         )
         self.assertNotEqual(drawer_open_display, "none")
 
-        # (b) Tapping `[data-focus-matmid="true"]` (and dock Family button) opens `#zone-profile.is-sheet-open` (z-index 60), locks body, hides dock, focuses `#prof-matmid-points`
+        # (b) Tapping `[data-focus-matmid="true"]` (and dock Family button) opens `#zone-profile.is-sheet-open` (z-index 60) ABOVE the always-visible `#mobile-thumb-dock` (z-index 70) and focuses `#prof-matmid-points`
         sheet_check = _cdp_eval(
             """(async () => {
               const focusBtn = document.querySelector('[data-focus-matmid="true"]');
@@ -2244,26 +2244,39 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               await new Promise((r) => setTimeout(r, 120));
               const prof = document.getElementById('zone-profile');
               const dock = document.getElementById('mobile-thumb-dock');
+              const profRect = prof.getBoundingClientRect();
+              const dockRect = dock.getBoundingClientRect();
               const openState = {
                 isSheetOpen: prof.classList.contains('is-sheet-open'),
                 zIndex: getComputedStyle(prof).zIndex,
+                dockZIndex: getComputedStyle(dock).zIndex,
                 bodyLocked: document.body.classList.contains('is-sheet-locked'),
                 dockDisplayWhileOpen: getComputedStyle(dock).display,
+                profBottom: profRect.bottom,
+                dockTop: dockRect.top,
+                dockBottom: dockRect.bottom,
+                dockProfActive: document.querySelector('[data-dock-zone="zone-profile"]').classList.contains('active'),
                 activeId: document.activeElement ? document.activeElement.id : ''
               };
               document.getElementById('btn-close-profile-sheet').click();
               const dockAfterClose = getComputedStyle(dock).display;
-              return { ...openState, dockAfterClose };
+              const searchActiveAfterClose = document.querySelector('[data-dock-zone="zone-search"]').classList.contains('active');
+              return { ...openState, dockAfterClose, searchActiveAfterClose };
             })()"""
         )
         self.assertTrue(sheet_check["isSheetOpen"])
         self.assertEqual(sheet_check["zIndex"], "60")
+        self.assertEqual(sheet_check["dockZIndex"], "70")
         self.assertTrue(sheet_check["bodyLocked"])
-        self.assertEqual(sheet_check["dockDisplayWhileOpen"], "none")
+        self.assertEqual(sheet_check["dockDisplayWhileOpen"], "grid")
+        self.assertLessEqual(sheet_check["profBottom"], sheet_check["dockTop"] + 2.0)
+        self.assertGreater(sheet_check["dockBottom"], sheet_check["dockTop"])
+        self.assertTrue(sheet_check["dockProfActive"])
         self.assertEqual(sheet_check["activeId"], "prof-matmid-points")
-        self.assertNotEqual(sheet_check["dockAfterClose"], "none")
+        self.assertEqual(sheet_check["dockAfterClose"], "grid")
+        self.assertTrue(sheet_check["searchActiveAfterClose"])
 
-        # (c) Keyboard viewport guard: focusin on `#input-min-nights` hides `#mobile-thumb-dock`, focusout restores it
+        # (c) Keyboard viewport guard keeps `.is-keyboard-open` class while `#mobile-thumb-dock` stays persistently visible
         kb_check = _cdp_eval(
             """(() => {
               document.getElementById('btn-toggle-search-filters').click();
@@ -2279,8 +2292,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             })()"""
         )
         self.assertTrue(kb_check["kbOpen"])
-        self.assertEqual(kb_check["dockDuringKb"], "none")
-        self.assertNotEqual(kb_check["dockAfterKb"], "none")
+        self.assertEqual(kb_check["dockDuringKb"], "grid")
+        self.assertEqual(kb_check["dockAfterKb"], "grid")
 
         # (d) Verify all flight/proposal comparison controls, checkboxes, sticky bars, and banners are absent (`run10` R1)
         cmp_bar_check = _cdp_eval(
@@ -4031,6 +4044,18 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                       const mainRect = mainEl.getBoundingClientRect();
                       const stubRect = stubEl.getBoundingClientRect();
                       const wRect = wEl ? wEl.getBoundingClientRect() : null;
+                      const fromEndEl = c.querySelector('.boarding-route-bar .route-endpoint:not(.route-endpoint-end)');
+                      const toEndEl = c.querySelector('.boarding-route-bar .route-endpoint-end');
+                      const outLaneEl = c.querySelector('.bonus-lane[data-direction="outbound"]');
+                      const inLaneEl = c.querySelector('.bonus-lane[data-direction="inbound"]');
+                      const origPairEl = c.querySelector('.route-pair-origin');
+                      const destPairEl = c.querySelector('.route-pair-dest');
+                      const fromRect = fromEndEl.getBoundingClientRect();
+                      const toRect = toEndEl.getBoundingClientRect();
+                      const outLaneRect = outLaneEl.getBoundingClientRect();
+                      const inLaneRect = inLaneEl.getBoundingClientRect();
+                      const origPairRect = origPairEl.getBoundingClientRect();
+                      const destPairRect = destPairEl.getBoundingClientRect();
                       const stmtEl = c.querySelector('.bonus-direction-statement');
                       const stratEl = c.querySelector('.bonus-strategy-tag');
                       return {
@@ -4044,6 +4069,18 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                         mainRight: mainRect.right,
                         stubLeft: stubRect.left,
                         stubRight: stubRect.right,
+                        fromLeft: fromRect.left,
+                        fromRight: fromRect.right,
+                        toLeft: toRect.left,
+                        toRight: toRect.right,
+                        outLaneLeft: outLaneRect.left,
+                        outLaneRight: outLaneRect.right,
+                        inLaneLeft: inLaneRect.left,
+                        inLaneRight: inLaneRect.right,
+                        origPairLeft: origPairRect.left,
+                        origPairRight: origPairRect.right,
+                        destPairLeft: destPairRect.left,
+                        destPairRight: destPairRect.right,
                         hasPaxAndWeatherSameStub: Boolean(paxEl && wEl && fitEl && paxEl.closest('.proposal-pass-stub') === wEl.closest('.proposal-pass-stub')),
                         parenText: parenEl ? parenEl.textContent.trim() : '',
                         weatherVisible: Boolean(wRect && wRect.width > 0 && wRect.height > 0),
@@ -4082,8 +4119,16 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 if locale_spec["dir"] == "rtl":
                     # Side stub (with passenger count + compact weather) sits visually on the LEFT in Hebrew RTL
                     self.assertLessEqual(card["stubRight"], card["mainLeft"] + 2.0)
+                    # Route bar & header pair match RTL coupon order: TLV/outbound on the RIGHT, dest/inbound on the LEFT
+                    self.assertGreater(card["fromLeft"], card["toRight"])
+                    self.assertGreater(card["outLaneLeft"], card["inLaneRight"] - 1.0)
+                    self.assertGreater(card["origPairLeft"], card["destPairRight"] - 1.0)
                 else:
                     self.assertGreaterEqual(card["stubLeft"], card["mainRight"] - 2.0)
+                    # In English LTR: TLV/outbound on the LEFT, dest/inbound on the RIGHT
+                    self.assertLess(card["fromRight"], card["toLeft"])
+                    self.assertLess(card["outLaneRight"], card["inLaneLeft"] + 1.0)
+                    self.assertLess(card["origPairRight"], card["destPairLeft"] + 1.0)
 
                 if "LCA/PFO" in card["routeText"]:
                     oj_found = True

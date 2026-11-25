@@ -118,10 +118,6 @@ body.is-sheet-locked {
   overflow: hidden;
 }
 
-body.is-keyboard-open {
-  padding-block-end: 16px;
-}
-
 h1,
 h2,
 h3,
@@ -1633,6 +1629,9 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
 }
 
 .proposal-route-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-tag);
@@ -1717,6 +1716,15 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   flex: 1;
   height: 2px;
   border-block-start: 1.5px dashed #8AB1E6;
+}
+
+.route-arc-plane {
+  display: inline-block;
+  line-height: 1;
+}
+
+[dir="rtl"] .route-arc-plane {
+  transform: scaleX(-1);
 }
 
 .route-nights-pill {
@@ -2489,23 +2497,25 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   display: flex;
   flex-direction: column;
   position: fixed;
-  inset-block-end: 0;
+  inset-block-end: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
   inset-inline: 0;
   z-index: 60;
-  max-height: min(86dvh, 720px);
+  max-height: min(calc(88dvh - var(--mobile-dock-h) - env(safe-area-inset-bottom)), 720px);
   overflow-y: auto;
   border-end-start-radius: 0;
   border-end-end-radius: 0;
   border-start-start-radius: 18px;
   border-start-end-radius: 18px;
-  padding-block-end: max(14px, env(safe-area-inset-bottom));
+  padding-block-end: 0;
   box-shadow: 0 -12px 32px rgba(11, 31, 58, 0.24);
 }
 
 .profile-sheet-footer {
   position: sticky;
   bottom: 0;
+  z-index: 4;
   padding-block-start: 10px;
+  padding-block-end: 12px;
   margin-block-start: 10px;
   background: var(--surface-boarding);
   border-block-start: 1px solid var(--border-subtle);
@@ -2537,26 +2547,22 @@ body.is-keyboard-open .profile-sheet-footer {
   text-align: center;
 }
 
-/* Thumb-Ergonomic Mobile Bottom Navigation Dock (Shown below 1024px) */
+/* Thumb-Ergonomic Mobile Bottom Navigation Dock (Always visible below 1024px, including over sheets) */
 .mobile-thumb-dock {
   position: fixed;
   inset-block-end: 0;
   inset-inline: 0;
-  z-index: 45;
+  z-index: 70;
+  min-height: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding-block: 6px calc(6px + env(safe-area-inset-bottom));
   padding-inline: 8px;
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.98);
   backdrop-filter: blur(12px);
   border-block-start: 1px solid var(--border-strong);
   box-shadow: 0 -6px 20px rgba(11, 31, 58, 0.1);
-}
-
-body.is-sheet-locked .mobile-thumb-dock,
-body.is-keyboard-open .mobile-thumb-dock {
-  display: none !important;
 }
 
 .mobile-dock-btn {
