@@ -601,6 +601,10 @@ input[type="date"] {
   object-fit: cover;
 }
 
+.hero-scenic-wide {
+  display: none;
+}
+
 /* Workspace Zone Cards */
 .zone-card {
   min-width: 0;
@@ -3644,33 +3648,40 @@ body.is-keyboard-open .profile-sheet-footer {
   }
 
   .vacation-hero-card {
-    padding-block: 12px;
-    padding-inline: 18px;
+    padding-block: 0;
+    padding-inline: 0;
+    overflow: hidden;
+    box-shadow: 0 8px 22px rgba(6, 44, 58, 0.14);
   }
 
-  .hero-title-band {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 5px;
+  .hero-main-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
   }
 
-  .hero-headline {
-    font-size: 1.24rem;
+  .hero-copy-col {
+    display: none;
   }
 
-  .hero-lead {
-    max-width: 68ch;
+  .hero-art-col {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .hero-scenic-mobile {
+    display: none;
+  }
+
+  .hero-scenic-wide {
+    display: block;
+    height: 90px;
   }
 }
 
 @media (min-width: 1180px) {
-  .hero-main-grid {
-    grid-template-columns: minmax(0, 0.9fr) minmax(520px, 1.1fr);
-    gap: 20px;
-  }
-
-  .hero-scenic-svg {
-    height: 150px;
+  .brand-subtitle {
+    display: block;
   }
 
   body.is-sheet-locked {

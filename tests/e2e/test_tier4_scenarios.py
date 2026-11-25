@@ -2771,7 +2771,10 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               const rootStyle = getComputedStyle(document.documentElement);
               const hdrWordmark = document.querySelector('#app-header #header-title .brand-wordmark');
               const heroBrand = document.querySelector('#vacation-hero #hero-eyebrow .hero-brand-inline');
+              const heroCopy = document.querySelector('#vacation-hero .hero-copy-col');
+              const heroCardRect = document.getElementById('vacation-hero').getBoundingClientRect();
               const heroSvg = document.querySelector('#vacation-hero svg.hero-scenic-svg');
+              const heroSvgRect = heroSvg ? heroSvg.getBoundingClientRect() : { width: 0, height: 0 };
               const footerDisc = document.getElementById('footer-elal-disclaimer');
               const guestDisc = document.getElementById('profile-signin-disclaimer');
               const userDisc = document.getElementById('profile-user-disclaimer');
@@ -2780,7 +2783,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 hdrWordmarkTxt: hdrWordmark ? hdrWordmark.textContent.trim() : '',
                 hdrWordmarkVisible: Boolean(hdrWordmark && hdrWordmark.getBoundingClientRect().width > 0),
                 heroBrandTxt: heroBrand ? heroBrand.textContent.trim() : '',
-                heroSvgVisible: Boolean(heroSvg && heroSvg.getBoundingClientRect().height > 100),
+                heroCopyHiddenOnDesktop: Boolean(heroCopy && getComputedStyle(heroCopy).display === 'none'),
+                heroSvgVisible: Boolean(heroSvg && heroSvgRect.height >= 80 && heroSvgRect.height <= 115),
+                heroSvgFullWidth: Boolean(heroSvg && heroSvgRect.width >= heroCardRect.width - 4),
                 thaiOnRoot: rootStyle.getPropertyValue('--thai-abyss-teal').trim(),
                 canvasToken: rootStyle.getPropertyValue('--canvas-limestone').trim(),
                 surfaceToken: rootStyle.getPropertyValue('--surface-boarding').trim(),
@@ -2807,7 +2812,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(desk_audit["hdrWordmarkTxt"], "breezyflights")
         self.assertTrue(desk_audit["hdrWordmarkVisible"])
         self.assertEqual(desk_audit["heroBrandTxt"], "")
+        self.assertTrue(desk_audit["heroCopyHiddenOnDesktop"])
         self.assertTrue(desk_audit["heroSvgVisible"])
+        self.assertTrue(desk_audit["heroSvgFullWidth"])
         self.assertEqual(desk_audit["thaiOnRoot"], "")
         self.assertEqual(desk_audit["canvasToken"], "#F2F5F9")
         self.assertEqual(desk_audit["surfaceToken"], "#FFFFFF")
