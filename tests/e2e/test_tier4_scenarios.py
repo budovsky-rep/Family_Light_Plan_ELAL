@@ -2256,6 +2256,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 dockTop: dockRect.top,
                 dockBottom: dockRect.bottom,
                 dockProfActive: document.querySelector('[data-dock-zone="zone-profile"]').classList.contains('active'),
+                dockProfLabel: document.querySelector('[data-dock-zone="zone-profile"] .mobile-dock-label').textContent.trim(),
                 activeId: document.activeElement ? document.activeElement.id : ''
               };
               document.getElementById('btn-close-profile-sheet').click();
@@ -2272,6 +2273,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertLessEqual(sheet_check["profBottom"], sheet_check["dockTop"] + 2.0)
         self.assertGreater(sheet_check["dockBottom"], sheet_check["dockTop"])
         self.assertTrue(sheet_check["dockProfActive"])
+        self.assertEqual(sheet_check["dockProfLabel"], "הרכב טסים")
         self.assertEqual(sheet_check["activeId"], "prof-matmid-points")
         self.assertEqual(sheet_check["dockAfterClose"], "grid")
         self.assertTrue(sheet_check["searchActiveAfterClose"])

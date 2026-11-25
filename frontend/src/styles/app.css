@@ -3066,7 +3066,8 @@ body.is-keyboard-open .profile-sheet-footer {
   display: flex;
 }
 
-.stub-weather-card > .kpi-tooltip {
+.stub-weather-card > .kpi-tooltip,
+.kpi-cell.is-tooltip-down > .kpi-tooltip {
   inset-block-start: calc(100% + 7px);
   inset-block-end: auto;
 }

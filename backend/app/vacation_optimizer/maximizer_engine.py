@@ -295,23 +295,26 @@ class VacationMaximizerEngine:
                     overlap_days += 1
             holiday_overlap_ratio = overlap_days / float(max(1, total_days))
 
+        shift_penalty = (
+            1.5 * float(max(0, int(mode1_shift_days or 0)))
+            if (mode1_shift_days is not None or window_set_type == "SPECIFIC_USER_WINDOW")
+            else 0.0
+        )
         if has_bagrut_blackout or has_tlv_closure_endpoints:
             has_val = 0.0
-        elif mode1_shift_days is not None or window_set_type == "SPECIFIC_USER_WINDOW":
-            shift_total = int(mode1_shift_days or 0)
+        elif active_children:
             has_unclamped = (
                 100.0
-                - 4.5 * float(shift_total)
-                - 4.0 * float(abs(trip_nights - n_target))
-                - 15.0 * (sap_raw / float(max(1, trip_nights + 1)))
+                * (
+                    0.65 * ccg_raw
+                    + 0.35 * holiday_overlap_ratio
+                    - 0.45 * (sap_raw / float(max(1, trip_nights + 1)))
+                )
+                - shift_penalty
             )
-            has_val = round(min(100.0, max(15.0, has_unclamped)), 1)
-        elif active_children:
-            has_unclamped = 100.0 * (
-                0.65 * ccg_raw
-                + 0.35 * holiday_overlap_ratio
-                - 0.45 * (sap_raw / float(max(1, trip_nights + 1)))
-            )
+            has_val = round(min(100.0, max(0.0, has_unclamped)), 1)
+        elif window_set_type == "SPECIFIC_USER_WINDOW" or mode1_shift_days is not None:
+            has_unclamped = 100.0 * holiday_overlap_ratio - shift_penalty
             has_val = round(min(100.0, max(0.0, has_unclamped)), 1)
         else:
             has_unclamped = 100.0 * (

@@ -2084,59 +2084,79 @@
     const ccgPct = Math.round(Number((p && p.childcare_coverage_gain) ?? 1) * 100);
     const hasNum = Number(hasVal) || 0;
 
-    let fitCalc = '';
-    if (p && p.window_set_type === 'SPECIFIC_USER_WINDOW') {
-      const q = state.lastSearchQuery || null;
-      const shiftDays =
-        q && q.specific_departure_date && q.specific_return_date
-          ? Math.abs(diffDaysIso(q.specific_departure_date, it.departure_date)) +
-            Math.abs(diffDaysIso(q.specific_return_date, it.return_date))
-          : 0;
-      fitCalc = isHe
-        ? `ציון מ-100 לחלון של ${totalDays} ימי טיול בתאריכים שבחרתם (סטייה של ${shiftDays} ימים מתאריכי היעד ו-${schoolMissed} ימי חיסור מצטברים מלימודים).`
-        : `Scored out of 100 for this ${totalDays}-day window (${shiftDays}-day shift from requested dates and ${schoolMissed} combined missed school days).`;
-    } else if (fwImpacts.length > 0) {
-      fitCalc = isHe
-        ? `מחושב על פני ${totalDays} ימי טיול עבור ${fwImpacts.length} ילדים מול לוח משרד החינוך: 65% כיסוי חופשת לימודים, סופ״ש וקייטנות (${ccgPct}% בטיול זה) + 35% חפיפה משותפת, בניכוי ימי חיסור (${schoolMissed}).`
-        : `Computed across ${totalDays} trip days for ${fwImpacts.length} school-age children against the MoE calendar: 65% break/weekend/camp coverage (${ccgPct}% here) + 35% shared break overlap, minus missed school days (${schoolMissed}).`;
-    } else {
-      fitCalc = isHe
-        ? `מחושב על פני ${totalDays} ימי טיול מול לוח החופשות הרשמי של משרד החינוך: 80% חפיפה לפגרה הרשמית + 20% התאמה לאורך הטיול המבוקש.`
-        : `Computed across ${totalDays} trip days against the official MoE break calendar: 80% overlap with official school break dates + 20% requested duration fit.`;
-    }
-
-    let fitMeaning = '';
-    if (hasNum >= 85) {
-      fitMeaning = isHe
-        ? `התאמה גבוהה מאוד (${hasVal}/100) — הטיול יושב ברובו על חופשת בית הספר הרשמית וסופי שבוע.`
-        : `Excellent fit (${hasVal}/100) — almost the entire trip sits inside official school break dates and weekends.`;
-    } else if (hasNum >= 60) {
-      fitMeaning = isHe
-        ? `התאמה טובה (${hasVal}/100) — רוב הטיול מכוסה בחופשת לימודים או קייטנה עם גלישה מתונה לימי לימודים.`
-        : `Good fit (${hasVal}/100) — most trip days sit on school break or camp dates with modest bridge overlap.`;
-    } else {
-      fitMeaning = isHe
-        ? `חפיפה חלקית (${hasVal}/100) — חלק ניכר מהטיול חורג מחופשת בית הספר הרשמית ודורש ימי גשר.`
-        : `Partial overlap (${hasVal}/100) — a sizable share of the trip falls outside the official school break.`;
-    }
-
     const maxSingle = Number((p && p.max_single_child_school_days_missed) || 0);
+    const q = state.lastSearchQuery || null;
+    const shiftDays =
+      p &&
+      p.window_set_type === 'SPECIFIC_USER_WINDOW' &&
+      q &&
+      q.specific_departure_date &&
+      q.specific_return_date
+        ? Math.abs(diffDaysIso(q.specific_departure_date, it.departure_date)) +
+          Math.abs(diffDaysIso(q.specific_return_date, it.return_date))
+        : 0;
+    const shiftNoteHe =
+      shiftDays > 0 ? ` (כולל הפחתה קלה על הזזת גמישות של ${shiftDays} ימים מתאריכי היעד)` : '';
+    const shiftNoteEn =
+      shiftDays > 0 ? ` (including a minor flex deduction for shifting ${shiftDays} day(s) from requested dates)` : '';
+
+    let fitCalc = '';
+    if (fwImpacts.length > 0) {
+      fitCalc = isHe
+        ? `מחושב על פני ${totalDays} ימי טיול עבור ${fwImpacts.length} ילדים מול לוח משרד החינוך: 65% כיסוי חופשת לימודים, סופ״ש וקייטנות (${ccgPct}% מהטיול) + 35% חפיפה משותפת, בניכוי ימי חיסור (${schoolMissed})${shiftNoteHe}.`
+        : `Computed across ${totalDays} trip days for ${fwImpacts.length} school-age children against the MoE calendar: 65% break/weekend/camp coverage (${ccgPct}% of trip) + 35% shared break overlap, minus missed school days (${schoolMissed})${shiftNoteEn}.`;
+    } else {
+      fitCalc = isHe
+        ? `מחושב על פני ${totalDays} ימי טיול מול לוח החופשות הרשמי של משרד החינוך וסופי שבוע${shiftNoteHe}.`
+        : `Computed across ${totalDays} trip days against the official MoE break calendar and weekends${shiftNoteEn}.`;
+    }
+
     const missedCalcAddon =
       fwImpacts.length > 0
         ? (isHe
             ? ` בסוגריים: ימי לימודים פעילים (ללא חגים, שישי-שבת וקייטנות) שמוחסרים על ידי ${fwImpacts.length} ילדים (עד ${maxSingle} לילד/ה).`
             : ` In parentheses: active classroom days (excluding breaks, weekends, and camps) missed across ${fwImpacts.length} children (up to ${maxSingle} per child).`)
         : (isHe
-            ? ' בסוגריים: ימי לימודים פעילים שמוחסרים (כרגע 0 ילדים במסגרת חינוכית בפרופיל).'
-            : ' In parentheses: active classroom days missed (0 active school frameworks in profile).');
+            ? ' בסוגריים: ימי לימודים פעילים שמוחסרים (0 ילדים במסגרת חינוכית בהרכב הטסים).'
+            : ' In parentheses: active classroom days missed (0 active school frameworks in traveler party).');
+
     const missedMeaningAddon =
       schoolMissed === 0
         ? (isHe
             ? ' אפס ימי חיסור משנת הלימודים.'
             : ' Zero missed school days.')
         : (isHe
-            ? ` סה״כ ${schoolMissed} ימי היעדרות מצטברים (${maxSingle} בפועל לילד/ה) כימי גשר.`
-            : ` ${schoolMissed} combined child-day absences (${maxSingle} actual day(s) per child) as bridge days.`);
+            ? ` סה״כ ${schoolMissed} ימי היעדרות מצטברים (${maxSingle} בפועל לילד/ה).`
+            : ` ${schoolMissed} combined child-day absences (${maxSingle} actual day(s) per child).`);
+
+    let fitMeaning = '';
+    if (hasNum >= 85) {
+      fitMeaning =
+        (isHe
+          ? `התאמה גבוהה מאוד (${hasVal}/100) — הטיול יושב ברובו על חופשת בית הספר הרשמית וסופי שבוע.`
+          : `Excellent fit (${hasVal}/100) — almost the entire trip sits inside official school break dates and weekends.`) +
+        missedMeaningAddon;
+    } else if (hasNum >= 60) {
+      fitMeaning =
+        (isHe
+          ? `התאמה טובה (${hasVal}/100) — רוב הטיול מכוסה בחופשת לימודים, סופ״ש או קייטנה עם גלישה מתונה לימי לימודים.`
+          : `Good fit (${hasVal}/100) — most trip days sit on school break, weekend, or camp dates with modest overlap.`) +
+        missedMeaningAddon;
+    } else if (hasNum > 0) {
+      fitMeaning =
+        (isHe
+          ? `חפיפה חלקית (${hasVal}/100) — רק חלק מימי הטיול יושבים על חופשת לימודים או סופ״ש, והשאר נופלים על ימי לימודים פעילים.`
+          : `Partial overlap (${hasVal}/100) — only part of the trip sits on school break or weekend dates; the rest are active school days.`) +
+        missedMeaningAddon;
+    } else if (schoolMissed > 0) {
+      fitMeaning = isHe
+        ? `אין חפיפה לחופשת בית ספר (${hasVal}/100) — התאריכים שנבחרו נופלים במלואם על ימי לימודים רגילים (ללא חופשת משרד החינוך או סופ״ש). סה״כ ${schoolMissed} ימי חיסור מצטברים (${maxSingle} בפועל לילד/ה).`
+        : `No school break overlap (${hasVal}/100) — the selected dates fall entirely on regular school days outside official MoE breaks and weekends. ${schoolMissed} combined child-day absences (${maxSingle} actual day(s) per child).`;
+    } else {
+      fitMeaning = isHe
+        ? `מחוץ לחופשות משרד החינוך (${hasVal}/100) — התאריכים הם ימי לימודים רגילים בלוח החינוך (0 חיסורים להרכב הטסים הנוכחי).`
+        : `Outside official school breaks (${hasVal}/100) — regular school days on the MoE calendar (0 absences for the current traveler party).`;
+    }
 
     const safeSeated = Math.max(1, Number(seatedCount) || 1);
     const outS = dirInfo.outbound.seats;
@@ -2173,7 +2193,7 @@
       schoolFit: {
         title: isHe ? 'התאמה לחופשת בית ספר וחיסורים' : 'School Break Fit & Absences',
         calc: fitCalc + missedCalcAddon,
-        meaning: fitMeaning + missedMeaningAddon
+        meaning: fitMeaning
       },
       bonusValue: {
         title: isHe ? 'כדאיות בונוס' : 'Award Value',
@@ -3405,6 +3425,22 @@
       });
     }
 
+    function syncKpiTooltipDirection(cellEl) {
+      if (
+        !cellEl ||
+        !cellEl.classList ||
+        !cellEl.classList.contains('kpi-cell') ||
+        typeof window === 'undefined'
+      ) {
+        return;
+      }
+      const hdr = document.getElementById('app-header');
+      const hdrBottom = hdr ? Math.max(0, hdr.getBoundingClientRect().bottom) : 56;
+      const r = cellEl.getBoundingClientRect();
+      const shouldOpenDown = r.top < hdrBottom + 255 && window.innerHeight - r.bottom > 220;
+      cellEl.classList.toggle('is-tooltip-down', shouldOpenDown);
+    }
+
     function closeAllKpiTooltips(exceptCell) {
       document.querySelectorAll('.kpi-cell.is-tooltip-open, .stub-weather-card.is-tooltip-open').forEach((el) => {
         if (el !== exceptCell) {
@@ -3671,6 +3707,7 @@
           ? target.closest('.kpi-cell, .stub-weather-card')
           : null;
       if (kpiCellEl) {
+        syncKpiTooltipDirection(kpiCellEl);
         const willOpen = !kpiCellEl.classList.contains('is-tooltip-open');
         closeAllKpiTooltips(willOpen ? kpiCellEl : null);
         kpiCellEl.classList.toggle('is-tooltip-open', willOpen);
@@ -3698,7 +3735,17 @@
       if (!target || typeof target.closest !== 'function') return;
       const hoveredKpi = target.closest('.kpi-cell, .stub-weather-card');
       if (hoveredKpi) {
+        syncKpiTooltipDirection(hoveredKpi);
         closeAllKpiTooltips(hoveredKpi);
+      }
+    });
+
+    document.body.addEventListener('focusin', (ev) => {
+      const target = ev.target;
+      if (!target || typeof target.closest !== 'function') return;
+      const focusedKpi = target.closest('.kpi-cell');
+      if (focusedKpi) {
+        syncKpiTooltipDirection(focusedKpi);
       }
     });
 

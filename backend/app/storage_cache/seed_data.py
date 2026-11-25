@@ -428,7 +428,7 @@ DESTINATION_CATALOG: dict[str, dict[str, Any]] = {
         "dep_time_in": "12:00",
         "arr_time_in": "17:10",
         "duration_minutes": 290,
-        "economy_points": 18500,
+        "economy_points": 18200,
         "premium_points": 28000,
         "business_points": 60000,
         "outbound_taxes_usd": 52.00,

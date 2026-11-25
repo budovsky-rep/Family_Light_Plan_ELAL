@@ -77,14 +77,13 @@ def is_elal_peak_award_season(flight_date: date) -> bool:
 
 
 def compute_live_seasonal_economy_points(dest_iata: str, flight_date: date) -> int:
-    """Compute realistic one-way El Al Classic Award Economy points for live-synced (`#live`) rows,
-    without artificial 50% Tuesday FlyCard discounts and with a +20% peak/holiday seasonal adjustment.
+    """Return the base minimum one-way El Al Classic Award Economy points (`החל מ-`) for
+    live-synced (`#live`) rows, without artificial 50% Tuesday FlyCard discounts or
+    speculative +20% seasonal markups (since `GetRbdAvailability` returns seat counts only).
     """
+    _ = flight_date
     meta = DESTINATION_CATALOG.get(dest_iata.strip().upper(), {})
-    base_econ = int(meta.get("economy_points", 15000))
-    if is_elal_peak_award_season(flight_date):
-        return int(round((base_econ * 1.20) / 250.0) * 250)
-    return base_econ
+    return int(meta.get("economy_points", 15000))
 
 COMMERCIAL_REVENUE_RBDS: dict[str, tuple[str, ...]] = {
     "ECONOMY": ("Y", "S", "M", "Q", "B", "H", "V", "N", "K", "L", "T", "O", "G"),

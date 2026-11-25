@@ -1582,7 +1582,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         by_fn = {r.flight_number: r for r in imported}
         self.assertFalse(by_fn["LY5131"].flycard_promo_active)
-        self.assertEqual(by_fn["LY5131"].economy_points_per_pax, 9000)
+        self.assertEqual(by_fn["LY5131"].economy_points_per_pax, 7500)
         self.assertFalse(by_fn["LY411"].flycard_promo_active)
         self.assertEqual(by_fn["LY411"].economy_points_per_pax, 7500)
 
@@ -1630,8 +1630,8 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreater(len(full_bonus), 0)
         it4 = full_bonus[0].itinerary
         assert it4 is not None
-        # One bonus ticket = 9,000 + 9,000 = 18,000 pts for a round trip; infant (age 1) = 0 seats
-        self.assertEqual(it4.min_points_per_bonus_ticket, 18000)
+        # One bonus ticket = 7,500 + 7,500 = 15,000 pts for a round trip; infant (age 1) = 0 seats
+        self.assertEqual(it4.min_points_per_bonus_ticket, 15000)
         self.assertEqual(it4.min_points_basis, "ROUND_TRIP")
         self.assertEqual(it4.bonus_direction_coverage, "BOTH_DIRECTIONS")
         self.assertNotIn("total_matmid_points", it4.to_dict())
@@ -1694,7 +1694,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(ow_lca.itinerary.bonus_direction_coverage, "OUTBOUND_ONLY")
         self.assertEqual(ow_lca.itinerary.outbound_bonus_seats, 2)
         self.assertIsNone(ow_lca.itinerary.inbound_bonus_seats)
-        self.assertEqual(ow_lca.itinerary.min_points_per_bonus_ticket, 9000)
+        self.assertEqual(ow_lca.itinerary.min_points_per_bonus_ticket, 7500)
         self.assertEqual(ow_lca.itinerary.min_points_basis, "ONE_WAY")
         self.assertAlmostEqual(ow_lca.flight_bonus_value_score, _seat_score(2, None, 3), places=1)
         self.assertLess(ow_lca.flight_bonus_value_score, 60.0)
@@ -3655,7 +3655,7 @@ class TestRun12ConsistentBonusBadges(unittest.TestCase):
         self.assertEqual(itin.bonus_tickets_count, 4)
         self.assertEqual(itin.cash_tickets_count, 0)
         self.assertTrue(itin.requires_two_plus_seat_verification)
-        self.assertEqual(itin.min_points_per_bonus_ticket, 18000)
+        self.assertEqual(itin.min_points_per_bonus_ticket, 15000)
         self.assertEqual(itin.min_points_basis, "ROUND_TRIP")
         self.assertEqual(oj.flight_bonus_value_score, 100.0)
         assert oj.weather_metrics is not None
@@ -3663,6 +3663,41 @@ class TestRun12ConsistentBonusBadges(unittest.TestCase):
         self.assertIn("Larnaca", oj.weather_metrics.activity_recommendations_en)
         self.assertIn("Expected weather:", oj.weather_metrics.weather_summary_en)
         self.assertIn("מסלול משולב בבונוס (הלוך ל-LCA, חזור מ-PFO)", oj.explanation_summary_he)
+
+        # Barcelona (`BCN` LY393 on `2026-12-21..23`, outbound-only) shows base minimum 18,200 (never +20% 22,250)
+        planner.elal_adapter.parse_and_import_external_rbd_payload(
+            [
+                {
+                    "destination_iata": "BCN",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY393",
+                    "flight_date": "2026-12-21",
+                    "economy_seats": 2,
+                    "dep_time": "06:00",
+                    "arr_time": "09:45",
+                }
+            ]
+        )
+        bcn_props = planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["BCN"],
+                "specific_departure_date": "2026-12-21",
+                "specific_return_date": "2026-12-23",
+                "min_trip_nights": 2,
+                "max_trip_nights": 4,
+                "flex_days_plus_minus": 0,
+            },
+            profile=family,
+            persist_results=False,
+        )
+        self.assertGreaterEqual(len(bcn_props), 1)
+        self.assertEqual(bcn_props[0].itinerary.min_points_per_bonus_ticket, 18200)
+        self.assertEqual(bcn_props[0].itinerary.min_points_basis, "ONE_WAY")
+        # 2026-12-21..23 are 3 regular school days (6 absences across 2 kids) -> 0.0/100 school-break fit!
+        self.assertEqual(bcn_props[0].total_school_days_missed_across_children, 6)
+        self.assertEqual(bcn_props[0].holiday_alignment_score, 0.0)
         self.assertIn("בונוס בשני הכיוונים", oj.explanation_summary_he)
         self.assertNotIn("ONE_WAY_BONUS_ONE_WAY_CASH", oj.explanation_summary_he)
         for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
