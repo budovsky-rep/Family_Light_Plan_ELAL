@@ -83,6 +83,172 @@ def _get_field(obj: Any, key: str, default: Any = None) -> Any:
     return val
 
 
+# ----------------------------------------------------------------------------
+# Run 11 response contract (shared by the Tier 1-4 suites)
+# ----------------------------------------------------------------------------
+# Keys that no planner response carries any more: cash estimate, saving, cents-per-point
+# and the all-passenger points total / wallet deductions.
+RUN11_REMOVED_ITINERARY_KEYS = (
+    "total_taxes_and_fees_usd",
+    "total_supplemental_cash_fares_usd",
+    "total_baggage_fees_usd",
+    "total_out_of_pocket_cash_usd",
+    "estimated_cash_usd",
+    "is_cash_price_estimate",
+    "full_cash_benchmark_usd",
+    "net_cash_saved_usd",
+    "cents_per_point_value",
+    "total_matmid_points",
+    "points_used_by_wallet",
+    "points_used_by_wallet_json",
+)
+RUN11_REMOVED_RESPONSE_KEYS = (
+    "is_cash_price_estimate",
+    "cash_pricing_disclaimer_he",
+    "cash_pricing_disclaimer_en",
+)
+RUN11_NEW_ITINERARY_KEYS = (
+    "bonus_direction_coverage",
+    "outbound_bonus_seats",
+    "inbound_bonus_seats",
+    "outbound_bonus_seats_is_two_plus",
+    "inbound_bonus_seats_is_two_plus",
+    "min_points_per_bonus_ticket",
+    "min_points_basis",
+    "points_are_estimated",
+)
+RUN11_COVERAGE_VALUES = ("BOTH_DIRECTIONS", "OUTBOUND_ONLY", "INBOUND_ONLY", "NONE")
+# Price wording that must not appear in text shown to a person (explanation, CLI line).
+RUN11_FORBIDDEN_PRICE_TEXT = (
+    "$",
+    "¢",
+    "הערכת",
+    "חיסכון",
+    "מזומן",
+    "לא מחייב",
+    "Est. Cash",
+    "non-binding",
+)
+RUN11_DIRECTION_STATEMENTS_HE = {
+    "BOTH_DIRECTIONS": "בונוס בשני הכיוונים",
+    "OUTBOUND_ONLY": "בונוס בכיוון אחד בלבד — הלוך",
+    "INBOUND_ONLY": "בונוס בכיוון אחד בלבד — חזור",
+}
+
+
+def _run11_expected_bonus_score(
+    outbound_seats: Optional[int], inbound_seats: Optional[int], seated_passengers: int
+) -> float:
+    """Documented seat-only bonus score: average share of the party each direction seats.
+
+    cov(d) = min(1, available bonus seats in d / seated passengers);
+    score = round(100 * (cov(OUT) + cov(IN)) / 2, 1).
+    """
+    party = max(1, int(seated_passengers or 0))
+    cov_out = min(1.0, (outbound_seats or 0) / party)
+    cov_in = min(1.0, (inbound_seats or 0) / party)
+    return round(100.0 * (cov_out + cov_in) / 2.0, 1)
+
+
+def _assert_run11_itinerary_contract(tc: unittest.TestCase, itinerary: Any) -> dict[str, Any]:
+    """Assert the serialized itinerary follows the run-11 contract; return that dict."""
+    data = _as_dict(itinerary)
+    tc.assertTrue(data, "itinerary serializes to a non-empty dict")
+    for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+        tc.assertNotIn(removed_key, data)
+    for new_key in RUN11_NEW_ITINERARY_KEYS:
+        tc.assertIn(new_key, data)
+
+    coverage = data["bonus_direction_coverage"]
+    tc.assertIn(coverage, RUN11_COVERAGE_VALUES)
+    seats = {}
+    for direction in ("outbound", "inbound"):
+        value = data[f"{direction}_bonus_seats"]
+        tc.assertTrue(
+            value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0),
+            f"{direction}_bonus_seats={value!r}",
+        )
+        two_plus = data[f"{direction}_bonus_seats_is_two_plus"]
+        tc.assertIsInstance(two_plus, bool)
+        if two_plus:
+            tc.assertGreaterEqual(value or 0, 1, f"{direction}: a 2+ bucket has seats")
+        seats[direction] = value or 0
+    # The coverage statement is exactly what the two seat counts say
+    expected_coverage = {
+        (True, True): "BOTH_DIRECTIONS",
+        (True, False): "OUTBOUND_ONLY",
+        (False, True): "INBOUND_ONLY",
+        (False, False): "NONE",
+    }[(seats["outbound"] > 0, seats["inbound"] > 0)]
+    tc.assertEqual(coverage, expected_coverage)
+
+    min_points = data["min_points_per_bonus_ticket"]
+    basis = data["min_points_basis"]
+    if min_points is None:
+        tc.assertIsNone(basis)
+    else:
+        tc.assertIsInstance(min_points, int)
+        tc.assertGreater(min_points, 0)
+        tc.assertIn(basis, ("ROUND_TRIP", "ONE_WAY"))
+    strategy = data.get("fulfillment_strategy")
+    if strategy in ("CASH_AND_POINTS", "COMMERCIAL_CASH_ONLY") or coverage == "NONE":
+        tc.assertIsNone(min_points, f"{strategy} / {coverage} carries no points figure")
+    tc.assertIs(data["points_are_estimated"], True)
+    return data
+
+
+def _assert_run11_proposal_contract(tc: unittest.TestCase, proposal: Any) -> dict[str, Any]:
+    """Assert one planner result (object or API dict) follows the run-11 contract.
+
+    Returns the serialized itinerary.
+    """
+    itin = _assert_run11_itinerary_contract(tc, _get_field(proposal, "itinerary"))
+    explanation = _get_field(proposal, "explanation_summary_he")
+    tc.assertIsInstance(explanation, str)
+    tc.assertTrue(explanation.strip())
+    for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+        tc.assertNotIn(forbidden, explanation)
+    statement = RUN11_DIRECTION_STATEMENTS_HE.get(itin["bonus_direction_coverage"])
+    if statement is not None:
+        tc.assertIn(statement, explanation)
+    # The bonus score is the documented function of seats per direction and party size
+    tc.assertAlmostEqual(
+        _get_field(proposal, "flight_bonus_value_score"),
+        _run11_expected_bonus_score(
+            itin["outbound_bonus_seats"],
+            itin["inbound_bonus_seats"],
+            itin["seated_passengers_count"],
+        ),
+        places=1,
+    )
+    return itin
+
+
+def _assert_run11_search_response_contract(
+    tc: unittest.TestCase,
+    body: dict[str, Any],
+    *,
+    is_bonus_search: bool = True,
+) -> list[dict[str, Any]]:
+    """Assert a `/api/v1/vacations/search` JSON body obeys the run-11 contract."""
+    tc.assertIsInstance(body, dict)
+    for removed_top in RUN11_REMOVED_RESPONSE_KEYS:
+        tc.assertNotIn(removed_top, body)
+    proposals = body.get("proposals")
+    tc.assertIsInstance(proposals, list)
+    itins: list[dict[str, Any]] = []
+    for prop in proposals:
+        itin = _assert_run11_proposal_contract(tc, prop)
+        if is_bonus_search:
+            tc.assertNotEqual(itin["bonus_direction_coverage"], "NONE")
+            tc.assertNotEqual(itin["fulfillment_strategy"], "COMMERCIAL_CASH_ONLY")
+        if itin["fulfillment_strategy"] == "COMMERCIAL_CASH_ONLY":
+            tc.assertEqual(itin["bonus_direction_coverage"], "NONE")
+            tc.assertEqual(_get_field(prop, "flight_bonus_value_score"), 0.0)
+        itins.append(itin)
+    return itins
+
+
 def _load_profile_from_sqlite(
     db_path: str | Path, profile_id: str = "default-family-profile"
 ) -> FamilyProfile:
@@ -1221,46 +1387,72 @@ class TestTier1F07FlightItineraries(Tier1BaseTestCase):
             }
         )
         bonus_props = [
-            p
-            for p in proposals
-            if _get_field(p.itinerary, "utilizes_elal_bonus")
-            and _get_field(p.itinerary, "total_matmid_points", 0) > 0
+            p for p in proposals if _get_field(p.itinerary, "utilizes_elal_bonus")
         ]
         self.assertGreater(len(bonus_props), 0)
         itin = bonus_props[0].itinerary
         assert itin is not None
         self.assertGreaterEqual(itin.seated_passengers_count, 1)
         self.assertGreaterEqual(itin.bonus_tickets_count, 1)
-        self.assertNotIn("family_ticket_allocation", itin.to_dict())
-        self.assertTrue(itin.to_dict()["is_cash_price_estimate"])
-        self.assertIsInstance(itin.points_used_by_wallet, dict)
-        self.assertGreater(len(itin.points_used_by_wallet), 0)
+        dumped = _assert_run11_proposal_contract(self, bonus_props[0])
+        self.assertNotIn("family_ticket_allocation", dumped)
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT * FROM flight_itineraries WHERE id = ?", (itin.id,)
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["points_used_by_wallet_json"], "{}")
+            self.assertEqual(row["total_matmid_points"], 0)
+        finally:
+            conn.close()
 
-    def test_f07_3_financial_columns_cash_saved_and_cpp(self) -> None:
-        planner = self.get_planner()
-        proposals = planner.search_vacations(
-            {
+    def test_f07_3_persisted_search_for_signed_in_profile_omits_financial_fields(
+        self,
+    ) -> None:
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        client = self.get_client(db_path)
+        prof = self.get_default_profile(db_path)
+        self.authenticate_test_client(
+            client, email="f07_3_saved@gmail.com", profile=prof
+        )
+        resp = client.post(
+            "/api/v1/vacations/search",
+            json={
                 "date_selection_mode": "SPECIFIC_DATES",
                 "airline_selection_mode": "EL_AL_ONLY",
                 "specific_departure_date": "2027-04-11",
                 "specific_return_date": "2027-04-18",
                 "destination_iatas": ["FCO"],
-            }
+            },
         )
-        bonus_props = [
-            p
-            for p in proposals
-            if p.itinerary is not None and p.itinerary.total_matmid_points > 0
-        ]
-        self.assertGreater(len(bonus_props), 0)
-        itin = bonus_props[0].itinerary
-        assert itin is not None
-        expected_saved = itin.full_cash_benchmark_usd - itin.total_out_of_pocket_cash_usd
-        self.assertAlmostEqual(itin.net_cash_saved_usd, expected_saved, delta=1.0)
-        expected_cpp = (expected_saved * 100.0) / itin.total_matmid_points
-        self.assertIsNotNone(itin.cents_per_point_value)
-        assert itin.cents_per_point_value is not None
-        self.assertAlmostEqual(itin.cents_per_point_value, expected_cpp, delta=0.1)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertGreater(body["count"], 0)
+        _assert_run11_search_response_contract(self, body, is_bonus_search=True)
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            itin_rows = conn.execute("SELECT * FROM flight_itineraries").fetchall()
+            prop_rows = conn.execute("SELECT * FROM vacation_option_proposals").fetchall()
+            self.assertGreaterEqual(len(itin_rows), body["count"])
+            self.assertGreaterEqual(len(prop_rows), body["count"])
+            for row in itin_rows:
+                self.assertEqual(row["total_taxes_and_fees_usd"], 0.0)
+                self.assertEqual(row["total_supplemental_cash_fares_usd"], 0.0)
+                self.assertEqual(row["total_baggage_fees_usd"], 0.0)
+                self.assertEqual(row["total_out_of_pocket_cash_usd"], 0.0)
+                self.assertEqual(row["full_cash_benchmark_usd"], 0.0)
+                self.assertEqual(row["net_cash_saved_usd"], 0.0)
+                self.assertIsNone(row["cents_per_point_value"])
+                self.assertEqual(row["total_matmid_points"], 0)
+            for prow in prop_rows:
+                for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+                    self.assertNotIn(forbidden, prow["explanation_summary_he"])
+        finally:
+            conn.close()
 
     def test_f07_4_verification_and_deep_link_urls_populated(self) -> None:
         planner = self.get_planner()
@@ -1303,23 +1495,37 @@ class TestTier1F07FlightItineraries(Tier1BaseTestCase):
             bonus_tickets_count=2,
             cash_tickets_count=0,
             primary_cabin="ECONOMY",
-            points_used_by_wallet={"ELAL_MATMID": 60000},
-            total_matmid_points=60000,
-            total_taxes_and_fees_usd=156.0,
-            total_out_of_pocket_cash_usd=156.0,
-            full_cash_benchmark_usd=1180.0,
-            net_cash_saved_usd=1024.0,
-            cents_per_point_value=1.71,
+            bonus_direction_coverage="BOTH_DIRECTIONS",
+            outbound_bonus_seats=2,
+            inbound_bonus_seats=2,
+            outbound_bonus_seats_is_two_plus=True,
+            inbound_bonus_seats_is_two_plus=False,
+            min_points_per_bonus_ticket=30000,
+            min_points_basis="ROUND_TRIP",
+            points_are_estimated=True,
         )
-        dumped = itin.to_dict()
+        dumped = _assert_run11_itinerary_contract(self, itin)
         self.assertNotIn("family_ticket_allocation", dumped)
-        self.assertEqual(dumped["estimated_cash_usd"], 156.0)
-        self.assertTrue(dumped["is_cash_price_estimate"])
+        self.assertEqual(dumped["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(dumped["outbound_bonus_seats"], 2)
+        self.assertEqual(dumped["inbound_bonus_seats"], 2)
+        self.assertTrue(dumped["outbound_bonus_seats_is_two_plus"])
+        self.assertFalse(dumped["inbound_bonus_seats_is_two_plus"])
+        self.assertEqual(dumped["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(dumped["min_points_basis"], "ROUND_TRIP")
         restored = FlightItinerary.from_dict(dumped)
         self.assertEqual(restored.destination_iata, "FCO")
         self.assertEqual(len(restored.outbound_legs), 1)
         self.assertEqual(restored.seated_passengers_count, 2)
         self.assertEqual(restored.bonus_tickets_count, 2)
+        self.assertEqual(restored.bonus_direction_coverage, "BOTH_DIRECTIONS")
+        self.assertEqual(restored.outbound_bonus_seats, 2)
+        self.assertEqual(restored.inbound_bonus_seats, 2)
+        self.assertTrue(restored.outbound_bonus_seats_is_two_plus)
+        self.assertFalse(restored.inbound_bonus_seats_is_two_plus)
+        self.assertEqual(restored.min_points_per_bonus_ticket, 30000)
+        self.assertEqual(restored.min_points_basis, "ROUND_TRIP")
+        self.assertIs(restored.points_are_estimated, True)
 
 
 # ============================================================================
@@ -2339,12 +2545,15 @@ class TestTier1F18AllAirlinesAndBaggageNormalizer(Tier1BaseTestCase):
             }
         )
         self.assertGreater(len(proposals), 0)
+        carriers = set()
         for p in proposals:
-            assert p.itinerary is not None
-            self.assertGreaterEqual(
-                p.itinerary.total_out_of_pocket_cash_usd,
-                p.itinerary.total_baggage_fees_usd,
-            )
+            itin = _assert_run11_proposal_contract(self, p)
+            carriers.add(itin["primary_carrier_iata"])
+            self.assertEqual(itin["fulfillment_strategy"], "COMMERCIAL_CASH_ONLY")
+            self.assertEqual(itin["bonus_direction_coverage"], "NONE")
+            self.assertIsNone(itin["min_points_per_bonus_ticket"])
+            self.assertEqual(p.flight_bonus_value_score, 0.0)
+        self.assertGreater(len(carriers), 1)
 
 
 # ============================================================================
@@ -2586,9 +2795,14 @@ class TestTier1F22StrategyFullBonusSameCabin(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertEqual(_get_field(res, "fulfillment_strategy"), "FULL_BONUS_SAME_CABIN")
-        self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
-        self.assertFalse(bool(_get_field(res, "requires_two_plus_seat_verification")))
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["fulfillment_strategy"], "FULL_BONUS_SAME_CABIN")
+        self.assertEqual(itin["bonus_tickets_count"], 2)
+        self.assertEqual(itin["cash_tickets_count"], 0)
+        self.assertEqual(itin["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
+        self.assertFalse(bool(itin["requires_two_plus_seat_verification"]))
 
     def test_f22_2_full_bonus_same_cabin_for_five_pax_sets_two_plus_verification_flag(
         self,
@@ -2621,17 +2835,59 @@ class TestTier1F22StrategyFullBonusSameCabin(Tier1BaseTestCase):
         self.assertEqual(_get_field(res, "bonus_tickets_count"), 2)
         self.assertEqual(_get_field(res, "primary_cabin"), "BUSINESS")
 
-    def test_f22_4_full_bonus_same_cabin_out_of_pocket_equals_taxes_only(self) -> None:
-        eng = self.get_wallet_engine()
-        prof = FamilyProfile(adults_count=2, matmid_points_balance=185000, children=[])
-        out_a, in_a = self._make_award_pair()
-        res = eng.allocate_family_tickets(
-            prof, out_a, in_a, 590.0, "FULL_BONUS_SAME_CABIN", ["ECONOMY"], ["ELAL_MATMID"]
+    def test_f22_4_full_bonus_same_cabin_filtered_by_single_ticket_minimum_r2(self) -> None:
+        planner = self.get_planner()
+        family_four = FamilyProfile(
+            adults_count=2,
+            matmid_points_balance=30000,
+            children=[
+                ChildFramework(child_age_years=6, framework_type="ELEMENTARY_1_3"),
+                ChildFramework(child_age_years=9, framework_type="ELEMENTARY_4_6"),
+            ],
+            passenger_loyalty_wallets=[],
         )
-        assert res is not None
-        taxes = _get_field(res, "total_taxes_and_fees_usd")
-        oop = _get_field(res, "total_out_of_pocket_cash_usd")
-        self.assertAlmostEqual(oop, taxes, delta=0.05)
+        base_query = {
+            "date_selection_mode": "SPECIFIC_DATES",
+            "airline_selection_mode": "EL_AL_ONLY",
+            "specific_departure_date": "2027-04-11",
+            "specific_return_date": "2027-04-18",
+            "flex_days_plus_minus": 0,
+            "destination_iatas": ["FCO"],
+        }
+        # 30,000 pts covers 1 round-trip bonus ticket (far below 4 * 30,000 = 120,000): kept
+        at_min = planner.search_vacations(
+            {**base_query, "matmid_points_balance": 30000},
+            profile=family_four,
+            persist_results=False,
+        )
+        full_at_min = [
+            p for p in at_min if _get_field(p.itinerary, "fulfillment_strategy") == "FULL_BONUS_SAME_CABIN"
+        ]
+        self.assertGreaterEqual(len(full_at_min), 1)
+        itin = _assert_run11_proposal_contract(self, full_at_min[0])
+        self.assertEqual(itin["seated_passengers_count"], 4)
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
+
+        # 29,999 pts is 1 point short of 1 round-trip ticket: round-trip dropped, one-way (15,000) kept
+        below_min = planner.search_vacations(
+            {**base_query, "matmid_points_balance": 29999},
+            profile=family_four,
+            persist_results=False,
+        )
+        below_strats = {_get_field(p.itinerary, "fulfillment_strategy") for p in below_min}
+        self.assertNotIn("FULL_BONUS_SAME_CABIN", below_strats)
+        self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strats)
+
+        # Balance 0 means "not entered" (U3): full bonus is returned
+        zero_bal = planner.search_vacations(
+            {**base_query, "matmid_points_balance": 0},
+            profile=family_four,
+            persist_results=False,
+        )
+        zero_strats = {_get_field(p.itinerary, "fulfillment_strategy") for p in zero_bal}
+        self.assertIn("FULL_BONUS_SAME_CABIN", zero_strats)
 
     def test_f22_5_full_bonus_same_cabin_deep_link_and_rbddataclients_url(self) -> None:
         planner = self.get_planner()
@@ -2666,12 +2922,16 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
-        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
-        self.assertEqual(_get_field(res, "cash_tickets_count"), 0)
-        self.assertEqual(_get_field(res, "primary_cabin"), "ECONOMY")
-        self.assertEqual(_get_field(res, "total_matmid_points"), 2 * 30000 + 2 * 41000)
-        self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["seated_passengers_count"], 4)
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["cash_tickets_count"], 0)
+        self.assertEqual(itin["primary_cabin"], "ECONOMY")
+        self.assertEqual(itin["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(itin["outbound_bonus_seats"], 4)
+        self.assertEqual(itin["inbound_bonus_seats"], 4)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
 
     def test_f23_2_split_cabin_bonus_two_economy_two_business_athens(self) -> None:
         eng = self.get_wallet_engine()
@@ -2686,9 +2946,11 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertEqual(_get_field(res, "seated_passengers_count"), 4)
-        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
-        self.assertEqual(_get_field(res, "total_matmid_points"), 2 * 17000 + 2 * 50000)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["seated_passengers_count"], 4)
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 17000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
 
     def test_f23_3_split_cabin_bonus_five_pax_across_three_cabins(self) -> None:
         eng = self.get_wallet_engine()
@@ -2700,9 +2962,13 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
-        self.assertEqual(_get_field(res, "bonus_tickets_count"), 5)
-        self.assertAlmostEqual(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["seated_passengers_count"], 5)
+        self.assertEqual(itin["bonus_tickets_count"], 5)
+        self.assertEqual(itin["cash_tickets_count"], 0)
+        self.assertEqual(itin["outbound_bonus_seats"], 5)
+        self.assertEqual(itin["inbound_bonus_seats"], 5)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
 
     def test_f23_4_split_cabin_bonus_same_flight_number_invariant(self) -> None:
         planner = self.get_planner()
@@ -2726,14 +2992,28 @@ class TestTier1F23StrategySplitCabinBonus(Tier1BaseTestCase):
         prof.children = prof.children[:2]
         prof.matmid_points_balance = 200000
         out_a, in_a = self._make_award_pair(econ_seats=2, prem_seats=2, biz_seats=0)
-        res = eng.allocate_family_tickets(
+        res_ep = eng.allocate_family_tickets(
             prof, out_a, in_a, 590.0, "SPLIT_CABIN_BONUS", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
-        assert res is not None
-        expected_pts = 2 * (out_a.economy_points_per_pax + in_a.economy_points_per_pax) + 2 * (
-            out_a.premium_points_per_pax + in_a.premium_points_per_pax
+        assert res_ep is not None
+        itin_ep = _assert_run11_itinerary_contract(self, res_ep)
+        self.assertEqual(
+            itin_ep["min_points_per_bonus_ticket"],
+            out_a.economy_points_per_pax + in_a.economy_points_per_pax,
         )
-        self.assertEqual(_get_field(res, "total_matmid_points"), expected_pts)
+        self.assertEqual(itin_ep["min_points_basis"], "ROUND_TRIP")
+
+        out_pb, in_pb = self._make_award_pair(econ_seats=0, prem_seats=2, biz_seats=2)
+        res_pb = eng.allocate_family_tickets(
+            prof, out_pb, in_pb, 590.0, "SPLIT_CABIN_BONUS", ["PREMIUM", "BUSINESS"], ["ELAL_MATMID"]
+        )
+        assert res_pb is not None
+        itin_pb = _assert_run11_itinerary_contract(self, res_pb)
+        self.assertEqual(
+            itin_pb["min_points_per_bonus_ticket"],
+            out_pb.premium_points_per_pax + in_pb.premium_points_per_pax,
+        )
+        self.assertEqual(itin_pb["min_points_basis"], "ROUND_TRIP")
 
 
 # ============================================================================
@@ -2749,10 +3029,15 @@ class TestTier1F24StrategyHybridBonusPlusCash(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertEqual(_get_field(res, "seated_passengers_count"), 5)
-        self.assertEqual(_get_field(res, "bonus_tickets_count"), 4)
-        self.assertEqual(_get_field(res, "cash_tickets_count"), 1)
-        self.assertEqual(_get_field(res, "total_matmid_points"), 142000)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["seated_passengers_count"], 5)
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["cash_tickets_count"], 1)
+        self.assertEqual(itin["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(itin["outbound_bonus_seats"], 4)
+        self.assertEqual(itin["inbound_bonus_seats"], 4)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
 
     def test_f24_2_hybrid_bonus_plus_cash_when_only_two_award_seats_exist(self) -> None:
         eng = self.get_wallet_engine()
@@ -2772,16 +3057,22 @@ class TestTier1F24StrategyHybridBonusPlusCash(Tier1BaseTestCase):
         eng = self.get_wallet_engine()
         prof = self.get_default_profile()
         prof.children = prof.children[:2]
-        prof.matmid_points_balance = 65000
+        prof.matmid_points_balance = 30000
         for w in prof.passenger_loyalty_wallets:
-            w.available_points = 32500 if _get_field(w, "program_code") == "ELAL_MATMID" else 0
-        out_a, in_a = self._make_award_pair(econ_seats=2, prem_seats=2, biz_seats=0)
+            w.available_points = 15000 if _get_field(w, "program_code") == "ELAL_MATMID" else 0
+        out_a, in_a = self._make_award_pair(econ_seats=2, prem_seats=1, biz_seats=0)
         res = eng.allocate_family_tickets(
             prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
         assert res is not None
-        self.assertLessEqual(_get_field(res, "total_matmid_points"), 65000)
-        self.assertGreater(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        # Composition comes from seats (3 round-trip seats for 4 passengers -> 3 bonus + 1 cash),
+        # while the 1-ticket minimum (30,000) fits within the household's 30,000 balance.
+        self.assertEqual(itin["seated_passengers_count"], 4)
+        self.assertEqual(itin["bonus_tickets_count"], 3)
+        self.assertEqual(itin["cash_tickets_count"], 1)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertLessEqual(itin["min_points_per_bonus_ticket"], prof.matmid_points_balance)
 
     def test_f24_4_adult_child_under_12_pnr_safety_pairing_enforced(self) -> None:
         eng = self.get_wallet_engine()
@@ -2803,23 +3094,38 @@ class TestTier1F24StrategyHybridBonusPlusCash(Tier1BaseTestCase):
         )
         self.assertIsNone(res_single)
 
-    def test_f24_5_hybrid_blended_cost_and_net_savings_math(self) -> None:
+    def test_f24_5_hybrid_composition_and_score_ignore_cash_benchmarks_and_taxes(
+        self,
+    ) -> None:
         eng = self.get_wallet_engine()
         prof = self.get_default_profile()
-        out_a, in_a = self._make_award_pair(econ_seats=2, prem_seats=2, biz_seats=0)
-        res = eng.allocate_family_tickets(
-            prof, out_a, in_a, 590.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
+        out_low, in_low = self._make_award_pair(econ_seats=2, prem_seats=2, biz_seats=0)
+        out_low.taxes_usd_per_pax = in_low.taxes_usd_per_pax = 0.0
+        out_high, in_high = self._make_award_pair(econ_seats=2, prem_seats=2, biz_seats=0)
+        out_high.taxes_usd_per_pax = in_high.taxes_usd_per_pax = 950.0
+
+        res_low = eng.allocate_family_tickets(
+            prof, out_low, in_low, 0.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
         )
-        assert res is not None
-        taxes = _get_field(res, "total_taxes_and_fees_usd", 0.0)
-        supp = _get_field(res, "total_supplemental_cash_fares_usd", 0.0)
-        bag = _get_field(res, "total_baggage_fees_usd", 0.0)
-        oop = _get_field(res, "total_out_of_pocket_cash_usd", 0.0)
-        bench = _get_field(res, "full_cash_benchmark_usd", 0.0)
-        saved = _get_field(res, "net_cash_saved_usd", 0.0)
-        self.assertAlmostEqual(oop, taxes + supp + bag, delta=0.5)
-        self.assertAlmostEqual(saved, bench - oop, delta=0.5)
-        self.assertGreater(saved, 0.0)
+        res_high = eng.allocate_family_tickets(
+            prof, out_high, in_high, 9999.0, "HYBRID_BONUS_PLUS_CASH", ["ECONOMY", "PREMIUM"], ["ELAL_MATMID"]
+        )
+        assert res_low is not None and res_high is not None
+        itin_low = _assert_run11_itinerary_contract(self, res_low)
+        itin_high = _assert_run11_itinerary_contract(self, res_high)
+        for key in (
+            "fulfillment_strategy",
+            "seated_passengers_count",
+            "bonus_tickets_count",
+            "cash_tickets_count",
+            "bonus_direction_coverage",
+            "outbound_bonus_seats",
+            "inbound_bonus_seats",
+            "min_points_per_bonus_ticket",
+            "min_points_basis",
+        ):
+            self.assertEqual(itin_low[key], itin_high[key], key)
+        self.assertEqual((itin_low["bonus_tickets_count"], itin_low["cash_tickets_count"]), (4, 1))
 
 
 # ============================================================================
@@ -2836,8 +3142,12 @@ class TestTier1F25StrategyOneWayAndOpenJaw(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertGreater(_get_field(res, "total_matmid_points", 0), 0)
-        self.assertGreater(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["bonus_direction_coverage"], "OUTBOUND_ONLY")
+        self.assertEqual(itin["outbound_bonus_seats"], 2)
+        self.assertEqual(itin["inbound_bonus_seats"], 0)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 15000)
+        self.assertEqual(itin["min_points_basis"], "ONE_WAY")
 
     def test_f25_2_one_way_cash_outbound_and_one_way_bonus_inbound(self) -> None:
         eng = self.get_wallet_engine()
@@ -2849,8 +3159,12 @@ class TestTier1F25StrategyOneWayAndOpenJaw(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertGreater(_get_field(res, "total_matmid_points", 0), 0)
-        self.assertGreater(_get_field(res, "total_supplemental_cash_fares_usd", 0.0), 0.0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["bonus_direction_coverage"], "INBOUND_ONLY")
+        self.assertEqual(itin["outbound_bonus_seats"], 0)
+        self.assertEqual(itin["inbound_bonus_seats"], 4)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 15000)
+        self.assertEqual(itin["min_points_basis"], "ONE_WAY")
 
     def test_f25_3_open_jaw_italy_milan_mxp_to_rome_fco_search(self) -> None:
         planner = self.get_planner()
@@ -2895,17 +3209,67 @@ class TestTier1F25StrategyOneWayAndOpenJaw(Tier1BaseTestCase):
         self.assertEqual(itin.inbound_legs[0].origin_iata, itin.return_origin_iata)
         self.assertEqual(itin.inbound_legs[-1].destination_iata, itin.origin_iata)
 
-    def test_f25_5_one_way_bonus_one_way_cash_cpp_and_savings_positive(self) -> None:
-        eng = self.get_wallet_engine()
-        prof = FamilyProfile(adults_count=2, matmid_points_balance=185000, children=[])
-        out_a, _ = self._make_award_pair(econ_seats=2, prem_seats=0, biz_seats=0)
-        _, in_a = self._make_award_pair(econ_seats=0, prem_seats=0, biz_seats=0)
-        res = eng.allocate_family_tickets(
-            prof, out_a, in_a, 590.0, "ONE_WAY_BONUS_ONE_WAY_CASH", ["ECONOMY"], ["ELAL_MATMID"]
+    def test_f25_5_mixed_strategy_kinds_and_direction_coverage_returned_without_cash_r3_r4(
+        self,
+    ) -> None:
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        client = self.get_client(db_path)
+        prof = self.get_default_profile(db_path)
+        self.authenticate_test_client(client, email="f25_5_mixed@gmail.com", profile=prof)
+
+        # Both-directions Rome fixture returns HYBRID_BONUS_PLUS_CASH, ONE_WAY_BONUS_ONE_WAY_CASH,
+        # and CASH_AND_POINTS without any cash figures
+        fco_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "destination_iatas": ["FCO"],
+            },
         )
-        assert res is not None
-        self.assertGreater(_get_field(res, "net_cash_saved_usd", 0.0), 0.0)
-        self.assertGreater(_get_field(res, "cents_per_point_value", 0.0), 0.0)
+        self.assertEqual(fco_resp.status_code, 200)
+        fco_itins = _assert_run11_search_response_contract(
+            self, fco_resp.json(), is_bonus_search=True
+        )
+        fco_strats = {it["fulfillment_strategy"] for it in fco_itins}
+        for mixed_kind in (
+            "HYBRID_BONUS_PLUS_CASH",
+            "ONE_WAY_BONUS_ONE_WAY_CASH",
+            "CASH_AND_POINTS",
+        ):
+            self.assertIn(mixed_kind, fco_strats)
+        for it in fco_itins:
+            self.assertEqual(it["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+
+        # Seeded one-direction Athens fixture (2026-12-06..12: outbound bonus, 0 inbound seats)
+        ath_resp = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "specific_departure_date": "2026-12-06",
+                "specific_return_date": "2026-12-12",
+                "flex_days_plus_minus": 0,
+                "destination_iatas": ["ATH"],
+            },
+        )
+        self.assertEqual(ath_resp.status_code, 200)
+        ath_body = ath_resp.json()
+        ath_itins = _assert_run11_search_response_contract(
+            self, ath_body, is_bonus_search=True
+        )
+        self.assertEqual(
+            {it["fulfillment_strategy"] for it in ath_itins},
+            {"ONE_WAY_BONUS_ONE_WAY_CASH", "CASH_AND_POINTS"},
+        )
+        for prop, it in zip(ath_body["proposals"], ath_itins):
+            self.assertEqual(it["bonus_direction_coverage"], "OUTBOUND_ONLY")
+            self.assertGreater(it["outbound_bonus_seats"], 0)
+            self.assertEqual(it["inbound_bonus_seats"], 0)
+            self.assertIn("בונוס בכיוון אחד בלבד — הלוך", prop["explanation_summary_he"])
 
 
 # ============================================================================
@@ -2921,50 +3285,164 @@ class TestTier1F26StrategyCashAndPoints(Tier1BaseTestCase):
         )
         self.assertIsNotNone(res)
         assert res is not None
-        self.assertEqual(_get_field(res, "fulfillment_strategy"), "CASH_AND_POINTS")
-        self.assertGreater(_get_field(res, "total_matmid_points", 0), 0)
-        self.assertLess(
-            _get_field(res, "total_out_of_pocket_cash_usd"),
-            _get_field(res, "full_cash_benchmark_usd"),
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["fulfillment_strategy"], "CASH_AND_POINTS")
+        self.assertEqual(itin["bonus_direction_coverage"], "NONE")
+        self.assertEqual(itin["outbound_bonus_seats"], 0)
+        self.assertEqual(itin["inbound_bonus_seats"], 0)
+        self.assertIsNone(itin["min_points_per_bonus_ticket"])
+        self.assertIsNone(itin["min_points_basis"])
+
+    def test_f26_2_scores_follow_available_bonus_seats_and_ignore_cash_r3(self) -> None:
+        from unittest.mock import patch
+        from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
+
+        db_path, repo = self.make_isolated_env(auto_seed=True)
+        planner = self.get_planner(repo)
+        family_four = FamilyProfile(
+            adults_count=2,
+            matmid_points_balance=0,
+            children=[
+                ChildFramework(child_age_years=6, framework_type="ELEMENTARY_1_3"),
+                ChildFramework(child_age_years=9, framework_type="ELEMENTARY_4_6"),
+            ],
+            passenger_loyalty_wallets=[],
+        )
+        scores: dict[tuple[int, int], tuple[float, float]] = {}
+        for out_s, in_s in ((1, 1), (2, 2), (4, 4), (2, 0)):
+            out_a, _ = self._make_award_pair(econ_seats=out_s, prem_seats=0, biz_seats=0)
+            _, in_a = self._make_award_pair(econ_seats=in_s, prem_seats=0, biz_seats=0)
+            with patch.object(
+                planner, "_ensure_award_rows_for_window", return_value=([out_a], [in_a])
+            ):
+                props = planner.search_vacations(
+                    {
+                        "date_selection_mode": "SPECIFIC_DATES",
+                        "airline_selection_mode": "EL_AL_ONLY",
+                        "specific_departure_date": "2027-04-11",
+                        "specific_return_date": "2027-04-18",
+                        "flex_days_plus_minus": 0,
+                        "destination_iatas": ["FCO"],
+                    },
+                    profile=family_four,
+                    persist_results=False,
+                )
+            self.assertGreaterEqual(len(props), 1)
+            expected_fbvs = _run11_expected_bonus_score(out_s, in_s, 4)
+            self.assertAlmostEqual(props[0].flight_bonus_value_score, expected_fbvs, places=1)
+            scores[(out_s, in_s)] = (
+                props[0].flight_bonus_value_score,
+                props[0].combined_trip_optimization_score,
+            )
+
+        self.assertEqual(scores[(1, 1)][0], 25.0)
+        self.assertEqual(scores[(2, 2)][0], 50.0)
+        self.assertEqual(scores[(4, 4)][0], 100.0)
+        self.assertEqual(scores[(2, 0)][0], 25.0)
+        self.assertLess(scores[(1, 1)][0], scores[(2, 2)][0])
+        self.assertLess(scores[(2, 2)][0], scores[(4, 4)][0])
+        self.assertLess(scores[(1, 1)][1], scores[(2, 2)][1])
+        self.assertLess(scores[(2, 2)][1], scores[(4, 4)][1])
+
+        # Changing destination cash reference values does not change scores
+        inflated = {
+            k: float(DESTINATION_CATALOG["FCO"][k]) * 10.0 + 750.0
+            for k in (
+                "rt_cash_per_pax_usd",
+                "supplemental_single_pax_cash_usd",
+                "five_pax_cash_benchmark_usd",
+                "outbound_taxes_usd",
+                "inbound_taxes_usd",
+            )
+        }
+        out_2, in_2 = self._make_award_pair(econ_seats=2, prem_seats=0, biz_seats=0)
+        out_2.taxes_usd_per_pax = in_2.taxes_usd_per_pax = 999.0
+        with patch.dict(DESTINATION_CATALOG["FCO"], inflated), patch.object(
+            planner, "_ensure_award_rows_for_window", return_value=([out_2], [in_2])
+        ):
+            props_inflated = planner.search_vacations(
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "specific_departure_date": "2027-04-11",
+                    "specific_return_date": "2027-04-18",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["FCO"],
+                },
+                profile=family_four,
+                persist_results=False,
+            )
+        self.assertEqual(
+            (props_inflated[0].flight_bonus_value_score, props_inflated[0].combined_trip_optimization_score),
+            scores[(2, 2)],
         )
 
-    def test_f26_2_cash_and_points_computes_effective_cpp(self) -> None:
-        eng = self.get_wallet_engine()
-        prof = self.get_default_profile()
-        out_a, in_a = self._make_award_pair(econ_seats=0, prem_seats=0, biz_seats=0)
-        res = eng.allocate_family_tickets(
-            prof, out_a, in_a, 590.0, "CASH_AND_POINTS", ["ECONOMY"], ["ELAL_MATMID"]
+    def test_f26_3_cash_and_points_carries_no_points_figure_or_low_value_penalty(
+        self,
+    ) -> None:
+        planner = self.get_planner()
+        proposals = planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "destination_iatas": ["FCO"],
+            }
         )
-        assert res is not None
-        pts = _get_field(res, "total_matmid_points")
-        saved = _get_field(res, "net_cash_saved_usd")
-        cpp = _get_field(res, "cents_per_point_value")
-        self.assertAlmostEqual(cpp, (saved * 100.0) / pts, delta=0.05)
-
-    def test_f26_3_cash_and_points_low_cpp_warning_below_0_8_cents(self) -> None:
-        eng = self.get_wallet_engine()
-        prof = self.get_default_profile()
-        out_a, in_a = self._make_award_pair(econ_seats=0, prem_seats=0, biz_seats=0)
-        res = eng.allocate_family_tickets(
-            prof, out_a, in_a, 590.0, "CASH_AND_POINTS", ["ECONOMY"], ["ELAL_MATMID"]
+        by_strat = {_get_field(p.itinerary, "fulfillment_strategy"): p for p in proposals}
+        self.assertIn("CASH_AND_POINTS", by_strat)
+        self.assertIn("FULL_BONUS_SAME_CABIN", by_strat)
+        cp_prop = by_strat["CASH_AND_POINTS"]
+        cp_itin = _assert_run11_proposal_contract(self, cp_prop)
+        self.assertIsNone(cp_itin["min_points_per_bonus_ticket"])
+        self.assertIsNone(cp_itin["min_points_basis"])
+        self.assertNotIn("0.8", cp_prop.explanation_summary_he)
+        # Same seat-only bonus score as full bonus on the same flights (no low-CPP cap at 62)
+        self.assertEqual(
+            cp_prop.flight_bonus_value_score,
+            by_strat["FULL_BONUS_SAME_CABIN"].flight_bonus_value_score,
         )
-        assert res is not None
-        cpp = _get_field(res, "cents_per_point_value")
-        self.assertIsNotNone(cpp)
-        self.assertLessEqual(float(cpp), 1.2)
 
     def test_f26_4_cash_and_points_respects_family_matmid_balance(self) -> None:
-        eng = self.get_wallet_engine()
-        prof = self.get_default_profile()
-        prof.matmid_points_balance = 40000
-        for w in prof.passenger_loyalty_wallets:
-            w.available_points = 20000 if _get_field(w, "program_code") == "ELAL_MATMID" else 0
-        out_a, in_a = self._make_award_pair(econ_seats=0, prem_seats=0, biz_seats=0)
-        res = eng.allocate_family_tickets(
-            prof, out_a, in_a, 590.0, "CASH_AND_POINTS", ["ECONOMY"], ["ELAL_MATMID"]
-        )
-        assert res is not None
-        self.assertLessEqual(_get_field(res, "total_matmid_points"), 40000)
+        planner = self.get_planner()
+        for balance in (0, 5000, 40000):
+            prof = self.get_default_profile()
+            prof.matmid_points_balance = balance
+            prof.passenger_loyalty_wallets = (
+                []
+                if balance == 0
+                else [
+                    PassengerLoyaltyWallet(
+                        id=f"w-cp-{balance}",
+                        passenger_id="ADULT_1",
+                        program_code="ELAL_MATMID",
+                        available_points=balance,
+                        can_pool_with_family=True,
+                    )
+                ]
+            )
+            props = planner.search_vacations(
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "specific_departure_date": "2027-04-11",
+                    "specific_return_date": "2027-04-18",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["FCO"],
+                    "matmid_points_balance": balance,
+                },
+                profile=prof,
+                persist_results=False,
+            )
+            cp_props = [
+                p for p in props if _get_field(p.itinerary, "fulfillment_strategy") == "CASH_AND_POINTS"
+            ]
+            self.assertGreaterEqual(len(cp_props), 1, f"balance={balance}")
+            cp_itin = _assert_run11_proposal_contract(self, cp_props[0])
+            self.assertIsNone(cp_itin["min_points_per_bonus_ticket"])
+            self.assertEqual(cp_itin["bonus_direction_coverage"], "BOTH_DIRECTIONS")
 
     def test_f26_5_cash_and_points_present_in_search_proposals_on_sold_out_award_dates(
         self,
@@ -3019,12 +3497,22 @@ class TestTier1F27StrategyMultiClubWalletSplit(Tier1BaseTestCase):
             prof, out_a, in_a, 590.0, "MULTI_CLUB_PER_PASSENGER_SPLIT", ["ECONOMY"], ["ELAL_MATMID"]
         )
         assert res is not None
-        used = _get_field(res, "points_used_by_wallet", {})
-        self.assertGreater(len(used), 0)
-        for v in used.values():
-            pts_val = v.get("points_used", v) if isinstance(v, dict) else v
-            if isinstance(pts_val, (int, float)):
-                self.assertLessEqual(pts_val, 75000)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["fulfillment_strategy"], "MULTI_CLUB_PER_PASSENGER_SPLIT")
+        self.assertEqual(itin["seated_passengers_count"], 5)
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["cash_tickets_count"], 1)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
+
+        # Requires >= 2 funded wallets
+        single_wallet_prof = FamilyProfile.from_dict(prof.to_dict())
+        single_wallet_prof.passenger_loyalty_wallets = prof.passenger_loyalty_wallets[:1]
+        self.assertIsNone(
+            eng.allocate_family_tickets(
+                single_wallet_prof, out_a, in_a, 590.0, "MULTI_CLUB_PER_PASSENGER_SPLIT", ["ECONOMY"], ["ELAL_MATMID"]
+            )
+        )
 
     def test_f27_2_pooled_family_wallets_combine_across_passengers(self) -> None:
         eng = self.get_wallet_engine()
@@ -3056,7 +3544,12 @@ class TestTier1F27StrategyMultiClubWalletSplit(Tier1BaseTestCase):
             prof, out_a, in_a, 590.0, "MULTI_CLUB_PER_PASSENGER_SPLIT", ["ECONOMY"], ["ELAL_MATMID"]
         )
         assert res is not None
-        self.assertEqual(_get_field(res, "total_matmid_points"), 90000)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["seated_passengers_count"], 3)
+        self.assertEqual(itin["bonus_tickets_count"], 3)
+        self.assertEqual(itin["cash_tickets_count"], 0)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(itin["min_points_basis"], "ROUND_TRIP")
 
     def test_f27_3_cross_club_split_elal_matmid_plus_british_avios_or_flying_blue(
         self,
@@ -3074,8 +3567,11 @@ class TestTier1F27StrategyMultiClubWalletSplit(Tier1BaseTestCase):
             ["ELAL_MATMID", "BRITISH_AVIOS", "FLYING_BLUE"],
         )
         assert res is not None
-        used = _get_field(res, "points_used_by_wallet", {})
-        self.assertGreater(len(used), 0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["fulfillment_strategy"], "MULTI_CLUB_PER_PASSENGER_SPLIT")
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["cash_tickets_count"], 1)
+        self.assertEqual(itin["min_points_per_bonus_ticket"], 30000)
 
     def test_f27_4_credit_card_transferable_points_amex_mr_and_israeli_cc_conversion(
         self,
@@ -3083,6 +3579,7 @@ class TestTier1F27StrategyMultiClubWalletSplit(Tier1BaseTestCase):
         eng = self.get_wallet_engine()
         prof = self.get_default_profile()
         out_a, in_a = self._make_award_pair(econ_seats=2, prem_seats=2, biz_seats=0)
+        enabled = ["ELAL_MATMID", "AMEX_MR_ISRAEL", "ISRAELI_CC_TRAVEL_POINTS"]
         res = eng.allocate_family_tickets(
             prof,
             out_a,
@@ -3090,10 +3587,17 @@ class TestTier1F27StrategyMultiClubWalletSplit(Tier1BaseTestCase):
             590.0,
             "MULTI_CLUB_PER_PASSENGER_SPLIT",
             ["ECONOMY", "PREMIUM"],
-            ["ELAL_MATMID", "AMEX_MR_ISRAEL", "ISRAELI_CC_TRAVEL_POINTS"],
+            enabled,
         )
         assert res is not None
-        self.assertGreater(len(_get_field(res, "points_used_by_wallet", {})), 0)
+        itin = _assert_run11_itinerary_contract(self, res)
+        self.assertEqual(itin["fulfillment_strategy"], "MULTI_CLUB_PER_PASSENGER_SPLIT")
+        self.assertEqual(itin["bonus_tickets_count"], 4)
+        self.assertEqual(itin["cash_tickets_count"], 1)
+        self.assertGreater(
+            eng.effective_elal_points_balance(prof, enabled),
+            eng.effective_elal_points_balance(prof, ["ELAL_MATMID"]),
+        )
 
     def test_f27_5_search_vacations_synthesizes_multi_club_per_passenger_split_proposal(
         self,
@@ -3221,26 +3725,67 @@ class TestTier1F28ScoringComparisonAndIcsExport(Tier1BaseTestCase):
             assert p.itinerary is not None
             self.assertIn(p.itinerary.destination_iata, set(eleven_non_flagship))
 
-    def test_f28_4_cash_pricing_presented_as_non_binding_estimate_in_summary_and_comparison(
+    def test_f28_4_no_cash_estimate_saving_or_cpp_across_all_returned_strategies_r1(
         self,
     ) -> None:
-        planner = self.get_planner()
-        proposals = planner.search_vacations(
-            {
-                "date_selection_mode": "SPECIFIC_DATES",
-                "airline_selection_mode": "EL_AL_ONLY",
-                "specific_departure_date": "2027-04-11",
-                "specific_return_date": "2027-04-18",
-                "destination_iatas": ["FCO"],
-            }
-        )
-        self.assertGreaterEqual(len(proposals), 2)
-        for p in proposals[:2]:
-            self.assertIn("~$", p.explanation_summary_he)
-            self.assertIn("לא מחייב", p.explanation_summary_he)
-            assert p.itinerary is not None
-            self.assertTrue(p.itinerary.to_dict()["is_cash_price_estimate"])
+        db_path, repo = self.make_isolated_env(auto_seed=True)
+        planner = self.get_planner(repo)
         self.assertFalse(hasattr(planner, "compare_proposals"))
+
+        client = self.get_client(db_path)
+        prof = self.get_default_profile(db_path)
+        self.authenticate_test_client(client, email="f28_4_r1@gmail.com", profile=prof)
+
+        seen_strategies: set[str] = set()
+        for payload, is_bonus in (
+            (
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "specific_departure_date": "2027-04-11",
+                    "specific_return_date": "2027-04-18",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["FCO"],
+                    "enabled_loyalty_programs": [
+                        "ELAL_MATMID",
+                        "BRITISH_AVIOS",
+                        "FLYING_BLUE",
+                        "AMEX_MR_ISRAEL",
+                    ],
+                },
+                True,
+            ),
+            (
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "airline_selection_mode": "ALL_AIRLINES",
+                    "specific_departure_date": "2027-04-11",
+                    "specific_return_date": "2027-04-18",
+                    "flex_days_plus_minus": 0,
+                    "destination_iatas": ["FCO"],
+                },
+                False,
+            ),
+        ):
+            resp = client.post("/api/v1/vacations/search", json=payload)
+            self.assertEqual(resp.status_code, 200)
+            itins = _assert_run11_search_response_contract(
+                self, resp.json(), is_bonus_search=is_bonus
+            )
+            seen_strategies.update(it["fulfillment_strategy"] for it in itins)
+
+        self.assertEqual(
+            seen_strategies,
+            {
+                "FULL_BONUS_SAME_CABIN",
+                "SPLIT_CABIN_BONUS",
+                "MULTI_CLUB_PER_PASSENGER_SPLIT",
+                "HYBRID_BONUS_PLUS_CASH",
+                "ONE_WAY_BONUS_ONE_WAY_CASH",
+                "CASH_AND_POINTS",
+                "COMMERCIAL_CASH_ONLY",
+            },
+        )
 
     def test_f28_5_ics_export_removed_from_planner_service_and_rest_api(self) -> None:
         planner = self.get_planner()
@@ -3559,8 +4104,12 @@ class TestTier1F30CliCompanion(Tier1BaseTestCase):
             )
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertTrue(jpath.exists())
-            self.assertGreaterEqual(len(json.loads(jpath.read_text("utf-8"))["proposals"]), 1)
-            self.assertIn("Est. Cash: ~$", res.stdout)
+            exported = json.loads(jpath.read_text("utf-8"))
+            self.assertGreaterEqual(len(exported["proposals"]), 1)
+            _assert_run11_search_response_contract(self, exported, is_bonus_search=True)
+            self.assertIn("Bonus=", res.stdout)
+            for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+                self.assertNotIn(forbidden, res.stdout)
 
             bad_ics = self._run_cli(
                 "search",
@@ -3737,7 +4286,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertIn(fw.value, combined)
         for club in LoyaltyProgramCode:
             self.assertIn(club.value, combined)
-        # Verify dynamic child cards & Run 3/7 single household Matmid balance / estimated cash contracts in app.js
+        # Verify dynamic child cards & Run 11 seat-based / cash-free contracts across served frontend files
         self.assertIn("form-grid form-grid-2", app_js)
         self.assertIn("desktop-nav-btn", app_js)
         for required_js_token in (
@@ -3750,8 +4299,15 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "EL_AL_ONLY",
             "ELAL_MATMID",
             "ANYWHERE",
-            "הערכת מחיר במזומן",
-            "Est. Cash Price",
+            "bonus-direction-statement",
+            "bonus-lane",
+            "bonus-lane-seats",
+            "min-points-ticket",
+            'data-kpi="bonus-value"',
+            "בונוס בשני הכיוונים",
+            "בונוס בכיוון אחד בלבד — הלוך",
+            "בונוס בכיוון אחד בלבד — חזור",
+            "החל מ-",
         ):
             self.assertIn(required_js_token, app_js)
         for removed_js_token in (
@@ -3767,8 +4323,54 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "formatGenericPassengerLabel",
             "btn-ics-link",
             "export.ics",
+            "הערכת מחיר במזומן",
+            "חיסכון משוער",
+            "Est. Cash Price",
+            "Est. Cash",
+            "Est. Net Saved",
+            "¢",
+            "~$",
+            "buildIntuitiveProposalSummary",
+            "total_matmid_points",
+            "total_out_of_pocket_cash_usd",
+            "net_cash_saved_usd",
+            "cents_per_point_value",
         ):
             self.assertNotIn(removed_js_token, app_js)
+        for req_dom_ts_token in (
+            "COMMERCIAL_CASH_ONLY",
+            "bonus_direction_coverage",
+            "outbound_bonus_seats",
+            "inbound_bonus_seats",
+            "min_points_per_bonus_ticket",
+            "min_points_basis",
+        ):
+            self.assertIn(req_dom_ts_token, dom_ts)
+        served_frontend_files = [
+            PROJECT_ROOT / "frontend" / "index.html",
+            PROJECT_ROOT / "frontend" / "src" / "app.js",
+            PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css",
+            PROJECT_ROOT / "frontend" / "src" / "types" / "domain.ts",
+            PROJECT_ROOT / "frontend" / "public" / "sw.js",
+            PROJECT_ROOT / "frontend" / "public" / "manifest.webmanifest",
+            *(PROJECT_ROOT / "frontend" / "src" / "components").glob("*/*.tsx"),
+        ]
+        for sf_path in served_frontend_files:
+            sf_text = sf_path.read_text("utf-8")
+            for forbidden_ui_tok in (
+                "הערכת מחיר במזומן",
+                "חיסכון משוער",
+                "¢",
+                "~$",
+                "Est. Cash",
+                "Est. Net Saved",
+                "COMMERCIAL_CASH_FARE",
+            ):
+                self.assertNotIn(
+                    forbidden_ui_tok,
+                    sf_text,
+                    f"Forbidden Run 11 cash/price token {forbidden_ui_tok!r} found in {sf_path}",
+                )
         self.assertIn("אין משיכה של טיסות מהשרת", app_js)
         # Verify vacation style & weather suitability controls in UI
         for vtype_token in (
@@ -4002,7 +4604,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertTrue(p["itinerary"]["departure_date"].startswith("2027-10"))
             self.assertTrue(p["itinerary"]["is_elal_flight"])
 
-        # 3. Manual Date Entry (`SPECIFIC_DATES`) + `±` flexibility + household Matmid balance pool
+        # 3. Manual Date Entry (`SPECIFIC_DATES`) + `±` flexibility + household Matmid balance pool (R2, U3)
         for matmid_bal in (30000, 300000, 0):
             man_resp = client.post(
                 "/api/v1/vacations/search",
@@ -4020,14 +4622,35 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             self.assertEqual(man_resp.status_code, 200)
             man_body = man_resp.json()
             self.assertGreater(man_body["count"], 0)
-            for prop in man_body["proposals"]:
-                itin = prop["itinerary"]
-                self.assertLessEqual(itin["total_matmid_points"], matmid_bal)
+            itins = _assert_run11_search_response_contract(
+                self, man_body, is_bonus_search=True
+            )
+            for itin in itins:
+                if matmid_bal > 0:
+                    min_pts = itin["min_points_per_bonus_ticket"]
+                    self.assertTrue(min_pts is None or min_pts <= matmid_bal)
                 self.assertIn(itin["primary_carrier_iata"], ("LY", "2U"))
                 self.assertGreaterEqual(itin["departure_date"], "2027-04-10")
                 self.assertLessEqual(itin["departure_date"], "2027-04-14")
                 self.assertGreaterEqual(itin["return_date"], "2027-04-17")
                 self.assertLessEqual(itin["return_date"], "2027-04-21")
+            if matmid_bal == 30000:
+                self.assertTrue(
+                    any(
+                        it["fulfillment_strategy"] == "FULL_BONUS_SAME_CABIN"
+                        and it["seated_passengers_count"] >= 2
+                        for it in itins
+                    ),
+                    "30,000 covers 1 ticket of FULL_BONUS_SAME_CABIN even when >=2 pax total exceeds 30,000",
+                )
+            if matmid_bal == 0:
+                self.assertTrue(
+                    any(
+                        (it["min_points_per_bonus_ticket"] or 0) > 0
+                        for it in itins
+                    ),
+                    "balance 0 means not entered and returns bonus results with 1-ticket minimums",
+                )
 
 
 # ============================================================================

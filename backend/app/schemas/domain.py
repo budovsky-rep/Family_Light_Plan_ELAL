@@ -148,6 +148,15 @@ class FulfillmentStrategy(str, Enum):
     COMMERCIAL_CASH_ONLY = "COMMERCIAL_CASH_ONLY"
 
 
+# In which directions a result has at least one available bonus seat (derived from seats only).
+BONUS_DIRECTION_COVERAGE_VALUES: tuple[str, ...] = (
+    "BOTH_DIRECTIONS",
+    "OUTBOUND_ONLY",
+    "INBOUND_ONLY",
+    "NONE",
+)
+
+
 class VacationType(str, Enum):
     ANY = "ANY"
     BEACH_AND_POOL = "BEACH_AND_POOL"
@@ -1295,6 +1304,18 @@ class FlightItinerary(_DomainModelBase):
     rbddataclients_verify_url: Optional[str] = "https://www.elal.com/rbddataclients/"
     booking_deep_link_url: str = "https://www.elal.com/"
     elal_google_flights_url: Optional[str] = None
+    # Run 11: results are described by available bonus seats per direction (no cash figures).
+    # The cash / all-passenger-points attributes above stay only as defaulted fields so the
+    # existing constructors and the NOT NULL SQLite columns keep working; they are neither
+    # computed by the planner nor serialized by `to_dict()`.
+    bonus_direction_coverage: str = "NONE"
+    outbound_bonus_seats: Optional[int] = None
+    inbound_bonus_seats: Optional[int] = None
+    outbound_bonus_seats_is_two_plus: bool = False
+    inbound_bonus_seats_is_two_plus: bool = False
+    min_points_per_bonus_ticket: Optional[int] = None
+    min_points_basis: Optional[str] = None
+    points_are_estimated: bool = True
 
     def __post_init__(self) -> None:
         self.departure_date = _parse_date(self.departure_date)
@@ -1302,6 +1323,39 @@ class FlightItinerary(_DomainModelBase):
         self.trip_nights = int(self.trip_nights)
         if self.trip_nights < 1:
             raise ValueError(f"trip_nights must be >= 1, got {self.trip_nights}")
+        self.bonus_direction_coverage = (
+            str(self.bonus_direction_coverage or "NONE").strip().upper()
+        )
+        if self.bonus_direction_coverage not in BONUS_DIRECTION_COVERAGE_VALUES:
+            raise ValueError(
+                f"Invalid bonus_direction_coverage: {self.bonus_direction_coverage!r}"
+            )
+        self.outbound_bonus_seats = (
+            max(0, int(self.outbound_bonus_seats))
+            if self.outbound_bonus_seats is not None
+            else None
+        )
+        self.inbound_bonus_seats = (
+            max(0, int(self.inbound_bonus_seats))
+            if self.inbound_bonus_seats is not None
+            else None
+        )
+        self.outbound_bonus_seats_is_two_plus = _parse_bool(
+            self.outbound_bonus_seats_is_two_plus, False
+        )
+        self.inbound_bonus_seats_is_two_plus = _parse_bool(
+            self.inbound_bonus_seats_is_two_plus, False
+        )
+        self.min_points_per_bonus_ticket = (
+            int(self.min_points_per_bonus_ticket)
+            if self.min_points_per_bonus_ticket is not None
+            else None
+        )
+        if self.min_points_basis is not None:
+            self.min_points_basis = str(self.min_points_basis).strip().upper() or None
+        if self.min_points_basis not in (None, "ROUND_TRIP", "ONE_WAY"):
+            raise ValueError(f"Invalid min_points_basis: {self.min_points_basis!r}")
+        self.points_are_estimated = _parse_bool(self.points_are_estimated, True)
         self.is_elal_flight = _parse_bool(self.is_elal_flight, True)
         self.utilizes_elal_bonus = _parse_bool(self.utilizes_elal_bonus, True)
 
@@ -1354,14 +1408,6 @@ class FlightItinerary(_DomainModelBase):
         if self.cents_per_point_value is not None:
             self.cents_per_point_value = float(self.cents_per_point_value)
 
-    @property
-    def estimated_cash_usd(self) -> float:
-        return round(float(self.total_out_of_pocket_cash_usd), 2)
-
-    @property
-    def is_cash_price_estimate(self) -> bool:
-        return True
-
     def to_dict(self) -> dict[str, Any]:
         out_legs = [leg.to_dict() for leg in self.outbound_legs]
         in_legs = [leg.to_dict() for leg in self.inbound_legs]
@@ -1394,19 +1440,15 @@ class FlightItinerary(_DomainModelBase):
             "bonus_tickets_count": self.bonus_tickets_count,
             "cash_tickets_count": self.cash_tickets_count,
             "primary_cabin": self.primary_cabin,
-            "points_used_by_wallet": dict(self.points_used_by_wallet),
-            "points_used_by_wallet_json": json.dumps(self.points_used_by_wallet),
             "requires_two_plus_seat_verification": self.requires_two_plus_seat_verification,
-            "total_matmid_points": self.total_matmid_points,
-            "total_taxes_and_fees_usd": self.total_taxes_and_fees_usd,
-            "total_supplemental_cash_fares_usd": self.total_supplemental_cash_fares_usd,
-            "total_baggage_fees_usd": self.total_baggage_fees_usd,
-            "total_out_of_pocket_cash_usd": self.total_out_of_pocket_cash_usd,
-            "estimated_cash_usd": round(float(self.total_out_of_pocket_cash_usd), 2),
-            "is_cash_price_estimate": True,
-            "full_cash_benchmark_usd": self.full_cash_benchmark_usd,
-            "net_cash_saved_usd": self.net_cash_saved_usd,
-            "cents_per_point_value": self.cents_per_point_value,
+            "bonus_direction_coverage": self.bonus_direction_coverage,
+            "outbound_bonus_seats": self.outbound_bonus_seats,
+            "inbound_bonus_seats": self.inbound_bonus_seats,
+            "outbound_bonus_seats_is_two_plus": self.outbound_bonus_seats_is_two_plus,
+            "inbound_bonus_seats_is_two_plus": self.inbound_bonus_seats_is_two_plus,
+            "min_points_per_bonus_ticket": self.min_points_per_bonus_ticket,
+            "min_points_basis": self.min_points_basis,
+            "points_are_estimated": self.points_are_estimated,
             "rbddataclients_verify_url": self.rbddataclients_verify_url,
             "booking_deep_link_url": self.booking_deep_link_url,
             "elal_google_flights_url": self.elal_google_flights_url,
@@ -1494,6 +1536,18 @@ class FlightItinerary(_DomainModelBase):
                 if data.get("elal_google_flights_url")
                 else None
             ),
+            bonus_direction_coverage=str(data.get("bonus_direction_coverage") or "NONE"),
+            outbound_bonus_seats=data.get("outbound_bonus_seats"),
+            inbound_bonus_seats=data.get("inbound_bonus_seats"),
+            outbound_bonus_seats_is_two_plus=_parse_bool(
+                data.get("outbound_bonus_seats_is_two_plus", False)
+            ),
+            inbound_bonus_seats_is_two_plus=_parse_bool(
+                data.get("inbound_bonus_seats_is_two_plus", False)
+            ),
+            min_points_per_bonus_ticket=data.get("min_points_per_bonus_ticket"),
+            min_points_basis=data.get("min_points_basis"),
+            points_are_estimated=_parse_bool(data.get("points_are_estimated", True)),
         )
 
 

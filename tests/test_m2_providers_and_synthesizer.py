@@ -54,6 +54,48 @@ from backend.app.storage_cache.seed_data import (
 from backend.app.vacation_optimizer.maximizer_engine import VacationMaximizerEngine
 
 
+# Run 11 contract: keys that no planner response may carry any more.
+RUN11_REMOVED_ITINERARY_KEYS = (
+    "total_taxes_and_fees_usd",
+    "total_supplemental_cash_fares_usd",
+    "total_baggage_fees_usd",
+    "total_out_of_pocket_cash_usd",
+    "estimated_cash_usd",
+    "is_cash_price_estimate",
+    "full_cash_benchmark_usd",
+    "net_cash_saved_usd",
+    "cents_per_point_value",
+    "total_matmid_points",
+    "points_used_by_wallet",
+    "points_used_by_wallet_json",
+)
+RUN11_REMOVED_RESPONSE_KEYS = (
+    "is_cash_price_estimate",
+    "cash_pricing_disclaimer_he",
+    "cash_pricing_disclaimer_en",
+)
+RUN11_NEW_ITINERARY_KEYS = (
+    "bonus_direction_coverage",
+    "outbound_bonus_seats",
+    "inbound_bonus_seats",
+    "outbound_bonus_seats_is_two_plus",
+    "inbound_bonus_seats_is_two_plus",
+    "min_points_per_bonus_ticket",
+    "min_points_basis",
+    "points_are_estimated",
+)
+# Price wording that must not appear in any text shown to a person (explanation, CLI line).
+RUN11_FORBIDDEN_PRICE_TEXT = ("$", "¢", "הערכת", "חיסכון", "מזומן", "Est. Cash", "נקודות:")
+
+
+def _seat_score(out_seats, in_seats, seated: int) -> float:
+    """Expected bonus score: mean share of the party that has a bonus seat per direction."""
+    def _cov(seats) -> float:
+        return min(1.0, max(0, int(seats or 0)) / float(max(1, seated)))
+
+    return round(100.0 * (_cov(out_seats) + _cov(in_seats)) / 2.0, 1)
+
+
 def _make_mock_token_exchanger(email: str = "family@gmail.com", name: str = "Test Family"):
     """Create a hermetic OIDC token_exchanger closure that extracts nonce from oauth_login_states."""
 
@@ -388,8 +430,12 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(p5.itinerary.bonus_tickets_count, 5)
         self.assertEqual(p5.itinerary.cash_tickets_count, 0)
         self.assertNotIn("family_ticket_allocation", p5.itinerary.to_dict())
-        self.assertTrue(p5.itinerary.to_dict()["is_cash_price_estimate"])
-        self.assertEqual(p5.itinerary.total_supplemental_cash_fares_usd, 0.0)
+        p5_dict = p5.itinerary.to_dict()
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, p5_dict)
+        self.assertEqual(p5_dict["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(p5_dict["min_points_basis"], "ROUND_TRIP")
+        self.assertGreater(p5_dict["min_points_per_bonus_ticket"], 0)
         self.assertTrue(p5.itinerary.requires_two_plus_seat_verification)
 
         # For N <= 2 seated passengers, requires_two_plus_seat_verification is False
@@ -431,15 +477,20 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(split_props), 1)
         sp = split_props[0]
-        self.assertEqual(sp.itinerary.total_supplemental_cash_fares_usd, 0.0)
+        sp_dict = sp.itinerary.to_dict()
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, sp_dict)
         self.assertEqual(sp.itinerary.seated_passengers_count, 5)
         self.assertEqual(sp.itinerary.bonus_tickets_count, 5)
         self.assertEqual(sp.itinerary.cash_tickets_count, 0)
         self.assertEqual(sp.itinerary.primary_cabin, "ECONOMY")
-        self.assertGreater(sp.itinerary.total_matmid_points, 0)
+        # The cheapest ticket of a split-cabin result is an Economy round trip (15,000 each way)
+        self.assertEqual(sp.itinerary.min_points_per_bonus_ticket, 30000)
+        self.assertEqual(sp.itinerary.min_points_basis, "ROUND_TRIP")
+        self.assertEqual(sp.itinerary.bonus_direction_coverage, "BOTH_DIRECTIONS")
 
     def test_syn_01_strategy_3_hybrid_bonus_plus_cash_rome_ly381_ly384_f24(self) -> None:
-        """8. Verify `F24` & `TEST-SYN-01` canonical Rome `LY381`/`LY384` `HYBRID_BONUS_PLUS_CASH` math."""
+        """8. Verify `F24` & `TEST-SYN-01` canonical Rome `LY381`/`LY384` `HYBRID_BONUS_PLUS_CASH` seat composition."""
         proposals = self.planner.search_vacations(
             {
                 "date_selection_mode": "SPECIFIC_DATES",
@@ -456,17 +507,51 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             p
             for p in proposals
             if p.itinerary.fulfillment_strategy == "HYBRID_BONUS_PLUS_CASH"
-            and p.itinerary.total_matmid_points == 142000
         ]
         self.assertGreaterEqual(len(hybrid_props), 1)
         rome_hybrid = hybrid_props[0].itinerary
-        self.assertEqual(rome_hybrid.total_matmid_points, 142000)
-        self.assertAlmostEqual(rome_hybrid.total_taxes_and_fees_usd, 390.0, places=2)
-        self.assertAlmostEqual(rome_hybrid.total_supplemental_cash_fares_usd, 460.0, places=2)
-        self.assertAlmostEqual(rome_hybrid.total_out_of_pocket_cash_usd, 850.0, places=2)
-        self.assertAlmostEqual(rome_hybrid.full_cash_benchmark_usd, 2950.0, places=2)
-        self.assertAlmostEqual(rome_hybrid.net_cash_saved_usd, 2100.0, places=2)
-        self.assertAlmostEqual(rome_hybrid.cents_per_point_value, 1.48, places=2)
+        self.assertEqual(rome_hybrid.outbound_legs[0].flight_number, "LY381")
+        self.assertEqual(rome_hybrid.inbound_legs[0].flight_number, "LY384")
+        # 4 confirmed round-trip bonus seats (2x Economy + 2x Premium) for 5 seated passengers:
+        # 4 bonus tickets + 1 commercial ticket, decided by the seats and not by the balance.
+        self.assertEqual(rome_hybrid.seated_passengers_count, 5)
+        self.assertEqual(rome_hybrid.bonus_tickets_count, 4)
+        self.assertEqual(rome_hybrid.cash_tickets_count, 1)
+        fco_out = self.elal_adapter.get_award_availability(
+            destinations=["FCO"],
+            start_date=date(2027, 4, 11),
+            end_date=date(2027, 4, 11),
+            direction="OUTBOUND",
+        )[0]
+        fco_in = self.elal_adapter.get_award_availability(
+            destinations=["FCO"],
+            start_date=date(2027, 4, 18),
+            end_date=date(2027, 4, 18),
+            direction="INBOUND",
+        )[0]
+        expected_out = (
+            fco_out.economy_award_seats + fco_out.premium_award_seats + fco_out.business_award_seats
+        )
+        expected_in = (
+            fco_in.economy_award_seats + fco_in.premium_award_seats + fco_in.business_award_seats
+        )
+        self.assertEqual(rome_hybrid.outbound_bonus_seats, expected_out)
+        self.assertEqual(rome_hybrid.inbound_bonus_seats, expected_in)
+        self.assertTrue(rome_hybrid.outbound_bonus_seats_is_two_plus)
+        self.assertEqual(rome_hybrid.bonus_direction_coverage, "BOTH_DIRECTIONS")
+        self.assertEqual(
+            rome_hybrid.min_points_per_bonus_ticket,
+            fco_out.economy_points_per_pax + fco_in.economy_points_per_pax,
+        )
+        self.assertEqual(rome_hybrid.min_points_basis, "ROUND_TRIP")
+        self.assertAlmostEqual(
+            hybrid_props[0].flight_bonus_value_score,
+            _seat_score(expected_out, expected_in, 5),
+            places=1,
+        )
+        hybrid_dict = rome_hybrid.to_dict()
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, hybrid_dict)
 
     def test_adult_child_pnr_safety_pairing_under_age_12_f24_f27(self) -> None:
         """9. Verify `F24` & `F27` adult-child PNR safety pairing so no child `<12` is isolated on a PNR."""
@@ -588,9 +673,8 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             )
         )
 
-    def test_strategy_5_cash_and_points_fallback_and_low_cpp_warning_f26(self) -> None:
-        """11. Verify `F26` `CASH_AND_POINTS` fallback when 0 Classic Award seats exist and `<0.8c` warning."""
-        # LHR 2027-07-15..2027-07-22 has 0 Classic Award seats in all cabins
+    def test_strategy_5_cash_and_points_fallback_carries_no_points_figure_f26(self) -> None:
+        """11. Verify `F26` `CASH_AND_POINTS`: returned for a household with points, without any points or price figure."""
         lhr_proposals = self.planner.search_vacations(
             {
                 "date_selection_mode": "SPECIFIC_DATES",
@@ -607,10 +691,91 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(cp_props), 1)
         cp = cp_props[0]
-        self.assertLess(cp.itinerary.cents_per_point_value, 0.8)
-        self.assertTrue(
-            "0.8" in cp.explanation_summary_he or "נמוך" in cp.explanation_summary_he
+        # The points-plus-money result carries no points figure and no price wording
+        self.assertIsNone(cp.itinerary.min_points_per_bonus_ticket)
+        self.assertIsNone(cp.itinerary.min_points_basis)
+        self.assertNotEqual(cp.itinerary.bonus_direction_coverage, "NONE")
+        cp_dict = cp.itinerary.to_dict()
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, cp_dict)
+        self.assertTrue(cp.explanation_summary_he.strip())
+        for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+            self.assertNotIn(forbidden, cp.explanation_summary_he)
+
+        # Engine level, award rows with 0 Classic Award seats in every cabin: the fallback is
+        # still built (a household with points), but it states no bonus direction at all.
+        lhr_out = copy.deepcopy(
+            self.elal_adapter.get_award_availability(
+                destinations=["LHR"],
+                start_date=date(2027, 7, 15),
+                end_date=date(2027, 7, 15),
+                direction="OUTBOUND",
+            )[0]
         )
+        lhr_in = copy.deepcopy(
+            self.elal_adapter.get_award_availability(
+                destinations=["LHR"],
+                start_date=date(2027, 7, 22),
+                end_date=date(2027, 7, 22),
+                direction="INBOUND",
+            )[0]
+        )
+        for row in (lhr_out, lhr_in):
+            row.economy_award_seats = 0
+            row.premium_award_seats = 0
+            row.business_award_seats = 0
+            row.economy_seats_is_two_plus = False
+            row.premium_seats_is_two_plus = False
+            row.business_seats_is_two_plus = False
+        engine = MultiClubWalletAllocationEngine()
+        zero_seat_cp = engine.allocate_family_tickets(
+            self.default_profile, lhr_out, lhr_in, 0.0, "CASH_AND_POINTS"
+        )
+        self.assertIsNotNone(zero_seat_cp)
+        assert zero_seat_cp is not None
+        self.assertEqual(zero_seat_cp["fulfillment_strategy"], "CASH_AND_POINTS")
+        self.assertEqual(zero_seat_cp["bonus_direction_coverage"], "NONE")
+        self.assertEqual(zero_seat_cp["outbound_bonus_seats"], 0)
+        self.assertEqual(zero_seat_cp["inbound_bonus_seats"], 0)
+        self.assertIsNone(zero_seat_cp["min_points_per_bonus_ticket"])
+        self.assertIsNone(zero_seat_cp["min_points_basis"])
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, zero_seat_cp)
+        # A household with no points entered (balance 0, no wallets) gets the same fallback:
+        # balance 0 means "not entered" and excludes nothing (run 11, U3 / ruling J2).
+        no_points_profile = copy.deepcopy(self.default_profile)
+        no_points_profile.matmid_points_balance = 0
+        no_points_profile.passenger_loyalty_wallets = []
+        no_points_zero_seat_cp = engine.allocate_family_tickets(
+            no_points_profile, lhr_out, lhr_in, 0.0, "CASH_AND_POINTS"
+        )
+        self.assertIsNotNone(no_points_zero_seat_cp)
+        assert no_points_zero_seat_cp is not None
+        self.assertEqual(no_points_zero_seat_cp["fulfillment_strategy"], "CASH_AND_POINTS")
+        self.assertEqual(no_points_zero_seat_cp["bonus_direction_coverage"], "NONE")
+        self.assertIsNone(no_points_zero_seat_cp["min_points_per_bonus_ticket"])
+        # Search level: the same household, real seeded seats. The points-plus-money result
+        # is returned next to the other bonus results, with bonus seats in some direction.
+        no_points_lhr = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LHR"],
+                "specific_departure_date": "2027-07-15",
+                "specific_return_date": "2027-07-22",
+                "flex_days_plus_minus": 0,
+            },
+            profile=no_points_profile,
+        )
+        no_points_cp = [
+            p
+            for p in no_points_lhr
+            if p.itinerary.fulfillment_strategy == "CASH_AND_POINTS"
+        ]
+        self.assertGreaterEqual(len(no_points_cp), 1)
+        for p in no_points_cp:
+            self.assertNotEqual(p.itinerary.bonus_direction_coverage, "NONE")
+            self.assertIsNone(p.itinerary.min_points_per_bonus_ticket)
 
     def test_strategy_6_multi_club_per_passenger_split_unpooled_vs_pooled_f27(self) -> None:
         """12. Verify `F27` `MultiClubWalletAllocationEngine` un-pooled vs pooled and all 10 `LoyaltyProgramCode`s."""
@@ -665,13 +830,37 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         self.assertIsNotNone(unpooled_alloc)
         assert unpooled_alloc is not None
-        wallet_deductions = unpooled_alloc["points_used_by_wallet"]
-        # Each un-pooled wallet can afford at most 2 Economy RT tickets (2 * 30,000 = 60,000 <= 75,000 and <= 68,000)
-        for w_key, pts_used in wallet_deductions.items():
-            if "ADULT_1" in w_key:
-                self.assertLessEqual(pts_used, 75000)
-            if "ADULT_2" in w_key:
-                self.assertLessEqual(pts_used, 68000)
+        # Wallet deductions and point totals are no longer part of a result
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, unpooled_alloc)
+        # Ticket composition follows the confirmed round-trip seats (2x Economy + 2x Premium for
+        # 5 seated passengers), not what the two 75k / 68k wallets could pay for.
+        self.assertEqual(unpooled_alloc["fulfillment_strategy"], "MULTI_CLUB_PER_PASSENGER_SPLIT")
+        self.assertEqual(unpooled_alloc["seated_passengers_count"], 5)
+        self.assertEqual(unpooled_alloc["bonus_tickets_count"], 4)
+        self.assertEqual(unpooled_alloc["cash_tickets_count"], 1)
+        self.assertEqual(unpooled_alloc["min_points_basis"], "ROUND_TRIP")
+        self.assertEqual(
+            unpooled_alloc["min_points_per_bonus_ticket"],
+            fco_out.economy_points_per_pax + fco_in.economy_points_per_pax,
+        )
+        # The strategy keeps its precondition of at least two funded wallets
+        single_wallet_profile = copy.deepcopy(unpooled_profile)
+        single_wallet_profile.passenger_loyalty_wallets = (
+            single_wallet_profile.passenger_loyalty_wallets[:1]
+        )
+        single_wallet_profile.matmid_points_balance = 0
+        self.assertIsNone(
+            engine.allocate_family_tickets(
+                profile=single_wallet_profile,
+                outbound_award=fco_out,
+                inbound_award=fco_in,
+                cash_benchmark_per_pax=590.0,
+                strategy="MULTI_CLUB_PER_PASSENGER_SPLIT",
+                preferred_cabins=["ECONOMY", "PREMIUM"],
+                enabled_programs=["ELAL_MATMID"],
+            )
+        )
 
         # (b) Multi-club split across ELAL_MATMID + BRITISH_AVIOS / FLYING_BLUE / UNITED_MILEAGEPLUS / AMEX_MR_ISRAEL
         multi_proposals = self.planner.search_vacations(
@@ -692,7 +881,9 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             if p.itinerary.fulfillment_strategy == "MULTI_CLUB_PER_PASSENGER_SPLIT"
         ]
         self.assertGreaterEqual(len(mc_props), 1)
-        self.assertGreaterEqual(len(mc_props[0].itinerary.points_used_by_wallet), 1)
+        self.assertGreaterEqual(mc_props[0].itinerary.bonus_tickets_count, 1)
+        self.assertEqual(mc_props[0].itinerary.min_points_basis, "ROUND_TRIP")
+        self.assertNotIn("points_used_by_wallet", mc_props[0].itinerary.to_dict())
 
     def test_search_vacations_all_6_mode_combinations_and_sqlite_persistence_f28(self) -> None:
         """13. Verify `F17`-`F28` `search_vacations` across active 2x2 mode combinations and SQLite persistence."""
@@ -766,7 +957,9 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 )
                 self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
                 self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
-                self.assertIn("~$", p.explanation_summary_he)
+                self.assertTrue(p.explanation_summary_he.strip())
+                for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+                    self.assertNotIn(forbidden, p.explanation_summary_he)
             # Persisted in SQLite
             persisted = self.repo.get_proposal_by_id(proposals[0].id)
             self.assertIsNotNone(persisted)
@@ -805,8 +998,8 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             cmp_resp = client.post("/api/v1/vacations/compare", json=body_payload)
             self.assertEqual(cmp_resp.status_code, 404)
 
-    def test_ics_export_removed_and_estimated_cash_metadata_present_f28(self) -> None:
-        """15. Verify `R3` ICS export removal (`-> 404`) and `R1` non-binding estimated cash metadata."""
+    def test_ics_export_removed_and_no_cash_metadata_in_search_response_f28(self) -> None:
+        """15. Verify `R3` ICS export removal (`-> 404`) and run-11 `R1`: no cash metadata in the response."""
         from backend.app.main import VacationPlannerTestClient
 
         self.assertFalse(hasattr(self.planner, "export_proposal_ics"))
@@ -824,11 +1017,16 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         )
         self.assertEqual(s_resp.status_code, 200)
         body = s_resp.json()
-        self.assertTrue(body["is_cash_price_estimate"])
-        self.assertIn("cash_pricing_disclaimer_he", body)
+        for removed_key in RUN11_REMOVED_RESPONSE_KEYS:
+            self.assertNotIn(removed_key, body)
         self.assertGreater(len(body["proposals"]), 0)
         pid = body["proposals"][0]["id"]
-        self.assertTrue(body["proposals"][0]["itinerary"]["is_cash_price_estimate"])
+        first_itinerary = body["proposals"][0]["itinerary"]
+        for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+            self.assertNotIn(removed_key, first_itinerary)
+        for new_key in RUN11_NEW_ITINERARY_KEYS:
+            self.assertIn(new_key, first_itinerary)
+        self.assertIs(first_itinerary["points_are_estimated"], True)
         ics_resp = client.get(f"/api/v1/vacations/{pid}/export.ics")
         self.assertEqual(ics_resp.status_code, 404)
 
@@ -1415,8 +1613,11 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreater(len(full_bonus), 0)
         it4 = full_bonus[0].itinerary
         assert it4 is not None
-        # 3 seated passengers * (9,000 + 9,000) = 54,000 pts; infant (age 1) = 0 pts, 0 seats
-        self.assertEqual(it4.total_matmid_points, 54000)
+        # One bonus ticket = 9,000 + 9,000 = 18,000 pts for a round trip; infant (age 1) = 0 seats
+        self.assertEqual(it4.min_points_per_bonus_ticket, 18000)
+        self.assertEqual(it4.min_points_basis, "ROUND_TRIP")
+        self.assertEqual(it4.bonus_direction_coverage, "BOTH_DIRECTIONS")
+        self.assertNotIn("total_matmid_points", it4.to_dict())
         self.assertTrue(it4.requires_two_plus_seat_verification)
         self.assertEqual(it4.seated_passengers_count, 3)
         self.assertEqual(it4.bonus_tickets_count, 3)
@@ -1472,6 +1673,13 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(ow_lca.itinerary.fulfillment_strategy, "ONE_WAY_BONUS_ONE_WAY_CASH")
         self.assertEqual(ow_lca.itinerary.outbound_legs[0].flight_number, "LY5131")
         self.assertEqual(ow_lca.itinerary.inbound_legs[0].flight_number, "LY_CASH")
+        # Bonus seats exist on the way out only: 2 seats for 3 seated passengers, none back
+        self.assertEqual(ow_lca.itinerary.bonus_direction_coverage, "OUTBOUND_ONLY")
+        self.assertEqual(ow_lca.itinerary.outbound_bonus_seats, 2)
+        self.assertIsNone(ow_lca.itinerary.inbound_bonus_seats)
+        self.assertEqual(ow_lca.itinerary.min_points_per_bonus_ticket, 9000)
+        self.assertEqual(ow_lca.itinerary.min_points_basis, "ONE_WAY")
+        self.assertAlmostEqual(ow_lca.flight_bonus_value_score, _seat_score(2, None, 3), places=1)
         self.assertLess(ow_lca.flight_bonus_value_score, 60.0)
 
         # Verify outbound-only AMS in Hanukkah 2026 surfaces ONE_WAY_BONUS_ONE_WAY_CASH with lower FBVS
@@ -1525,6 +1733,7 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             self.assertEqual(ap.itinerary.fulfillment_strategy, "ONE_WAY_BONUS_ONE_WAY_CASH")
             self.assertEqual(ap.itinerary.inbound_legs[0].flight_number, "LY_CASH")
             self.assertNotEqual(ap.itinerary.return_date.isoformat(), "2026-12-12")
+            self.assertEqual(ap.itinerary.bonus_direction_coverage, "OUTBOUND_ONLY")
             self.assertLess(ap.flight_bonus_value_score, 60.0)
 
         # Verify single-direction live routes (e.g. LTN outbound-only on 2026-12-09 with Saturday 2026-12-12)
@@ -1832,7 +2041,9 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             prof_init = client.get("/api/v1/profile").json()
             self.assertEqual(len(prof_init["passenger_loyalty_wallets"]), 6)
 
-            for bal, expected_max in ((0, 0), (30000, 30000), (300000, 300000)):
+            # 5 seated passengers; one Economy round-trip bonus ticket to Rome = 30,000 pts,
+            # all five = 150,000 pts. A balance is compared with ONE ticket only (run 11, R2).
+            for bal in (0, 30000, 300000):
                 resp = client.post(
                     "/api/v1/vacations/search",
                     json={
@@ -1853,25 +2064,38 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                     itin = p["itinerary"]
                     self.assertTrue(itin["is_elal_flight"])
                     self.assertIn(itin["primary_carrier_iata"], ("LY", "2U"))
-                    self.assertLessEqual(itin["total_matmid_points"], expected_max)
+                    for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+                        self.assertNotIn(removed_key, itin)
                     self.assertNotEqual(
                         itin["fulfillment_strategy"], "MULTI_CLUB_PER_PASSENGER_SPLIT"
                     )
-                if bal == 0:
-                    self.assertTrue(
-                        all(
-                            p["itinerary"]["fulfillment_strategy"] == "COMMERCIAL_CASH_ONLY"
-                            for p in proposals
-                        )
-                    )
-                elif bal == 300000:
-                    self.assertTrue(
-                        any(
-                            p["itinerary"]["fulfillment_strategy"] == "FULL_BONUS_SAME_CABIN"
-                            and p["itinerary"]["total_matmid_points"] == 150000
-                            for p in proposals
-                        )
-                    )
+                    # A bonus search never returns a result without bonus seats (U4)
+                    self.assertNotEqual(itin["fulfillment_strategy"], "COMMERCIAL_CASH_ONLY")
+                    self.assertNotEqual(itin["bonus_direction_coverage"], "NONE")
+                    if bal > 0 and itin["min_points_per_bonus_ticket"] is not None:
+                        self.assertLessEqual(itin["min_points_per_bonus_ticket"], bal)
+                full_bonus = [
+                    p["itinerary"]
+                    for p in proposals
+                    if p["itinerary"]["fulfillment_strategy"] == "FULL_BONUS_SAME_CABIN"
+                ]
+                # Balance 0 = "not entered": bonus results are shown. Balance 30,000 covers one
+                # ticket (not all five) and still returns the all-bonus result.
+                self.assertEqual(len(full_bonus), 1, f"balance={bal}")
+                self.assertEqual(full_bonus[0]["bonus_tickets_count"], 5)
+                self.assertEqual(full_bonus[0]["min_points_per_bonus_ticket"], 30000)
+                self.assertEqual(full_bonus[0]["min_points_basis"], "ROUND_TRIP")
+                # Points-plus-money does not depend on the wallet either (ruling J2): it is
+                # returned for balance 0 as for any other balance, and never has a points figure.
+                cash_and_points = [
+                    p["itinerary"]
+                    for p in proposals
+                    if p["itinerary"]["fulfillment_strategy"] == "CASH_AND_POINTS"
+                ]
+                self.assertGreaterEqual(len(cash_and_points), 1, f"balance={bal}")
+                for cp_itin in cash_and_points:
+                    self.assertIsNone(cp_itin["min_points_per_bonus_ticket"])
+                    self.assertIsNone(cp_itin["min_points_basis"])
 
         # Verify zero outbound HTTP traffic to elal.com even when ELAL_LIVE_FETCH_ENABLED=1
         old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
@@ -2610,6 +2834,653 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertEqual(r_any.status_code, 200)
         any_dests = {p["itinerary"]["destination_iata"] for p in r_any.json()["proposals"]}
         self.assertGreaterEqual(len(any_dests), 3)
+
+
+class TestRun11SeatBasedResults(unittest.TestCase):
+    """Run 11: no price estimate, results based on available bonus seats, direction statement."""
+
+    ROME = ("FCO", "2027-04-11", "2027-04-18")
+
+    @staticmethod
+    def _family_of_four():
+        """2 adults + children aged 5 and 8 (4 seated passengers), no points entered."""
+        from backend.app.schemas.domain import FamilyProfile
+        from backend.app.storage_cache.seed_data import build_clean_guest_profile
+
+        return FamilyProfile.from_dict(
+            {
+                **build_clean_guest_profile().to_dict(),
+                "children": [
+                    {"child_name": "ילד 1", "child_age_years": 5},
+                    {"child_name": "ילד 2", "child_age_years": 8},
+                ],
+            }
+        )
+
+    @staticmethod
+    def _planner_for(repo: SQLiteRepository) -> BonusVacationPlannerService:
+        calendar_service = MoECalendarService(repo)
+        return BonusVacationPlannerService(
+            repository=repo,
+            calendar_service=calendar_service,
+            maximizer=VacationMaximizerEngine(calendar_service),
+            elal_adapter=ElAlRbdDataClientAdapter(repo),
+            commercial_adapter=AllAirlinesSearchAdapter(repo),
+        )
+
+    @classmethod
+    def _seeded_planner(cls) -> BonusVacationPlannerService:
+        return cls._planner_for(SQLiteRepository(":memory:", auto_seed=True))
+
+    @classmethod
+    def _live_only_planner(cls, rows: list[dict]) -> BonusVacationPlannerService:
+        """Planner over a DB that holds only imported (`#live`) award rows."""
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        planner = cls._planner_for(repo)
+        planner.elal_adapter.parse_and_import_external_rbd_payload(rows)
+        return planner
+
+    @staticmethod
+    def _lca_rows(out_seats, in_seats) -> list[dict]:
+        rows: list[dict] = []
+        if out_seats is not None:
+            rows.append(
+                {
+                    "destination_iata": "LCA",
+                    "direction": "OUTBOUND",
+                    "flight_number": "LY5131",
+                    "flight_date": "2027-04-20",
+                    "economy_seats": out_seats,
+                    "dep_time": "06:30",
+                    "arr_time": "07:40",
+                }
+            )
+        if in_seats is not None:
+            rows.append(
+                {
+                    "destination_iata": "LCA",
+                    "direction": "INBOUND",
+                    "flight_number": "LY5132",
+                    "flight_date": "2027-04-26",
+                    "economy_seats": in_seats,
+                    "dep_time": "08:45",
+                    "arr_time": "09:50",
+                }
+            )
+        return rows
+
+    def _search(self, planner, dest, dep, ret, profile, balance=None, **extra):
+        query = {
+            "date_selection_mode": "SPECIFIC_DATES",
+            "airline_selection_mode": "EL_AL_ONLY",
+            "destination_iatas": [dest],
+            "specific_departure_date": dep,
+            "specific_return_date": ret,
+            "flex_days_plus_minus": 0,
+            **extra,
+        }
+        if balance is not None:
+            query["matmid_points_balance"] = balance
+        return planner.search_vacations(query, profile=profile, persist_results=False)
+
+    @staticmethod
+    def _strategies(proposals) -> set[str]:
+        return {p.itinerary.fulfillment_strategy.value for p in proposals}
+
+    def _assert_cash_free_text(self, text: str) -> None:
+        self.assertTrue(text.strip())
+        for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+            self.assertNotIn(forbidden, text)
+
+    # ------------------------------------------------------------------ R1
+    def test_r1_no_price_or_points_total_in_any_planner_response_or_cli_line(self) -> None:
+        """Every strategy the planner returns: none of the removed keys, cash-free text."""
+        from contextlib import redirect_stdout
+        import io
+
+        from backend.app.cli.main import main as cli_main
+        from backend.app.main import VacationPlannerTestClient
+        from backend.app.schemas.domain import FulfillmentStrategy
+
+        base_query = {
+            "date_selection_mode": "SPECIFIC_DATES",
+            "specific_departure_date": "2027-04-11",
+            "specific_return_date": "2027-04-18",
+            "flex_days_plus_minus": 0,
+            "destination_iatas": ["FCO"],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "run11_r1.db"
+            client = VacationPlannerTestClient(db_path=db_path)
+            # Signed-in household with wallets in several clubs, so every strategy is reachable
+            TestM2ProvidersAndSynthesizer._authenticate_client(
+                self, client, email="run11.r1@gmail.com", seed_default_household=True
+            )
+            queries = [
+                {
+                    **base_query,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "enabled_loyalty_programs": [p.value for p in LoyaltyProgramCode],
+                },
+                {**base_query, "airline_selection_mode": "ALL_AIRLINES"},
+                {
+                    **base_query,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "search_elal_bonus_tickets": False,
+                },
+            ]
+            seen_strategies: set[str] = set()
+            for query in queries:
+                resp = client.post("/api/v1/vacations/search", json=query)
+                self.assertEqual(resp.status_code, 200, resp.text)
+                body = resp.json()
+                for removed_key in RUN11_REMOVED_RESPONSE_KEYS:
+                    self.assertNotIn(removed_key, body)
+                self.assertGreater(len(body["proposals"]), 0)
+                for prop in body["proposals"]:
+                    itin = prop["itinerary"]
+                    strategy = itin["fulfillment_strategy"]
+                    seen_strategies.add(strategy)
+                    for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+                        self.assertNotIn(removed_key, itin, strategy)
+                    for new_key in RUN11_NEW_ITINERARY_KEYS:
+                        self.assertIn(new_key, itin, strategy)
+                    self.assertIs(itin["points_are_estimated"], True)
+                    self._assert_cash_free_text(prop["explanation_summary_he"])
+                    if strategy == "COMMERCIAL_CASH_ONLY":
+                        # Only reachable outside the bonus search: no bonus seats, score 0
+                        self.assertEqual(itin["bonus_direction_coverage"], "NONE")
+                        self.assertIsNone(itin["min_points_per_bonus_ticket"])
+                        self.assertEqual(prop["flight_bonus_value_score"], 0.0)
+                    if strategy == "CASH_AND_POINTS":
+                        self.assertIsNone(itin["min_points_per_bonus_ticket"])
+                        self.assertIsNone(itin["min_points_basis"])
+            self.assertEqual(seen_strategies, {s.value for s in FulfillmentStrategy})
+
+            # The CLI summary line carries no cash estimate either
+            cli_db = Path(tmpdir) / "run11_r1_cli.db"
+            out_buf = io.StringIO()
+            with redirect_stdout(out_buf):
+                rc = cli_main(
+                    [
+                        "--db-path",
+                        str(cli_db),
+                        "search",
+                        "--mode",
+                        "holiday-direct",
+                        "--airline",
+                        "elal-only",
+                        "--destination",
+                        "FCO",
+                        "--holiday",
+                        "PESACH",
+                        "--year",
+                        "2027",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            cli_text = out_buf.getvalue()
+            result_lines = [ln for ln in cli_text.splitlines() if ln.strip().startswith("#")]
+            self.assertGreaterEqual(len(result_lines), 1, cli_text)
+            for line in result_lines:
+                self.assertIn("HAS=", line)
+                self.assertIn("CTOS=", line)
+                self.assertRegex(line, r"Bonus=(BOTH_DIRECTIONS|OUTBOUND_ONLY|INBOUND_ONLY)$")
+            for forbidden in ("Est. Cash", "~$", "$", "non-binding", "¢"):
+                self.assertNotIn(forbidden, cli_text)
+
+    # ------------------------------------------------------------------ R2
+    def test_r2_balance_is_compared_with_one_bonus_ticket_not_the_family_total(self) -> None:
+        planner = self._seeded_planner()
+        family = self._family_of_four()
+
+        # 30,000 pts = exactly one Economy round-trip bonus ticket to Rome; four cost 120,000
+        at_minimum = self._search(planner, *self.ROME, family, balance=30000)
+        full_bonus = [
+            p.itinerary
+            for p in at_minimum
+            if p.itinerary.fulfillment_strategy.value == "FULL_BONUS_SAME_CABIN"
+        ]
+        self.assertEqual(len(full_bonus), 1)
+        self.assertEqual(full_bonus[0].seated_passengers_count, 4)
+        self.assertEqual(full_bonus[0].bonus_tickets_count, 4)
+        self.assertEqual(full_bonus[0].min_points_per_bonus_ticket, 30000)
+        self.assertEqual(full_bonus[0].min_points_basis, "ROUND_TRIP")
+        self.assertGreater(
+            full_bonus[0].bonus_tickets_count * full_bonus[0].min_points_per_bonus_ticket,
+            30000,
+            "the all-passenger total is above the balance, yet the result is returned",
+        )
+        for prop in at_minimum:
+            min_pts = prop.itinerary.min_points_per_bonus_ticket
+            self.assertTrue(min_pts is None or min_pts <= 30000)
+
+        # One point below that minimum: round-trip bonus results are left out, the one-way
+        # result (15,000 pts for one ticket) stays.
+        below_minimum = self._search(planner, *self.ROME, family, balance=29999)
+        below_strategies = self._strategies(below_minimum)
+        self.assertNotIn("FULL_BONUS_SAME_CABIN", below_strategies)
+        self.assertNotIn("SPLIT_CABIN_BONUS", below_strategies)
+        self.assertNotIn("HYBRID_BONUS_PLUS_CASH", below_strategies)
+        self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", below_strategies)
+        for prop in below_minimum:
+            min_pts = prop.itinerary.min_points_per_bonus_ticket
+            self.assertTrue(min_pts is None or min_pts <= 29999)
+        one_way = [
+            p.itinerary
+            for p in below_minimum
+            if p.itinerary.fulfillment_strategy.value == "ONE_WAY_BONUS_ONE_WAY_CASH"
+        ][0]
+        self.assertEqual(one_way.min_points_per_bonus_ticket, 15000)
+        self.assertEqual(one_way.min_points_basis, "ONE_WAY")
+
+        # The one-way boundary: 15,000 keeps it, 14,999 drops every result with a points figure
+        self.assertIn(
+            "ONE_WAY_BONUS_ONE_WAY_CASH",
+            self._strategies(self._search(planner, *self.ROME, family, balance=15000)),
+        )
+        for prop in self._search(planner, *self.ROME, family, balance=14999):
+            self.assertIsNone(prop.itinerary.min_points_per_bonus_ticket)
+
+        # Balance 0 and "no balance at all" mean "not entered": bonus results are returned
+        for balance in (0, None):
+            not_entered = self._search(planner, *self.ROME, family, balance=balance)
+            strategies = self._strategies(not_entered)
+            self.assertTrue(
+                {
+                    "FULL_BONUS_SAME_CABIN",
+                    "SPLIT_CABIN_BONUS",
+                    "HYBRID_BONUS_PLUS_CASH",
+                    "ONE_WAY_BONUS_ONE_WAY_CASH",
+                    "CASH_AND_POINTS",
+                }.issubset(strategies),
+                f"balance={balance}: {strategies}",
+            )
+            self.assertNotIn("COMMERCIAL_CASH_ONLY", strategies)
+            for prop in not_entered:
+                if prop.itinerary.fulfillment_strategy.value == "CASH_AND_POINTS":
+                    # Points-plus-money never carries a points figure
+                    self.assertIsNone(prop.itinerary.min_points_per_bonus_ticket)
+                else:
+                    self.assertGreater(prop.itinerary.min_points_per_bonus_ticket, 0)
+
+    # ------------------------------------------------------------------ R3
+    def test_r3_bonus_score_follows_available_bonus_seats(self) -> None:
+        """Results that differ only in available bonus seats are scored from that difference."""
+        family = self._family_of_four()
+        scores_by_seats: dict[tuple, float] = {}
+        for out_seats, in_seats in ((1, 1), (2, 2), (4, 4), (2, None)):
+            planner = self._live_only_planner(self._lca_rows(out_seats, in_seats))
+            ret = "2027-04-26" if in_seats is not None else "2027-04-28"
+            proposals = self._search(planner, "LCA", "2027-04-20", ret, family, balance=0)
+            self.assertGreaterEqual(len(proposals), 1, f"seats={out_seats}/{in_seats}")
+            expected = _seat_score(out_seats, in_seats, 4)
+            for prop in proposals:
+                self.assertEqual(prop.itinerary.outbound_bonus_seats, out_seats)
+                self.assertEqual(prop.itinerary.inbound_bonus_seats, in_seats)
+                self.assertAlmostEqual(prop.flight_bonus_value_score, expected, places=1)
+                # Overall badge: same formula as before, fed with the seat-only bonus score
+                self.assertAlmostEqual(
+                    prop.combined_trip_optimization_score,
+                    round(0.55 * prop.holiday_alignment_score + 0.45 * expected, 1),
+                    places=1,
+                )
+            scores_by_seats[(out_seats, in_seats)] = proposals[0].flight_bonus_value_score
+
+        self.assertEqual(scores_by_seats[(1, 1)], 25.0)
+        self.assertEqual(scores_by_seats[(2, 2)], 50.0)
+        self.assertEqual(scores_by_seats[(4, 4)], 100.0)
+        self.assertEqual(scores_by_seats[(2, None)], 25.0)
+        self.assertLess(scores_by_seats[(1, 1)], scores_by_seats[(2, 2)])
+        self.assertLess(scores_by_seats[(2, 2)], scores_by_seats[(4, 4)])
+        self.assertLess(scores_by_seats[(2, None)], scores_by_seats[(2, 2)])
+
+    def test_r3_scores_and_order_do_not_move_when_only_cash_reference_values_change(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
+
+        family = self._family_of_four()
+        cash_keys = (
+            "rt_cash_per_pax_usd",
+            "supplemental_single_pax_cash_usd",
+            "five_pax_cash_benchmark_usd",
+            "outbound_taxes_usd",
+            "inbound_taxes_usd",
+        )
+
+        def _snapshot(planner) -> list[tuple]:
+            rows: list[tuple] = []
+            for dest, dep, ret in (self.ROME, ("ATH", "2026-12-06", "2026-12-12")):
+                for prop in self._search(planner, dest, dep, ret, family, balance=100000):
+                    itin = prop.itinerary
+                    rows.append(
+                        (
+                            dest,
+                            itin.fulfillment_strategy.value,
+                            itin.bonus_tickets_count,
+                            itin.cash_tickets_count,
+                            itin.bonus_direction_coverage,
+                            itin.min_points_per_bonus_ticket,
+                            prop.flight_bonus_value_score,
+                            prop.combined_trip_optimization_score,
+                        )
+                    )
+            return rows
+
+        repo = SQLiteRepository(":memory:", auto_seed=True)
+        baseline = _snapshot(self._planner_for(repo))
+        self.assertGreaterEqual(len(baseline), 4)
+
+        # Multiply every cash reference value the planner used to read: catalog fares and
+        # taxes, and the per-row award taxes.
+        with repo.connection() as conn:
+            conn.execute(
+                "UPDATE elal_bonus_availability SET taxes_usd_per_pax = taxes_usd_per_pax * 9 + 500"
+            )
+        inflated_catalog = {
+            dest: {key: float(DESTINATION_CATALOG[dest][key]) * 9 + 500 for key in cash_keys}
+            for dest in ("FCO", "ATH")
+        }
+        with patch.dict(DESTINATION_CATALOG["FCO"], inflated_catalog["FCO"]), patch.dict(
+            DESTINATION_CATALOG["ATH"], inflated_catalog["ATH"]
+        ):
+            changed_planner = self._planner_for(repo)
+            fco_out = changed_planner.elal_adapter.get_award_availability(
+                destinations=["FCO"],
+                start_date=date(2027, 4, 11),
+                end_date=date(2027, 4, 11),
+                direction="OUTBOUND",
+            )[0]
+            self.assertGreater(fco_out.taxes_usd_per_pax, 500.0, "cash inputs really changed")
+            self.assertGreater(DESTINATION_CATALOG["FCO"]["rt_cash_per_pax_usd"], 500.0)
+            after_change = _snapshot(changed_planner)
+
+        self.assertEqual(after_change, baseline)
+
+    def test_r3_mixed_strategy_kinds_are_still_returned_without_cash_figures(self) -> None:
+        """Inputs that returned the three mixed kinds at `57ab331` still return each of them."""
+        planner = self._seeded_planner()
+        family = self._family_of_four()
+        proposals = self._search(planner, *self.ROME, family, balance=30000)
+        by_strategy = {p.itinerary.fulfillment_strategy.value: p for p in proposals}
+        for kind in ("HYBRID_BONUS_PLUS_CASH", "ONE_WAY_BONUS_ONE_WAY_CASH", "CASH_AND_POINTS"):
+            self.assertIn(kind, by_strategy)
+            prop = by_strategy[kind]
+            itin_dict = prop.to_dict()["itinerary"]
+            for removed_key in RUN11_REMOVED_ITINERARY_KEYS:
+                self.assertNotIn(removed_key, itin_dict, kind)
+            self.assertEqual(itin_dict["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+            self.assertEqual(prop.flight_bonus_value_score, 100.0)
+            self._assert_cash_free_text(prop.explanation_summary_he)
+        hybrid = by_strategy["HYBRID_BONUS_PLUS_CASH"].itinerary
+        # 4 confirmed round-trip seats for 4 passengers: the hybrid keeps one commercial ticket
+        self.assertEqual((hybrid.bonus_tickets_count, hybrid.cash_tickets_count), (3, 1))
+        self.assertIsNone(by_strategy["CASH_AND_POINTS"].itinerary.min_points_per_bonus_ticket)
+
+        # The live one-direction case of `57ab331`: one-way bonus + commercial `LY_CASH` leg
+        live_planner = self._live_only_planner(self._lca_rows(2, None))
+        live_props = self._search(
+            live_planner, "LCA", "2027-04-20", "2027-04-28", family, balance=9000
+        )
+        self.assertEqual(self._strategies(live_props), {"ONE_WAY_BONUS_ONE_WAY_CASH"})
+        self.assertEqual(live_props[0].itinerary.inbound_legs[0].flight_number, "LY_CASH")
+
+    # ------------------------------------------------------------------ R4
+    def test_r4_every_result_states_bonus_in_both_directions_or_only_one(self) -> None:
+        family = self._family_of_four()
+        seeded = self._seeded_planner()
+
+        both = self._search(seeded, *self.ROME, family, balance=0)
+        self.assertGreaterEqual(len(both), 1)
+        for prop in both:
+            itin = prop.itinerary
+            self.assertEqual(itin.bonus_direction_coverage, "BOTH_DIRECTIONS")
+            self.assertGreater(itin.outbound_bonus_seats, 0)
+            self.assertGreater(itin.inbound_bonus_seats, 0)
+            self.assertTrue(itin.outbound_bonus_seats_is_two_plus)
+            self.assertIn("בונוס בשני הכיוונים", prop.explanation_summary_he)
+
+        # Seeded Athens 2026-12-06..12: the return flight has an award row with 0 seats
+        outbound_only = self._search(seeded, "ATH", "2026-12-06", "2026-12-12", family, balance=0)
+        self.assertGreaterEqual(len(outbound_only), 1)
+        for prop in outbound_only:
+            itin = prop.itinerary
+            self.assertEqual(itin.bonus_direction_coverage, "OUTBOUND_ONLY")
+            self.assertGreater(itin.outbound_bonus_seats, 0)
+            self.assertEqual(itin.inbound_bonus_seats, 0)
+            self.assertFalse(itin.inbound_bonus_seats_is_two_plus)
+            if itin.fulfillment_strategy.value == "CASH_AND_POINTS":
+                # Returned with balance 0 too (ruling J2); it has no points figure or basis
+                self.assertIsNone(itin.min_points_basis)
+            else:
+                self.assertEqual(itin.min_points_basis, "ONE_WAY")
+            self.assertIn("בונוס בכיוון אחד בלבד — הלוך", prop.explanation_summary_he)
+        self.assertEqual(
+            self._strategies(outbound_only),
+            {"ONE_WAY_BONUS_ONE_WAY_CASH", "CASH_AND_POINTS"},
+        )
+
+        # Live-only inventory with no return row at all: commercial `LY_CASH` leg back
+        live_out = self._search(
+            self._live_only_planner(self._lca_rows(2, None)),
+            "LCA",
+            "2027-04-20",
+            "2027-04-28",
+            family,
+            balance=0,
+        )
+        self.assertGreaterEqual(len(live_out), 1)
+        for prop in live_out:
+            itin = prop.itinerary
+            self.assertEqual(itin.bonus_direction_coverage, "OUTBOUND_ONLY")
+            self.assertEqual(itin.outbound_bonus_seats, 2)
+            self.assertTrue(itin.outbound_bonus_seats_is_two_plus)
+            self.assertIsNone(itin.inbound_bonus_seats)
+            self.assertEqual(itin.inbound_legs[0].flight_number, "LY_CASH")
+
+        # ...and the mirror case: bonus seats on the way back only
+        live_in = self._search(
+            self._live_only_planner(self._lca_rows(None, 1)),
+            "LCA",
+            "2027-04-20",
+            "2027-04-26",
+            family,
+            balance=0,
+        )
+        self.assertGreaterEqual(len(live_in), 1)
+        for prop in live_in:
+            itin = prop.itinerary
+            self.assertEqual(itin.bonus_direction_coverage, "INBOUND_ONLY")
+            self.assertIsNone(itin.outbound_bonus_seats)
+            self.assertEqual(itin.inbound_bonus_seats, 1)
+            self.assertFalse(itin.inbound_bonus_seats_is_two_plus)
+            self.assertEqual(itin.outbound_legs[0].flight_number, "LY_CASH")
+            self.assertIn("בונוס בכיוון אחד בלבד — חזור", prop.explanation_summary_he)
+
+    # ------------------------------------------------------------------ U4
+    def test_u4_bonus_search_returns_no_result_without_bonus_seats(self) -> None:
+        planner = self._seeded_planner()
+        family = self._family_of_four()
+
+        # Open-destination guest search: every returned result has bonus seats somewhere
+        anywhere = planner.search_vacations(
+            {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": [],
+            },
+            profile=family,
+            persist_results=False,
+        )
+        self.assertGreaterEqual(len(anywhere), 3)
+        for prop in anywhere:
+            itin = prop.itinerary
+            self.assertNotEqual(itin.bonus_direction_coverage, "NONE")
+            self.assertNotEqual(itin.fulfillment_strategy.value, "COMMERCIAL_CASH_ONLY")
+            self.assertGreater((itin.outbound_bonus_seats or 0) + (itin.inbound_bonus_seats or 0), 0)
+            self.assertGreater(prop.flight_bonus_value_score, 0.0)
+
+        # Award rows with 0 seats in every cabin, both directions: nothing is returned, with or
+        # without points (at `57ab331` a household with points got a points-plus-money card).
+        from unittest.mock import patch
+
+        fco_out = copy.deepcopy(
+            planner.elal_adapter.get_award_availability(
+                destinations=["FCO"],
+                start_date=date(2027, 4, 11),
+                end_date=date(2027, 4, 11),
+                direction="OUTBOUND",
+            )[0]
+        )
+        fco_in = copy.deepcopy(
+            planner.elal_adapter.get_award_availability(
+                destinations=["FCO"],
+                start_date=date(2027, 4, 18),
+                end_date=date(2027, 4, 18),
+                direction="INBOUND",
+            )[0]
+        )
+        sold_out_out, sold_out_in = copy.deepcopy(fco_out), copy.deepcopy(fco_in)
+        for row in (sold_out_out, sold_out_in):
+            row.economy_award_seats = 0
+            row.premium_award_seats = 0
+            row.business_award_seats = 0
+            row.economy_seats_is_two_plus = False
+            row.premium_seats_is_two_plus = False
+            row.business_seats_is_two_plus = False
+
+        with patch.object(
+            planner,
+            "_ensure_award_rows_for_window",
+            return_value=([sold_out_out], [sold_out_in]),
+        ):
+            for balance in (0, 100000):
+                self.assertEqual(
+                    self._search(planner, *self.ROME, family, balance=balance),
+                    [],
+                    f"balance={balance}",
+                )
+        # Seats left in one direction only: results come back, each stating that direction
+        with patch.object(
+            planner,
+            "_ensure_award_rows_for_window",
+            return_value=([sold_out_out], [fco_in]),
+        ):
+            inbound_only = self._search(planner, *self.ROME, family, balance=100000)
+        self.assertGreaterEqual(len(inbound_only), 1)
+        for prop in inbound_only:
+            self.assertEqual(prop.itinerary.bonus_direction_coverage, "INBOUND_ONLY")
+            self.assertEqual(prop.itinerary.outbound_bonus_seats, 0)
+
+        # The engine still answers for zero-seat rows; the exclusion is the search's decision
+        engine = MultiClubWalletAllocationEngine()
+        commercial_only = engine.allocate_family_tickets(
+            family, sold_out_out, sold_out_in, 590.0, "COMMERCIAL_CASH_ONLY"
+        )
+        self.assertIsNotNone(commercial_only)
+        assert commercial_only is not None
+        self.assertEqual(commercial_only["bonus_direction_coverage"], "NONE")
+        self.assertEqual(commercial_only["bonus_tickets_count"], 0)
+        self.assertEqual(commercial_only["cash_tickets_count"], 4)
+        for strategy in (
+            "FULL_BONUS_SAME_CABIN",
+            "SPLIT_CABIN_BONUS",
+            "HYBRID_BONUS_PLUS_CASH",
+            "ONE_WAY_BONUS_ONE_WAY_CASH",
+        ):
+            self.assertIsNone(
+                engine.allocate_family_tickets(
+                    family, sold_out_out, sold_out_in, 590.0, strategy
+                ),
+                strategy,
+            )
+
+    # ------------------------------------------------------------ persistence
+    def test_persisted_search_for_signed_in_user_with_saved_profile_still_works(self) -> None:
+        """No DDL: a persisted search still writes its rows, with the cash columns left empty."""
+        import sqlite3
+
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "run11_persist.db"
+            client = VacationPlannerTestClient(db_path=db_path)
+            TestM2ProvidersAndSynthesizer._authenticate_client(
+                self, client, email="run11.persist@gmail.com", seed_default_household=True
+            )
+            resp = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-04-11",
+                    "specific_return_date": "2027-04-18",
+                    "flex_days_plus_minus": 0,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["FCO"],
+                    "matmid_points_balance": 30000,
+                },
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            body = resp.json()
+            self.assertGreater(body["count"], 0)
+            query_id = body["query"]["id"]
+
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.row_factory = sqlite3.Row
+                columns = [r["name"] for r in conn.execute("PRAGMA table_info(flight_itineraries)")]
+                # Same table shape as before run 11 (no column added, none dropped)
+                self.assertEqual(len(columns), 34)
+                for kept_column in (
+                    "total_out_of_pocket_cash_usd",
+                    "full_cash_benchmark_usd",
+                    "points_used_by_wallet_json",
+                    "total_matmid_points",
+                ):
+                    self.assertIn(kept_column, columns)
+                for new_key in RUN11_NEW_ITINERARY_KEYS:
+                    self.assertNotIn(new_key, columns)
+
+                itin_rows = conn.execute(
+                    "SELECT * FROM flight_itineraries WHERE search_query_id = ?", (query_id,)
+                ).fetchall()
+                self.assertEqual(len(itin_rows), body["count"])
+                for row in itin_rows:
+                    self.assertEqual(row["total_matmid_points"], 0)
+                    self.assertEqual(row["total_taxes_and_fees_usd"], 0.0)
+                    self.assertEqual(row["total_supplemental_cash_fares_usd"], 0.0)
+                    self.assertEqual(row["total_baggage_fees_usd"], 0.0)
+                    self.assertEqual(row["total_out_of_pocket_cash_usd"], 0.0)
+                    self.assertEqual(row["full_cash_benchmark_usd"], 0.0)
+                    self.assertEqual(row["net_cash_saved_usd"], 0.0)
+                    self.assertIsNone(row["cents_per_point_value"])
+                    self.assertEqual(row["points_used_by_wallet_json"], "{}")
+
+                prop_rows = conn.execute(
+                    "SELECT * FROM vacation_option_proposals WHERE search_query_id = ?",
+                    (query_id,),
+                ).fetchall()
+                self.assertEqual(len(prop_rows), body["count"])
+                for row in prop_rows:
+                    self._assert_cash_free_text(row["explanation_summary_he"])
+            finally:
+                conn.close()
+
+            # Stored rows load back through the repository
+            first = body["proposals"][0]
+            reloaded = client.router.repository.get_proposal_by_id(first["id"])
+            self.assertIsNotNone(reloaded)
+            assert reloaded is not None and reloaded.itinerary is not None
+            self.assertEqual(
+                reloaded.itinerary.fulfillment_strategy.value,
+                first["itinerary"]["fulfillment_strategy"],
+            )
+            self.assertEqual(
+                reloaded.flight_bonus_value_score, first["flight_bonus_value_score"]
+            )
 
 
 if __name__ == "__main__":

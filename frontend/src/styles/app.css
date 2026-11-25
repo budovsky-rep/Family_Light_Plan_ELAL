@@ -2608,6 +2608,198 @@ body.is-keyboard-open .mobile-thumb-dock {
   cursor: pointer;
 }
 
+/* Run 11 Boarding-Pass Direction Statement & Perforated Bonus Seat Coupons */
+.bonus-direction-block {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bonus-direction-header {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px 8px;
+}
+
+.bonus-direction-badge {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 3px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  line-height: 1.3;
+  background: var(--pine-tint);
+  color: var(--pine-bridge);
+  border: 1px solid var(--pine-border);
+}
+
+.bonus-direction-badge-partial {
+  background: var(--brass-tint);
+  color: var(--brass-matmid);
+  border-color: var(--brass-border);
+}
+
+.bonus-direction-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.bonus-direction-statement {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.bonus-strategy-tag {
+  min-width: 0;
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  color: var(--ink-secondary);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+  padding-block: 2px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+}
+
+.bonus-lanes {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bonus-lane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 3px;
+  padding-block: 7px;
+  padding-inline: 7px;
+  border-radius: var(--radius-sm);
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+}
+
+.bonus-lane[data-has-bonus="false"] {
+  background: var(--surface-recessed);
+  border: 1.5px dashed var(--border-strong);
+  color: var(--ink-muted);
+}
+
+.bonus-lane-eyebrow {
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  color: var(--ink-secondary);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.bonus-lane[data-has-bonus="false"] .bonus-lane-eyebrow {
+  color: var(--ink-muted);
+}
+
+.bonus-lane-seats {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  line-height: 1.15;
+}
+
+.bonus-lane-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.26rem;
+  font-weight: 800;
+  color: var(--pine-bridge);
+  letter-spacing: -0.02em;
+}
+
+.bonus-lane-unit {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  color: var(--ink-flightdeck);
+}
+
+.bonus-lane-empty {
+  font-size: var(--fs-strong);
+  font-weight: 700;
+  color: var(--ink-muted);
+  padding-block: 2px;
+}
+
+.bonus-lane-flight {
+  min-width: 0;
+  display: inline-block;
+  align-self: flex-start;
+  max-width: 100%;
+  padding-block: 1px;
+  padding-inline: 5px;
+  border-radius: 5px;
+  background: var(--surface-boarding);
+  border: 1px solid var(--pine-border);
+  color: var(--ink-flightdeck);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  overflow-wrap: break-word;
+}
+
+.bonus-lane-flight-commercial {
+  font-family: var(--font-body);
+  font-weight: 600;
+  letter-spacing: 0;
+  background: var(--surface-boarding);
+  border: 1px dashed var(--border-strong);
+  color: var(--ink-muted);
+}
+
+.two-plus-note {
+  margin: 0;
+  font-size: var(--fs-tag);
+  color: var(--ink-muted);
+  line-height: 1.35;
+}
+
+.stub-pax-summary:last-child {
+  padding-block-end: 0;
+  border-block-end: none;
+}
+
+.min-points-ticket {
+  align-items: baseline;
+  padding-block-start: 2px;
+}
+
+.min-points-ticket .stub-fare-label {
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.min-points-ticket .stub-fare-val {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* Mobile-First Responsive Breakpoints (`min-width` only, ascending: one cascade from phone to wide desktop) */
 @media (min-width: 560px) {
   .hero-eyebrow-short {

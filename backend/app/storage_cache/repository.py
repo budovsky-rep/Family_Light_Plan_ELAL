@@ -1341,7 +1341,7 @@ class SQLiteRepository:
                 itin.bonus_tickets_count,
                 itin.cash_tickets_count,
                 itin.primary_cabin,
-                it_dict["points_used_by_wallet_json"],
+                json.dumps(itin.points_used_by_wallet),
                 1 if itin.requires_two_plus_seat_verification else 0,
                 itin.total_matmid_points,
                 itin.total_taxes_and_fees_usd,

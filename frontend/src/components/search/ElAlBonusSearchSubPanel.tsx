@@ -9,11 +9,11 @@ import type { FulfillmentStrategy } from '../../types/domain';
 export const ELAL_RBD_SOURCE_URL = 'https://www.elal.com/rbddataclients/';
 
 export const STRATEGY_BADGE_LABELS_HE: Record<FulfillmentStrategy, string> = {
-  FULL_BONUS_SAME_CABIN: 'בונוס מלא באותה מחלקה (100% נקודות מתמיד)',
-  SPLIT_CABIN_BONUS: 'פיצול מחלקות בונוס באותה טיסה (הורים + ילדים)',
-  HYBRID_BONUS_PLUS_CASH: 'היברידי: כרטיסי בונוס + השלמת מזומן משוערת באותה טיסה',
-  ONE_WAY_BONUS_ONE_WAY_CASH: 'כיוון אחד בונוס + כיוון שני במזומן משוער',
-  CASH_AND_POINTS: 'Cash & Points (שילוב נקודות ומזומן משוער)',
-  MULTI_CLUB_PER_PASSENGER_SPLIT: 'פיצול רב-מועדוני לפי נוסע (Matmid + Avios / Flying Blue / Star Alliance)',
-  COMMERCIAL_CASH_FARE: 'כרטיס מסחרי רגיל (הערכת מחיר במזומן כולל כבודה משפחתית)',
+  FULL_BONUS_SAME_CABIN: 'בונוס מלא באותה מחלקה',
+  SPLIT_CABIN_BONUS: 'בונוס מפוצל בין מחלקות (אותה טיסה)',
+  HYBRID_BONUS_PLUS_CASH: 'בונוס לחלק מהנוסעים + כרטיסים מסחריים',
+  ONE_WAY_BONUS_ONE_WAY_CASH: 'כיוון אחד בבונוס + כיוון אחד מסחרי',
+  CASH_AND_POINTS: 'נקודות + כסף (Cash & Points)',
+  MULTI_CLUB_PER_PASSENGER_SPLIT: 'פיצול נקודות בין מועדונים ונוסעים',
+  COMMERCIAL_CASH_ONLY: 'כרטיסים מסחריים (ללא בונוס)',
 };

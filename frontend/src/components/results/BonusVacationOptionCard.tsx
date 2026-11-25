@@ -3,7 +3,7 @@
  * Renders a ranked El Al bonus or multi-club vacation proposal card with:
  * - Recommendation tier badge (`RECOMMENDED`, `ALTERNATIVE`, `BUDGET_STRETCH`)
  * - Mathematical score breakdown (`CTOS`, `HAS`, `FBVS`, `SAP`, `CCG`)
- * - Aggregate household traveler count & non-binding estimated cash fare (`~$`)
+ * - Direction coverage statement, per-direction bonus seat coupons & 1-ticket minimum Matmid points
  * - Direct EL AL Google Flights booking handoff
  */
 
@@ -12,7 +12,7 @@ export interface ProposalSummary {
   rank: number;
   recommendation_tier: string;
   holiday_alignment_score: number;
-  family_bonus_value_score: number;
+  flight_bonus_value_score: number;
   combined_trip_optimization_score: number;
   school_absence_penalty: number;
   childcare_coverage_gain: number;

@@ -57,7 +57,15 @@ export type FulfillmentStrategy =
   | 'ONE_WAY_BONUS_ONE_WAY_CASH'
   | 'CASH_AND_POINTS'
   | 'MULTI_CLUB_PER_PASSENGER_SPLIT'
-  | 'COMMERCIAL_CASH_FARE';
+  | 'COMMERCIAL_CASH_ONLY';
+
+export type BonusDirectionCoverage =
+  | 'BOTH_DIRECTIONS'
+  | 'OUTBOUND_ONLY'
+  | 'INBOUND_ONLY'
+  | 'NONE';
+
+export type MinPointsBasis = 'ROUND_TRIP' | 'ONE_WAY';
 
 export type OverlapPolicy =
   | 'STRICT_ALL_CHILDREN_OFF'
@@ -158,4 +166,52 @@ export interface FlightSearchQuery {
   preferred_vacation_types?: VacationType[];
   weather_filter_mode?: WeatherFilterMode;
   min_weather_suitability_score?: number | null;
+}
+
+export interface FlightLeg {
+  flight_number: string;
+  operating_carrier: string;
+  origin_iata: string;
+  destination_iata: string;
+  flight_date: string;
+  departure_time_local: string;
+  arrival_time_local: string;
+  aircraft_type: string;
+  duration_minutes: number;
+  is_direct: boolean;
+}
+
+export interface FlightItinerary {
+  id: string;
+  search_query_id: string | null;
+  origin_iata: string;
+  destination_iata: string;
+  return_origin_iata: string;
+  destination_city_he: string;
+  destination_city_en: string;
+  departure_date: string;
+  return_date: string;
+  trip_nights: number;
+  primary_carrier_iata: string;
+  is_elal_flight: boolean;
+  utilizes_elal_bonus: boolean;
+  fulfillment_strategy: FulfillmentStrategy;
+  outbound_legs: FlightLeg[];
+  inbound_legs: FlightLeg[];
+  outbound_bonus_id: string | null;
+  inbound_bonus_id: string | null;
+  seated_passengers_count: number;
+  bonus_tickets_count: number;
+  cash_tickets_count: number;
+  primary_cabin: 'ECONOMY' | 'PREMIUM' | 'BUSINESS';
+  requires_two_plus_seat_verification: boolean;
+  bonus_direction_coverage: BonusDirectionCoverage;
+  outbound_bonus_seats: number | null;
+  inbound_bonus_seats: number | null;
+  outbound_bonus_seats_is_two_plus: boolean;
+  inbound_bonus_seats_is_two_plus: boolean;
+  min_points_per_bonus_ticket: number | null;
+  min_points_basis: MinPointsBasis | null;
+  points_are_estimated: boolean;
+  elal_google_flights_url: string | null;
 }

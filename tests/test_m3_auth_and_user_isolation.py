@@ -275,8 +275,22 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
             it_2 = props_2[0]["itinerary"]
             self.assertEqual(it_2["seated_passengers_count"], 3)  # 2 adults + 1 child (1 infant_lap = 0 seats)
             self.assertNotIn("family_ticket_allocation", it_2)
-            self.assertIn("estimated_cash_usd", it_2)
-            self.assertTrue(it_2["is_cash_price_estimate"])
+            # Run 11: no cash estimate in the response; the result says where bonus seats exist
+            for removed_key in (
+                "estimated_cash_usd",
+                "is_cash_price_estimate",
+                "total_out_of_pocket_cash_usd",
+                "net_cash_saved_usd",
+                "cents_per_point_value",
+                "total_matmid_points",
+            ):
+                self.assertNotIn(removed_key, it_2)
+            self.assertNotIn("is_cash_price_estimate", r2.json())
+            self.assertIn(
+                it_2["bonus_direction_coverage"],
+                ("BOTH_DIRECTIONS", "OUTBOUND_ONLY", "INBOUND_ONLY"),
+            )
+            self.assertIs(it_2["points_are_estimated"], True)
 
             # Ephemeral guest proposals resolve cleanly for guest requester; removed /compare and .ics endpoints return 404
             pids = [props_1[0]["id"], props_2[0]["id"]]

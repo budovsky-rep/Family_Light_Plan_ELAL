@@ -6,10 +6,11 @@ Implements Features `F22` through `F28`:
     `FLYING_BLUE`, `UNITED_MILEAGEPLUS`, `MILES_AND_MORE`, `DELTA_SKYMILES`,
     `QANTAS_FREQUENT_FLYER`, `AEGEAN_MILES_BONUS`, `AMEX_MR_ISRAEL`,
     `ISRAELI_CC_TRAVEL_POINTS`).
-  - Enforces un-pooled (`can_pool_with_family=False`) whole-ticket allocation vs
-    pooled (`can_pool_with_family=True`) family pool deduction, credit-card
-    `transfer_ratio_to_airline`, FlyCard companion vouchers, and `INFANT_LAP`
-    seat-cap exemption.
+  - Decides the ticket composition of every strategy from the available bonus seats
+    (never from how many tickets the wallets could pay for); wallets only give the
+    balance compared with one bonus ticket's minimum (`effective_elal_points_balance`,
+    credit-card `transfer_ratio_to_airline` applied) and gate the multi-club strategy.
+    `INFANT_LAP` passengers need no seat.
   - Enforces **Adult-Child Under-12 PNR Safety Pairing**: never isolates a child
     under age 12 (`INFANT_LAP`, `INFANT_SEAT`, `CHILD`) on a separate PNR or cabin
     group without at least one accompanying adult (`ADULT_1` or `ADULT_2`).
@@ -17,9 +18,10 @@ Implements Features `F22` through `F28`:
   - Synthesizes vacation proposals across all **6 Family Bonus Fulfillment Strategies**
     (`FULL_BONUS_SAME_CABIN`, `SPLIT_CABIN_BONUS`, `HYBRID_BONUS_PLUS_CASH`,
     `ONE_WAY_BONUS_ONE_WAY_CASH` including regional Open-Jaw `TLV->MXP` / `FCO->TLV`,
-    `CASH_AND_POINTS` with `<0.8c` low-CPP warning, `MULTI_CLUB_PER_PASSENGER_SPLIT`)
+    `CASH_AND_POINTS` (no points figure), `MULTI_CLUB_PER_PASSENGER_SPLIT`)
     plus `COMMERCIAL_CASH_ONLY`.
-  - Computes `CPP`, `FBVS` (Bonus & Cash modes), and `CTOS = 0.55 * HAS + 0.45 * FBVS`.
+  - Describes every result by the bonus seats available per direction (no cash estimate),
+    computes the seat-only `FBVS` and `CTOS = 0.55 * HAS + 0.45 * FBVS`.
   - Provides `search_vacations`.
 """
 
@@ -181,7 +183,6 @@ class _BonusSlot:
     cabin_class: str
     rbd_code: str
     points_cost: int
-    taxes_usd: float
     direction: str = "ROUND_TRIP"
     preferred_program: Optional[str] = None
     requires_two_plus_verify: bool = False
@@ -457,6 +458,46 @@ def _cabin_award_info(
     return 0, False, "E", 0
 
 
+def _direction_bonus_seats(
+    award: Optional[ElAlBonusAvailability], cabins: list[str]
+) -> tuple[Optional[int], bool]:
+    """Return `(available_bonus_seats, any_two_plus_bucket)` for one direction.
+
+    Seats are summed, as stored, over the cabins the search considers (a `2+` bucket
+    counts as its stored value). A cabin counts only if a bonus ticket can be booked in
+    it on this row (it has a points price), which is the test every strategy applies.
+    `None` means there is no award row for the direction.
+    """
+    if award is None:
+        return None, False
+    total_seats = 0
+    any_two_plus = False
+    for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
+        if cab not in cabins:
+            continue
+        seats, is_two_plus, _rbd, pts = _cabin_award_info(award, cab)
+        if seats <= 0 or pts <= 0:
+            continue
+        total_seats += int(seats)
+        any_two_plus = any_two_plus or bool(is_two_plus)
+    return total_seats, any_two_plus
+
+
+def _bonus_direction_coverage(
+    outbound_seats: Optional[int], inbound_seats: Optional[int]
+) -> str:
+    """Say in which directions at least one bonus seat is available (seats only)."""
+    has_out = bool(outbound_seats and int(outbound_seats) > 0)
+    has_in = bool(inbound_seats and int(inbound_seats) > 0)
+    if has_out and has_in:
+        return "BOTH_DIRECTIONS"
+    if has_out:
+        return "OUTBOUND_ONLY"
+    if has_in:
+        return "INBOUND_ONLY"
+    return "NONE"
+
+
 class MultiClubWalletAllocationEngine:
     """Allocates family tickets across per-passenger loyalty wallets and all 6 bonus strategies."""
 
@@ -533,137 +574,28 @@ class MultiClubWalletAllocationEngine:
 
         return working
 
-    def _fund_single_slot(
+    def effective_elal_points_balance(
         self,
-        slot: _BonusSlot,
-        passenger: _PassengerSpec,
-        wallets: list[_WorkingWallet],
-        points_used_by_wallet: dict[str, int],
-        allow_partner_programs: bool = False,
-        prefer_multi_wallet_split: bool = False,
-    ) -> Optional[tuple[str, str]]:
-        """Attempt to fund `slot.points_cost` as a whole ticket from `wallets`.
+        profile: FamilyProfile,
+        enabled_programs: Optional[list[str]] = None,
+    ) -> int:
+        """Points the household can spend on El Al bonus tickets.
 
-        Returns `(program_code, primary_wallet_id)` on success, or `None` if insufficient points.
+        Sum of the working El Al Matmid wallets (including the profile-level pooled
+        balance) and transferable credit-card wallets, in airline points.
         """
-        cost = int(slot.points_cost)
-        if cost <= 0:
-            return ("ELAL_MATMID", "")
-
-        def _is_program_compatible(w: _WorkingWallet) -> bool:
-            if slot.preferred_program:
-                return w.program_code in (slot.preferred_program, *TRANSFERABLE_CC_PROGRAMS)
-            if allow_partner_programs:
-                return True
-            return w.program_code in ("ELAL_MATMID", *TRANSFERABLE_CC_PROGRAMS)
-
-        compatible = [
-            w for w in wallets if _is_program_compatible(w) and w.remaining_airline_points > 0
-        ]
-        if not compatible:
-            return None
-
-        # 1. Try un-pooled wallets FIRST: a single un-pooled wallet must cover the entire `cost`
-        unpooled = [w for w in compatible if not w.can_pool_with_family]
-        unpooled.sort(
-            key=lambda w: (
-                0 if w.passenger_id == passenger.passenger_id else 1,
-                0 if w.program_code == "ELAL_MATMID" else 1,
-                -w.remaining_airline_points,
+        wallets = self._prepare_working_wallets(
+            profile,
+            list(enabled_programs) if enabled_programs is not None else ["ELAL_MATMID"],
+        )
+        return int(
+            sum(
+                w.remaining_airline_points
+                for w in wallets
+                if w.program_code in ("ELAL_MATMID", *TRANSFERABLE_CC_PROGRAMS)
+                and w.remaining_airline_points > 0
             )
         )
-        for uw in unpooled:
-            if uw.remaining_airline_points >= cost:
-                raw_needed = min(
-                    uw.remaining_raw_points,
-                    int(math.ceil(cost / uw.transfer_ratio - 1e-9)),
-                )
-                uw.remaining_raw_points -= raw_needed
-                points_used_by_wallet[uw.wallet_id] = (
-                    points_used_by_wallet.get(uw.wallet_id, 0) + raw_needed
-                )
-                return (uw.program_code, uw.wallet_id)
-
-        # 2. Try pooled wallets (`can_pool_with_family == True`)
-        pooled = [w for w in compatible if w.can_pool_with_family]
-        if not pooled:
-            return None
-
-        # Build candidate pool groups:
-        # Pool Group A: El Al Matmid + Transferable Israeli Credit Card Points
-        elal_and_cc_pool = [
-            w
-            for w in pooled
-            if w.program_code in ("ELAL_MATMID", *TRANSFERABLE_CC_PROGRAMS)
-        ]
-        if prefer_multi_wallet_split:
-            # Order passenger's own wallet first, then other Matmid/CC wallets
-            elal_and_cc_pool.sort(
-                key=lambda w: (
-                    0 if w.passenger_id == passenger.passenger_id else 1,
-                    0 if w.program_code == "ELAL_MATMID" else 1,
-                )
-            )
-        else:
-            elal_and_cc_pool.sort(
-                key=lambda w: (
-                    0 if w.program_code == "ELAL_MATMID" else 1,
-                    0 if w.passenger_id == passenger.passenger_id else 1,
-                )
-            )
-
-        candidate_pools: list[list[_WorkingWallet]] = []
-        if slot.preferred_program and slot.preferred_program in PARTNER_AIRLINE_PROGRAMS:
-            partner_pool = [
-                w
-                for w in pooled
-                if w.program_code in (slot.preferred_program, *TRANSFERABLE_CC_PROGRAMS)
-            ]
-            partner_pool.sort(
-                key=lambda w: 0 if w.program_code == slot.preferred_program else 1
-            )
-            candidate_pools.append(partner_pool)
-        else:
-            if elal_and_cc_pool:
-                candidate_pools.append(elal_and_cc_pool)
-            if allow_partner_programs:
-                for p_code in sorted(PARTNER_AIRLINE_PROGRAMS):
-                    p_pool = [
-                        w
-                        for w in pooled
-                        if w.program_code in (p_code, *TRANSFERABLE_CC_PROGRAMS)
-                    ]
-                    p_pool.sort(key=lambda w: 0 if w.program_code == p_code else 1)
-                    if p_pool:
-                        candidate_pools.append(p_pool)
-
-        for pool in candidate_pools:
-            total_eff = sum(w.remaining_airline_points for w in pool)
-            if total_eff < cost:
-                continue
-            rem_pts = cost
-            primary_prog = pool[0].program_code
-            primary_wid = pool[0].wallet_id
-            for w in pool:
-                if rem_pts <= 0:
-                    break
-                w_eff = w.remaining_airline_points
-                if w_eff <= 0:
-                    continue
-                take_eff = min(rem_pts, w_eff)
-                raw_deduct = min(
-                    w.remaining_raw_points,
-                    int(math.ceil(take_eff / w.transfer_ratio - 1e-9)),
-                )
-                if raw_deduct > 0:
-                    w.remaining_raw_points -= raw_deduct
-                    points_used_by_wallet[w.wallet_id] = (
-                        points_used_by_wallet.get(w.wallet_id, 0) + raw_deduct
-                    )
-                    rem_pts -= take_eff
-            return (primary_prog, primary_wid)
-
-        return None
 
     def _assign_passengers_with_pnr_safety(
         self,
@@ -959,32 +891,15 @@ class MultiClubWalletAllocationEngine:
         city_en = str(meta.get("city_en") or (commercial_offer or {}).get("destination_city_en") or dest_iata)
         trip_nights = max(1, (ret_date - dep_date).days)
 
-        bench_per_pax = (
-            float(cash_benchmark_per_pax)
-            if cash_benchmark_per_pax and float(cash_benchmark_per_pax) > 0
-            else float(meta.get("rt_cash_per_pax_usd", 590.0))
+        # Run 11: a result is described only by the bonus seats available per direction.
+        # No cash benchmark, supplement, tax, baggage fee or saving is computed here;
+        # `cash_benchmark_per_pax` is accepted for call compatibility and ignored.
+        out_bonus_seats, out_bonus_two_plus = _direction_bonus_seats(
+            outbound_award, pref_cabins
         )
-        full_cash_benchmark_usd = round(n_seated * bench_per_pax, 2)
-
-        cat_rt = float(meta.get("rt_cash_per_pax_usd", bench_per_pax))
-        if dest_iata in DESTINATION_CATALOG and abs(bench_per_pax - cat_rt) < 1.0:
-            supp_cash_per_pax = float(
-                meta.get("supplemental_single_pax_cash_usd", round(bench_per_pax * 0.78, 2))
-            )
-        else:
-            supp_cash_per_pax = round(bench_per_pax * 0.78, 2)
-
-        out_tax_per_pax = (
-            float(outbound_award.taxes_usd_per_pax)
-            if outbound_award is not None
-            else float(meta.get("outbound_taxes_usd", 48.75))
+        in_bonus_seats, in_bonus_two_plus = _direction_bonus_seats(
+            inbound_award, pref_cabins
         )
-        in_tax_per_pax = (
-            float(inbound_award.taxes_usd_per_pax)
-            if inbound_award is not None
-            else float(meta.get("inbound_taxes_usd", 48.75))
-        )
-        rt_tax_per_pax = round(out_tax_per_pax + in_tax_per_pax, 2)
 
         outbound_legs, inbound_legs = self._build_legs(
             outbound_award=outbound_award,
@@ -1004,23 +919,21 @@ class MultiClubWalletAllocationEngine:
             bonus_tickets_count: int,
             cash_tickets_count: int,
             primary_cabin: str,
-            total_pts: int,
-            total_taxes: float,
-            total_supp: float,
-            points_by_wallet: dict[str, int],
             requires_verify: bool,
             utilizes_bonus: bool = True,
-            baggage_fees_usd: float = 0.0,
+            min_points: Optional[int] = None,
+            min_points_basis: Optional[str] = None,
         ) -> dict[str, Any]:
-            clean_pts = int(total_pts)
-            clean_taxes = round(float(total_taxes), 2)
-            clean_supp = round(float(total_supp), 2)
-            total_bag = round(float(baggage_fees_usd), 2)
-            total_oop = round(clean_taxes + clean_supp + total_bag, 2)
-            net_saved = round(full_cash_benchmark_usd - total_oop, 2)
-            cpp_val: Optional[float] = None
-            if clean_pts > 0:
-                cpp_val = round((net_saved * 100.0) / float(clean_pts), 2)
+            if utilizes_bonus:
+                res_out_seats, res_out_two_plus = out_bonus_seats, out_bonus_two_plus
+                res_in_seats, res_in_two_plus = in_bonus_seats, in_bonus_two_plus
+            else:
+                res_out_seats, res_out_two_plus = None, False
+                res_in_seats, res_in_two_plus = None, False
+            coverage = _bonus_direction_coverage(res_out_seats, res_in_seats)
+            clean_min_pts: Optional[int] = None
+            if coverage != "NONE" and min_points is not None and int(min_points) > 0:
+                clean_min_pts = int(min_points)
 
             norm_cabin = (
                 primary_cabin
@@ -1050,16 +963,7 @@ class MultiClubWalletAllocationEngine:
                 bonus_tickets_count=int(bonus_tickets_count),
                 cash_tickets_count=int(cash_tickets_count),
                 primary_cabin=norm_cabin,
-                points_used_by_wallet={k: int(v) for k, v in points_by_wallet.items() if int(v) > 0},
                 requires_two_plus_seat_verification=bool(requires_verify),
-                total_matmid_points=clean_pts,
-                total_taxes_and_fees_usd=clean_taxes,
-                total_supplemental_cash_fares_usd=clean_supp,
-                total_baggage_fees_usd=total_bag,
-                total_out_of_pocket_cash_usd=total_oop,
-                full_cash_benchmark_usd=full_cash_benchmark_usd,
-                net_cash_saved_usd=net_saved,
-                cents_per_point_value=cpp_val,
                 rbddataclients_verify_url="https://www.elal.com/rbddataclients/" if is_elal else None,
                 booking_deep_link_url=(
                     "https://www.elal.com/heb/israel"
@@ -1079,6 +983,14 @@ class MultiClubWalletAllocationEngine:
                     if is_elal
                     else None
                 ),
+                bonus_direction_coverage=coverage,
+                outbound_bonus_seats=res_out_seats,
+                inbound_bonus_seats=res_in_seats,
+                outbound_bonus_seats_is_two_plus=res_out_two_plus,
+                inbound_bonus_seats_is_two_plus=res_in_two_plus,
+                min_points_per_bonus_ticket=clean_min_pts,
+                min_points_basis=(min_points_basis if clean_min_pts is not None else None),
+                points_are_estimated=True,
             )
             return itin.to_dict()
 
@@ -1086,36 +998,13 @@ class MultiClubWalletAllocationEngine:
         # Strategy 7: COMMERCIAL_CASH_ONLY
         # =====================================================================
         if strat_str == "COMMERCIAL_CASH_ONLY":
-            if commercial_offer is not None:
-                bag_fee = float(commercial_offer.get("total_baggage_fees_usd", 0.0))
-                fam_tax = float(commercial_offer.get("total_taxes_and_fees_usd", round(rt_tax_per_pax * n_seated, 2)))
-                fam_supp = float(
-                    commercial_offer.get(
-                        "total_supplemental_cash_fares_usd",
-                        round(max(0.0, full_cash_benchmark_usd - fam_tax), 2),
-                    )
-                )
-            else:
-                bag_fee, total_with_bag = FamilyBaggageNormalizer.normalize_family_baggage_cost(
-                    carrier_iata=primary_carrier,
-                    base_fare_usd=full_cash_benchmark_usd,
-                    profile=profile,
-                    trip_nights=trip_nights,
-                )
-                fam_tax = round(rt_tax_per_pax * n_seated, 2)
-                fam_supp = round(max(0.0, (total_with_bag - bag_fee) - fam_tax), 2)
-
+            # A commercial-only result: no bonus seats, no points and no cash figure.
             return _finalize_result(
                 bonus_tickets_count=0,
                 cash_tickets_count=n_seated,
                 primary_cabin="ECONOMY",
-                total_pts=0,
-                total_taxes=fam_tax,
-                total_supp=fam_supp,
-                points_by_wallet={},
                 requires_verify=False,
                 utilizes_bonus=False,
-                baggage_fees_usd=bag_fee,
             )
 
         # =====================================================================
@@ -1142,41 +1031,15 @@ class MultiClubWalletAllocationEngine:
                     if (out_s > 2 and out_s < n_seated) or (in_s > 2 and in_s < n_seated):
                         continue
 
-                rt_pts = out_pts + in_pts
-                wallets = self._prepare_working_wallets(profile, prog_list)
-                pts_by_wallet: dict[str, int] = {}
-                funded_cnt = 0
-                feasible = True
-                for p in seated_passengers:
-                    slot = _BonusSlot(
-                        cabin_class=cabin,
-                        rbd_code=out_rbd,
-                        points_cost=rt_pts,
-                        taxes_usd=rt_tax_per_pax,
-                    )
-                    funded = self._fund_single_slot(
-                        slot=slot,
-                        passenger=p,
-                        wallets=wallets,
-                        points_used_by_wallet=pts_by_wallet,
-                        allow_partner_programs=False,
-                    )
-                    if funded is None:
-                        feasible = False
-                        break
-                    funded_cnt += 1
-                if feasible and funded_cnt == n_seated:
-                    return _finalize_result(
-                        bonus_tickets_count=n_seated,
-                        cash_tickets_count=0,
-                        primary_cabin=cabin,
-                        total_pts=n_seated * rt_pts,
-                        total_taxes=round(n_seated * rt_tax_per_pax, 2),
-                        total_supp=0.0,
-                        points_by_wallet=pts_by_wallet,
-                        requires_verify=(n_seated >= 3),
-                        utilizes_bonus=True,
-                    )
+                return _finalize_result(
+                    bonus_tickets_count=n_seated,
+                    cash_tickets_count=0,
+                    primary_cabin=cabin,
+                    requires_verify=(n_seated >= 3),
+                    utilizes_bonus=True,
+                    min_points=out_pts + in_pts,
+                    min_points_basis="ROUND_TRIP",
+                )
             return None
 
         # =====================================================================
@@ -1215,7 +1078,6 @@ class MultiClubWalletAllocationEngine:
                             cabin_class=cabin,
                             rbd_code=out_rbd,
                             points_cost=out_pts + in_pts,
-                            taxes_usd=rt_tax_per_pax,
                         )
                     )
             if len(strict_slots) >= n_seated:
@@ -1238,18 +1100,16 @@ class MultiClubWalletAllocationEngine:
                             in_u = in_u + (1 if in_biz_s >= 1 else 0)
                         if out_u >= 2 and in_u >= 2 and out_u_pts > 0 and in_u_pts > 0:
                             plan2 = [
-                                _BonusSlot("ECONOMY", e_rbd, out_e_pts + in_e_pts, rt_tax_per_pax)
+                                _BonusSlot("ECONOMY", e_rbd, out_e_pts + in_e_pts)
                                 for _ in range(n_seated - 2)
                             ] + [
-                                _BonusSlot(upper_cab, u_rbd, out_u_pts + in_u_pts, rt_tax_per_pax)
+                                _BonusSlot(upper_cab, u_rbd, out_u_pts + in_u_pts)
                                 for _ in range(2)
                             ]
                             candidate_slot_plans.append((plan2, True))
                             break
 
             for slots_plan, req_verify in candidate_slot_plans:
-                wallets = self._prepare_working_wallets(profile, prog_list)
-                pts_by_wallet = {}
                 cabins_in_plan: list[str] = []
                 for s in slots_plan:
                     if s.cabin_class not in cabins_in_plan:
@@ -1307,32 +1167,15 @@ class MultiClubWalletAllocationEngine:
                 if rem_under12 or len(ordered_pax) != n_seated:
                     continue
 
-                feasible = True
-                funded_cnt = 0
-                for p, slot in zip(ordered_pax, ordered_slots):
-                    funded = self._fund_single_slot(
-                        slot=slot,
-                        passenger=p,
-                        wallets=wallets,
-                        points_used_by_wallet=pts_by_wallet,
-                        allow_partner_programs=False,
-                    )
-                    if funded is None:
-                        feasible = False
-                        break
-                    funded_cnt += 1
-                if feasible and funded_cnt == n_seated:
-                    return _finalize_result(
-                        bonus_tickets_count=n_seated,
-                        cash_tickets_count=0,
-                        primary_cabin="ECONOMY",
-                        total_pts=sum(s.points_cost for s in ordered_slots),
-                        total_taxes=round(sum(s.taxes_usd for s in ordered_slots), 2),
-                        total_supp=0.0,
-                        points_by_wallet=pts_by_wallet,
-                        requires_verify=req_verify,
-                        utilizes_bonus=True,
-                    )
+                return _finalize_result(
+                    bonus_tickets_count=n_seated,
+                    cash_tickets_count=0,
+                    primary_cabin="ECONOMY",
+                    requires_verify=req_verify,
+                    utilizes_bonus=True,
+                    min_points=min(s.points_cost for s in ordered_slots),
+                    min_points_basis="ROUND_TRIP",
+                )
             return None
 
         # =====================================================================
@@ -1366,7 +1209,6 @@ class MultiClubWalletAllocationEngine:
                             cabin_class=cabin,
                             rbd_code=out_rbd,
                             points_cost=out_pts + in_pts,
-                            taxes_usd=rt_tax_per_pax,
                         )
                     )
 
@@ -1380,34 +1222,15 @@ class MultiClubWalletAllocationEngine:
                 if partition is None:
                     continue
                 bonus_pax, cash_pax = partition
-                wallets = self._prepare_working_wallets(profile, prog_list)
-                pts_by_wallet = {}
-                feasible = True
                 used_slots = avail_slots[:k_try]
-                for p, slot in zip(bonus_pax, used_slots):
-                    funded = self._fund_single_slot(
-                        slot=slot,
-                        passenger=p,
-                        wallets=wallets,
-                        points_used_by_wallet=pts_by_wallet,
-                        allow_partner_programs=False,
-                    )
-                    if funded is None:
-                        feasible = False
-                        break
-                if not feasible:
-                    continue
-
                 return _finalize_result(
                     bonus_tickets_count=len(bonus_pax),
                     cash_tickets_count=len(cash_pax),
                     primary_cabin="ECONOMY",
-                    total_pts=sum(s.points_cost for s in used_slots),
-                    total_taxes=round(sum(s.taxes_usd for s in used_slots), 2),
-                    total_supp=round(len(cash_pax) * supp_cash_per_pax, 2),
-                    points_by_wallet=pts_by_wallet,
                     requires_verify=False,
                     utilizes_bonus=True,
+                    min_points=min(s.points_cost for s in used_slots),
+                    min_points_basis="ROUND_TRIP",
                 )
             return None
 
@@ -1429,8 +1252,6 @@ class MultiClubWalletAllocationEngine:
                 out_s, _, _out_rbd, out_pts = _cabin_award_info(outbound_award, "ECONOMY")
                 in_s, _, _in_rbd, in_pts = _cabin_award_info(inbound_award, "ECONOMY")
                 if out_s >= 1 and in_s >= 1 and out_pts > 0 and in_pts > 0:
-                    wallets = self._prepare_working_wallets(profile, prog_list)
-                    pts_by_wallet = {}
                     oj_slots: list[_BonusSlot] = []
                     for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
                         if cab not in pref_cabins:
@@ -1443,69 +1264,50 @@ class MultiClubWalletAllocationEngine:
                         for _ in range(min(os_c, is_c)):
                             if opts_c > 0 and ipts_c > 0:
                                 oj_slots.append(
-                                    _BonusSlot(cab, orbd_c, opts_c + ipts_c, rt_tax_per_pax)
+                                    _BonusSlot(cab, orbd_c, opts_c + ipts_c)
                                 )
                     k_oj = min(len(oj_slots), n_seated)
                     partition = self._assign_passengers_with_pnr_safety(seated_passengers, k_oj)
                     if partition is not None and k_oj >= 1:
                         b_pax, c_pax = partition
-                        feasible = True
                         used_oj_slots = oj_slots[:k_oj]
-                        for p, slot in zip(b_pax, used_oj_slots):
-                            funded = self._fund_single_slot(
-                                slot=slot,
-                                passenger=p,
-                                wallets=wallets,
-                                points_used_by_wallet=pts_by_wallet,
-                            )
-                            if funded is None:
-                                feasible = False
-                                break
-                        if feasible:
-                            cab_set = {s.cabin_class for s in used_oj_slots}
-                            if c_pax:
-                                cab_set.add("ECONOMY")
-                            prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
-                            return _finalize_result(
-                                bonus_tickets_count=len(b_pax),
-                                cash_tickets_count=len(c_pax),
-                                primary_cabin=prim_cab,
-                                total_pts=sum(s.points_cost for s in used_oj_slots),
-                                total_taxes=round(sum(s.taxes_usd for s in used_oj_slots), 2),
-                                total_supp=round(len(c_pax) * supp_cash_per_pax, 2),
-                                points_by_wallet=pts_by_wallet,
-                                requires_verify=False,
-                                utilizes_bonus=True,
-                            )
+                        cab_set = {s.cabin_class for s in used_oj_slots}
+                        if c_pax:
+                            cab_set.add("ECONOMY")
+                        prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
+                        return _finalize_result(
+                            bonus_tickets_count=len(b_pax),
+                            cash_tickets_count=len(c_pax),
+                            primary_cabin=prim_cab,
+                            requires_verify=False,
+                            utilizes_bonus=True,
+                            min_points=min(s.points_cost for s in used_oj_slots),
+                            min_points_basis="ROUND_TRIP",
+                        )
 
-            # Case B: One-Way Bonus on one direction + One-Way Commercial Cash on the other direction
+            # Case B: One-Way Bonus on one direction + a commercial ticket on the other direction
             best_dir: Optional[str] = None
             chosen_award: Optional[ElAlBonusAvailability] = None
             chosen_cabin = "ECONOMY"
-            chosen_rbd = "E"
             chosen_ow_pts = 0
-            chosen_ow_tax = out_tax_per_pax
-
             chosen_ow_s_cnt = 0
             chosen_ow_two_plus = False
 
-            for dir_label, aw, tax_ow in (
-                ("OUTBOUND_ONLY", outbound_award, out_tax_per_pax),
-                ("INBOUND_ONLY", inbound_award, in_tax_per_pax),
+            for dir_label, aw in (
+                ("OUTBOUND_ONLY", outbound_award),
+                ("INBOUND_ONLY", inbound_award),
             ):
                 if aw is None:
                     continue
                 for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
                     if cab not in pref_cabins:
                         continue
-                    s_cnt, is_two_plus_ow, rbd_c, pts_c = _cabin_award_info(aw, cab)
+                    s_cnt, is_two_plus_ow, _rbd_c, pts_c = _cabin_award_info(aw, cab)
                     if s_cnt >= 1 and pts_c > 0:
                         best_dir = dir_label
                         chosen_award = aw
                         chosen_cabin = cab
-                        chosen_rbd = rbd_c
                         chosen_ow_pts = pts_c
-                        chosen_ow_tax = round(float(tax_ow), 2)
                         chosen_ow_s_cnt = s_cnt
                         chosen_ow_two_plus = is_two_plus_ow
                         break
@@ -1515,114 +1317,42 @@ class MultiClubWalletAllocationEngine:
             if best_dir is None or chosen_award is None or chosen_ow_pts <= 0:
                 return None
 
+            # How many passengers get a one-way bonus ticket is decided by the seats of the
+            # chosen direction, never by how many tickets the household's points could fund.
             max_ow_slots = (
                 1
                 if (has_live_award and chosen_ow_s_cnt == 1 and not chosen_ow_two_plus)
                 else (n_seated if (chosen_ow_two_plus or chosen_ow_s_cnt >= 2) else max(1, chosen_ow_s_cnt))
             )
-            ow_cash_per_pax = round(0.45 * bench_per_pax, 2)
-            wallets = self._prepare_working_wallets(profile, prog_list)
-            pts_by_wallet = {}
-            funded_ow_cnt = 0
-            cash_ow_cnt = 0
-
-            for p in seated_passengers:
-                if funded_ow_cnt >= max_ow_slots:
-                    cash_ow_cnt += 1
-                    continue
-                slot = _BonusSlot(
-                    cabin_class=chosen_cabin,
-                    rbd_code=chosen_rbd,
-                    points_cost=chosen_ow_pts,
-                    taxes_usd=chosen_ow_tax,
-                    direction=best_dir,
-                )
-                funded = self._fund_single_slot(
-                    slot=slot,
-                    passenger=p,
-                    wallets=wallets,
-                    points_used_by_wallet=pts_by_wallet,
-                )
-                if funded is not None:
-                    funded_ow_cnt += 1
-                else:
-                    cash_ow_cnt += 1
-
-            if funded_ow_cnt <= 0:
+            bonus_ow_cnt = min(n_seated, max_ow_slots)
+            cash_ow_cnt = n_seated - bonus_ow_cnt
+            if bonus_ow_cnt <= 0:
                 return None
-            if cash_ow_cnt > 0 and self._assign_passengers_with_pnr_safety(seated_passengers, funded_ow_cnt) is None:
+            if cash_ow_cnt > 0 and self._assign_passengers_with_pnr_safety(seated_passengers, bonus_ow_cnt) is None:
                 return None
 
             return _finalize_result(
-                bonus_tickets_count=funded_ow_cnt,
+                bonus_tickets_count=bonus_ow_cnt,
                 cash_tickets_count=cash_ow_cnt,
                 primary_cabin=chosen_cabin if cash_ow_cnt == 0 else "ECONOMY",
-                total_pts=funded_ow_cnt * chosen_ow_pts,
-                total_taxes=round(funded_ow_cnt * chosen_ow_tax, 2),
-                total_supp=round(funded_ow_cnt * ow_cash_per_pax + cash_ow_cnt * bench_per_pax, 2),
-                points_by_wallet=pts_by_wallet,
                 requires_verify=(n_seated >= 3 and chosen_award.economy_award_seats == 2),
                 utilizes_bonus=True,
+                min_points=chosen_ow_pts,
+                min_points_basis="ONE_WAY",
             )
 
         # =====================================================================
         # Strategy 5: CASH_AND_POINTS (F26)
         # =====================================================================
         if strat_str == "CASH_AND_POINTS":
-            wallets = self._prepare_working_wallets(profile, prog_list)
-            elal_wallets = [
-                w
-                for w in wallets
-                if w.program_code in ("ELAL_MATMID", *TRANSFERABLE_CC_PROGRAMS)
-                and w.remaining_airline_points > 0
-            ]
-            total_avail_pts = sum(w.remaining_airline_points for w in elal_wallets)
-            if total_avail_pts <= 0:
-                return None
-
-            # Effective conversion rate: 0.72 cents per point ($0.0072/pt < 0.8c low-CPP threshold)
-            cpp_rate_usd = 0.0072
-            max_pts_by_fare = int(math.floor((0.45 * full_cash_benchmark_usd) / cpp_rate_usd))
-            target_total_pts = min(total_avail_pts, n_seated * 15000, max(5000, max_pts_by_fare))
-            if target_total_pts >= n_seated:
-                target_total_pts = (target_total_pts // n_seated) * n_seated
-            if target_total_pts <= 0:
-                return None
-
-            pts_by_wallet = {}
-            rem_to_deduct = target_total_pts
-            actual_airline_pts = 0
-            for w in elal_wallets:
-                if rem_to_deduct <= 0:
-                    break
-                take_eff = min(rem_to_deduct, w.remaining_airline_points)
-                raw_ded = min(
-                    w.remaining_raw_points,
-                    int(math.ceil(take_eff / w.transfer_ratio - 1e-9)),
-                )
-                if raw_ded > 0:
-                    w.remaining_raw_points -= raw_ded
-                    points_used_by_wallet_prev = pts_by_wallet.get(w.wallet_id, 0)
-                    pts_by_wallet[w.wallet_id] = points_used_by_wallet_prev + raw_ded
-                    actual_airline_pts += take_eff
-                    rem_to_deduct -= take_eff
-
-            if actual_airline_pts <= 0:
-                return None
-
-            discount_usd = round(actual_airline_pts * cpp_rate_usd, 2)
-            total_taxes = round(n_seated * rt_tax_per_pax, 2)
-            total_oop = round(max(total_taxes, full_cash_benchmark_usd - discount_usd), 2)
-            total_supp = round(max(0.0, total_oop - total_taxes), 2)
-
+            # Built whenever the award rows allow it, independent of the wallet contents: a
+            # balance of 0 (or none) means "not entered" and excludes nothing (run 11, U3).
+            # It carries no points figure: the former one was derived from a cash benchmark.
+            # The bonus search drops it, like every other result, when no direction has seats.
             return _finalize_result(
                 bonus_tickets_count=n_seated,
                 cash_tickets_count=0,
                 primary_cabin="ECONOMY",
-                total_pts=actual_airline_pts,
-                total_taxes=total_taxes,
-                total_supp=total_supp,
-                points_by_wallet=pts_by_wallet,
                 requires_verify=False,
                 utilizes_bonus=True,
             )
@@ -1634,147 +1364,50 @@ class MultiClubWalletAllocationEngine:
             wallets = self._prepare_working_wallets(profile, prog_list)
             if len(wallets) < 2:
                 return None
+            if outbound_award is None or inbound_award is None:
+                return None
 
-            if outbound_award is not None and inbound_award is not None:
-                _, _, econ_rbd, out_econ_pts = _cabin_award_info(outbound_award, "ECONOMY")
-                _, _, _, in_econ_pts = _cabin_award_info(inbound_award, "ECONOMY")
-                rt_econ_pts = (out_econ_pts or 15000) + (in_econ_pts or 15000)
-                ow_econ_pts = out_econ_pts or 15000
-
-                # Build candidate round-trip slots across preferred cabins + partner clubs
-                mc_slots: list[_BonusSlot] = []
-                for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
-                    if cab not in pref_cabins:
-                        continue
-                    out_s, _, out_rbd, out_pts = _cabin_award_info(outbound_award, cab)
-                    in_s, _, _, in_pts = _cabin_award_info(inbound_award, cab)
-                    if out_pts <= 0 or in_pts <= 0:
-                        continue
-                    if cab == "PREMIUM" and out_s >= 2 and in_s == 1:
-                        in_biz_s, _, _, _ = _cabin_award_info(inbound_award, "BUSINESS")
-                        avail_in = in_s + (1 if in_biz_s >= 1 else 0)
-                    else:
-                        avail_in = in_s
-                    for _ in range(min(out_s, avail_in)):
-                        mc_slots.append(
-                            _BonusSlot(cab, out_rbd, out_pts + in_pts, rt_tax_per_pax)
-                        )
-
-                partner_wallets = [
-                    w for w in wallets if w.program_code in PARTNER_AIRLINE_PROGRAMS
-                ]
-                for pw in partner_wallets:
-                    if len(mc_slots) >= n_seated:
-                        break
-                    if pw.remaining_airline_points >= rt_econ_pts:
-                        mc_slots.append(
-                            _BonusSlot(
-                                cabin_class="ECONOMY",
-                                rbd_code=econ_rbd,
-                                points_cost=rt_econ_pts,
-                                taxes_usd=rt_tax_per_pax,
-                                preferred_program=pw.program_code,
-                            )
-                        )
-
-                test_wallets = self._prepare_working_wallets(profile, prog_list)
-                test_used: dict[str, int] = {}
-                funded_rt_count = 0
-                for idx_s, slot in enumerate(mc_slots[:n_seated]):
-                    pax_ref = seated_passengers[min(idx_s, n_seated - 1)]
-                    if (
-                        self._fund_single_slot(
-                            slot=slot,
-                            passenger=pax_ref,
-                            wallets=test_wallets,
-                            points_used_by_wallet=test_used,
-                            allow_partner_programs=True,
-                            prefer_multi_wallet_split=True,
-                        )
-                        is not None
-                    ):
-                        funded_rt_count += 1
-                    else:
-                        break
-
-                if funded_rt_count >= 1:
-                    partition = self._assign_passengers_with_pnr_safety(
-                        seated_passengers, funded_rt_count
+            # Round-trip bonus slots come from the seats of the two award rows. The wallets
+            # only gate the strategy (at least two funded wallets); they do not decide how
+            # many bonus tickets the result has.
+            mc_slots: list[_BonusSlot] = []
+            for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
+                if cab not in pref_cabins:
+                    continue
+                out_s, _, out_rbd, out_pts = _cabin_award_info(outbound_award, cab)
+                in_s, _, _, in_pts = _cabin_award_info(inbound_award, cab)
+                if out_pts <= 0 or in_pts <= 0:
+                    continue
+                if cab == "PREMIUM" and out_s >= 2 and in_s == 1:
+                    in_biz_s, _, _, _ = _cabin_award_info(inbound_award, "BUSINESS")
+                    avail_in = in_s + (1 if in_biz_s >= 1 else 0)
+                else:
+                    avail_in = in_s
+                for _ in range(min(out_s, avail_in)):
+                    mc_slots.append(
+                        _BonusSlot(cab, out_rbd, out_pts + in_pts)
                     )
-                    if partition is None:
-                        return None
-                    bonus_pax, cash_pax = partition
-                    pts_by_wallet = {}
-                    used_mc_slots = mc_slots[:funded_rt_count]
-                    for p, slot in zip(bonus_pax, used_mc_slots):
-                        funded = self._fund_single_slot(
-                            slot=slot,
-                            passenger=p,
-                            wallets=wallets,
-                            points_used_by_wallet=pts_by_wallet,
-                            allow_partner_programs=True,
-                            prefer_multi_wallet_split=True,
-                        )
-                        if funded is None:
-                            return None
-                    cab_set = {s.cabin_class for s in used_mc_slots}
-                    if cash_pax:
-                        cab_set.add("ECONOMY")
-                    prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
-                    return _finalize_result(
-                        bonus_tickets_count=len(bonus_pax),
-                        cash_tickets_count=len(cash_pax),
-                        primary_cabin=prim_cab,
-                        total_pts=sum(s.points_cost for s in used_mc_slots),
-                        total_taxes=round(sum(s.taxes_usd for s in used_mc_slots), 2),
-                        total_supp=round(len(cash_pax) * supp_cash_per_pax, 2),
-                        points_by_wallet=pts_by_wallet,
-                        requires_verify=False,
-                        utilizes_bonus=True,
-                    )
-
-                # Fallback for un-pooled wallets that cannot cover a full RT (`30,000` pts)
-                # but CAN cover an entire One-Way leg (`15,000 <= 25,000` pts, `test_f27_01`):
-                pts_by_wallet = {}
-                ow_cash_per_pax = round(0.45 * bench_per_pax, 2)
-                funded_ow_cnt = 0
-                cash_ow_cnt = 0
-                for p in seated_passengers:
-                    ow_slot = _BonusSlot(
-                        cabin_class="ECONOMY",
-                        rbd_code=econ_rbd,
-                        points_cost=ow_econ_pts,
-                        taxes_usd=round(out_tax_per_pax, 2),
-                        direction="OUTBOUND_ONLY",
-                    )
-                    funded = self._fund_single_slot(
-                        slot=ow_slot,
-                        passenger=p,
-                        wallets=wallets,
-                        points_used_by_wallet=pts_by_wallet,
-                        allow_partner_programs=True,
-                        prefer_multi_wallet_split=True,
-                    )
-                    if funded is not None:
-                        funded_ow_cnt += 1
-                    else:
-                        cash_ow_cnt += 1
-                if funded_ow_cnt > 0:
-                    if cash_ow_cnt > 0 and self._assign_passengers_with_pnr_safety(seated_passengers, funded_ow_cnt) is None:
-                        return None
-                    return _finalize_result(
-                        bonus_tickets_count=funded_ow_cnt,
-                        cash_tickets_count=cash_ow_cnt,
-                        primary_cabin="ECONOMY",
-                        total_pts=funded_ow_cnt * ow_econ_pts,
-                        total_taxes=round(funded_ow_cnt * round(out_tax_per_pax, 2), 2),
-                        total_supp=round(funded_ow_cnt * ow_cash_per_pax + cash_ow_cnt * bench_per_pax, 2),
-                        points_by_wallet=pts_by_wallet,
-                        requires_verify=False,
-                        utilizes_bonus=True,
-                    )
-
-            return None
+            k_mc = min(len(mc_slots), n_seated)
+            if k_mc < 1:
+                return None
+            partition = self._assign_passengers_with_pnr_safety(seated_passengers, k_mc)
+            if partition is None:
+                return None
+            bonus_pax, cash_pax = partition
+            used_mc_slots = mc_slots[:k_mc]
+            cab_set = {s.cabin_class for s in used_mc_slots}
+            if cash_pax:
+                cab_set.add("ECONOMY")
+            prim_cab = next(iter(cab_set)) if len(cab_set) == 1 else "ECONOMY"
+            return _finalize_result(
+                bonus_tickets_count=len(bonus_pax),
+                cash_tickets_count=len(cash_pax),
+                primary_cabin=prim_cab,
+                requires_verify=False,
+                utilizes_bonus=True,
+                min_points=min(s.points_cost for s in used_mc_slots),
+                min_points_basis="ROUND_TRIP",
+            )
 
         return None
 
@@ -1922,56 +1555,29 @@ class BonusVacationPlannerService:
         itinerary: FlightItinerary,
         n_seated: int,
     ) -> float:
-        """Compute Flight Bonus Value Score (`FBVS_bonus` in `[0.0, 100.0]`)."""
-        n_bonus = int(itinerary.bonus_tickets_count)
-        strat = (
-            itinerary.fulfillment_strategy.value
-            if isinstance(itinerary.fulfillment_strategy, Enum)
-            else str(itinerary.fulfillment_strategy)
-        )
+        """Compute the Flight Bonus Value Score (`FBVS` in `[0.0, 100.0]`) from bonus seats only.
 
-        has_unconfirmed_cash_leg = any(
-            leg.flight_number == "LY_CASH"
-            for leg in (itinerary.outbound_legs + itinerary.inbound_legs)
-        )
+        `cov(d) = min(1.0, available bonus seats in direction d / seated passengers)` and
+        `FBVS = round(100 * (cov(OUT) + cov(IN)) / 2, 1)`.
 
-        if strat == "CASH_AND_POINTS":
-            saved_ratio = min(
-                1.0,
-                max(
-                    0.0,
-                    itinerary.net_cash_saved_usd
-                    / max(1.0, itinerary.full_cash_benchmark_usd),
-                ),
+        The only inputs are the available bonus seats per direction (as carried by the
+        itinerary) and the party size, which only normalises them. Strategy, schedule,
+        points balance and any cash figure play no part; a result without bonus seats
+        scores 0.0.
+        """
+        party_size = max(1, int(n_seated))
+
+        def _coverage(seats: Optional[int]) -> float:
+            return min(1.0, max(0, int(seats or 0)) / float(party_size))
+
+        raw_score = (
+            100.0
+            * (
+                _coverage(itinerary.outbound_bonus_seats)
+                + _coverage(itinerary.inbound_bonus_seats)
             )
-            seat_cov = 0.55 * saved_ratio
-        elif strat == "ONE_WAY_BONUS_ONE_WAY_CASH" and itinerary.destination_iata == itinerary.return_origin_iata:
-            ow_factor = 0.32 if has_unconfirmed_cash_leg else 0.50
-            seat_cov = ow_factor * min(1.0, n_bonus / float(max(1, min(n_seated, 4))))
-        else:
-            # 4 confirmed bonus seats on a single flight (`2x Econ + 2x Prem/Biz`) is 100% of El Al's 2+ cap
-            seat_cov = min(1.0, n_bonus / float(max(1, min(n_seated, 4))))
-
-        cpp = float(itinerary.cents_per_point_value or 0.0)
-        cpp_norm = min(1.0, max(0.0, cpp / 1.45))
-
-        all_direct = all(
-            leg.is_direct
-            for leg in (itinerary.outbound_legs + itinerary.inbound_legs)
+            / 2.0
         )
-        sched_quality = 0.65 if (not all_direct or has_unconfirmed_cash_leg) else 1.0
-
-        raw_score = 100.0 * (
-            0.50 * seat_cov + 0.30 * cpp_norm + 0.20 * sched_quality
-        )
-
-        # Slight risk discount when assuming >2 seats in a single `2+` bucket vs confirmed split/hybrid
-        if itinerary.requires_two_plus_seat_verification:
-            raw_score -= 4.0
-        # Slight penalty when low-CPP (<0.8c) Cash & Points is used
-        if itinerary.total_matmid_points > 0 and cpp < 0.80:
-            raw_score = min(raw_score, 62.0)
-
         return round(min(100.0, max(0.0, raw_score)), 1)
 
     def _compute_ctos(
@@ -2015,10 +1621,11 @@ class BonusVacationPlannerService:
             if isinstance(itinerary.fulfillment_strategy, Enum)
             else str(itinerary.fulfillment_strategy)
         )
-        cpp = itinerary.cents_per_point_value
-        low_cpp_warn = ""
-        if cpp is not None and cpp < 0.80:
-            low_cpp_warn = f" [אזהרת שווי נקודה נמוך: {cpp:.2f}¢ < 0.80¢]"
+        coverage_he = {
+            "BOTH_DIRECTIONS": "בונוס בשני הכיוונים",
+            "OUTBOUND_ONLY": "בונוס בכיוון אחד בלבד — הלוך",
+            "INBOUND_ONLY": "בונוס בכיוון אחד בלבד — חזור",
+        }.get(str(itinerary.bonus_direction_coverage), "ללא מושבי בונוס")
 
         open_jaw_note = ""
         if itinerary.destination_iata != itinerary.return_origin_iata:
@@ -2037,11 +1644,9 @@ class BonusVacationPlannerService:
             f"{window.start_date.isoformat()} עד {window.end_date.isoformat()} "
             f"({itinerary.trip_nights} לילות) | "
             f"אסטרטגיה: {strat}{open_jaw_note} | "
-            f"נקודות: {itinerary.total_matmid_points:,} | "
-            f"הערכת תשלום במזומן (לא מחייב): ~${itinerary.total_out_of_pocket_cash_usd:,.2f} "
-            f"(חיסכון משוער: ~${itinerary.net_cash_saved_usd:,.2f}) | "
+            f"{coverage_he} | "
             f"ציונים: התאמת חופשת בי״ס={window.holiday_alignment_score:.1f}/100, FBVS={fbvs}{weather_note}, CTOS={ctos}"
-            f"{low_cpp_warn}{weather_tail}"
+            f"{weather_tail}"
         )
 
     def _has_live_only_inventory(self) -> bool:
@@ -2649,10 +2254,10 @@ class BonusVacationPlannerService:
         )
         live_only_inventory = self._has_live_only_inventory()
         n_seated, _ = FamilyBaggageNormalizer.count_seated_and_lap_passengers(active_profile)
-        has_household_points = bool(
-            self.wallet_engine._prepare_working_wallets(
-                active_profile, query.enabled_loyalty_programs
-            )
+        # Points the household can spend on El Al bonus tickets (request override, else the
+        # profile / its wallets). Used only for the one-ticket minimum filter further down.
+        effective_points_balance = self.wallet_engine.effective_elal_points_balance(
+            active_profile, query.enabled_loyalty_programs
         )
 
         # Batch pre-fetch normalized live award rows once across `[min_w_start, max_w_end]`
@@ -2734,8 +2339,6 @@ class BonusVacationPlannerService:
                 ):
                     continue
 
-                rt_bench_per_pax = float(meta.get("rt_cash_per_pax_usd", 590.0))
-
                 if airline_mode == "EL_AL_ONLY":
                     if not query.search_elal_bonus_tickets:
                         # EL_AL_ONLY with search_elal_bonus_tickets=False -> Commercial Cash Only on El Al
@@ -2754,7 +2357,7 @@ class BonusVacationPlannerService:
                                 profile=active_profile,
                                 outbound_award=None,
                                 inbound_award=None,
-                                cash_benchmark_per_pax=rt_bench_per_pax,
+                                cash_benchmark_per_pax=0.0,
                                 strategy="COMMERCIAL_CASH_ONLY",
                                 preferred_cabins=query.preferred_cabins,
                                 enabled_programs=query.enabled_loyalty_programs,
@@ -2813,35 +2416,24 @@ class BonusVacationPlannerService:
                             or self.calendar_service.is_tlv_airport_closed(window.end_date)
                         ):
                             continue
-                        strategies_to_try = (
-                            ["ONE_WAY_BONUS_ONE_WAY_CASH", "COMMERCIAL_CASH_ONLY"]
-                            if has_household_points
-                            else ["COMMERCIAL_CASH_ONLY"]
-                        )
+                        strategies_to_try = ["ONE_WAY_BONUS_ONE_WAY_CASH"]
                     else:
-                        strategies_to_try = (
-                            [
-                                "HYBRID_BONUS_PLUS_CASH",
-                                "SPLIT_CABIN_BONUS",
-                                "FULL_BONUS_SAME_CABIN",
-                                "MULTI_CLUB_PER_PASSENGER_SPLIT",
-                                "ONE_WAY_BONUS_ONE_WAY_CASH",
-                                "CASH_AND_POINTS",
-                            ]
-                            if has_household_points
-                            else ["COMMERCIAL_CASH_ONLY"]
-                        )
-                    window_dest_added_bonus = False
+                        strategies_to_try = [
+                            "HYBRID_BONUS_PLUS_CASH",
+                            "SPLIT_CABIN_BONUS",
+                            "FULL_BONUS_SAME_CABIN",
+                            "MULTI_CLUB_PER_PASSENGER_SPLIT",
+                            "ONE_WAY_BONUS_ONE_WAY_CASH",
+                            "CASH_AND_POINTS",
+                        ]
                     for strat_name in strategies_to_try:
-                        if is_single_dir_live and strat_name == "COMMERCIAL_CASH_ONLY" and window_dest_added_bonus:
-                            continue
                         if strat_name == "HYBRID_BONUS_PLUS_CASH" and not query.allow_hybrid_bonus_cash:
                             continue
                         itin_dict = self.wallet_engine.allocate_family_tickets(
                             profile=active_profile,
                             outbound_award=out_aw,
                             inbound_award=in_aw,
-                            cash_benchmark_per_pax=rt_bench_per_pax,
+                            cash_benchmark_per_pax=0.0,
                             strategy=strat_name,
                             preferred_cabins=query.preferred_cabins,
                             enabled_programs=query.enabled_loyalty_programs,
@@ -2852,8 +2444,6 @@ class BonusVacationPlannerService:
                             itin = FlightItinerary.from_dict(itin_dict)
                             if not (query.min_trip_nights <= itin.trip_nights <= query.max_trip_nights):
                                 continue
-                            if strat_name == "ONE_WAY_BONUS_ONE_WAY_CASH":
-                                window_dest_added_bonus = True
                             raw_proposals.append(
                                 self._make_proposal_from_itinerary(
                                     query=query,
@@ -2879,7 +2469,7 @@ class BonusVacationPlannerService:
                             profile=active_profile,
                             outbound_award=None,
                             inbound_award=None,
-                            cash_benchmark_per_pax=rt_bench_per_pax,
+                            cash_benchmark_per_pax=0.0,
                             strategy="COMMERCIAL_CASH_ONLY",
                             preferred_cabins=query.preferred_cabins,
                             enabled_programs=query.enabled_loyalty_programs,
@@ -2903,14 +2493,11 @@ class BonusVacationPlannerService:
                     in_aw = window_inbound_by_dest.get(d_in)
                     if out_aw is None or in_aw is None:
                         continue
-                    bench_oj = float(
-                        DESTINATION_CATALOG.get(d_out, {}).get("rt_cash_per_pax_usd", 590.0)
-                    )
                     oj_dict = self.wallet_engine.allocate_family_tickets(
                         profile=active_profile,
                         outbound_award=out_aw,
                         inbound_award=in_aw,
-                        cash_benchmark_per_pax=bench_oj,
+                        cash_benchmark_per_pax=0.0,
                         strategy="ONE_WAY_BONUS_ONE_WAY_CASH",
                         preferred_cabins=query.preferred_cabins,
                         enabled_programs=query.enabled_loyalty_programs,
@@ -2945,65 +2532,33 @@ class BonusVacationPlannerService:
                 )
             ]
 
+        # Run 11 (U4, R2, U3): a bonus search returns only results with bonus seats in at
+        # least one direction. A positive Matmid balance is compared only with the points
+        # needed for ONE bonus ticket of the result, never with an all-passenger total;
+        # a balance of 0 (or none) means "not entered" and filters nothing.
+        if airline_mode == "EL_AL_ONLY" and query.search_elal_bonus_tickets:
+            raw_proposals = [
+                p
+                for p in raw_proposals
+                if p.itinerary is not None
+                and p.itinerary.bonus_direction_coverage != "NONE"
+            ]
+            if effective_points_balance > 0:
+                raw_proposals = [
+                    p
+                    for p in raw_proposals
+                    if p.itinerary is not None
+                    and (
+                        p.itinerary.min_points_per_bonus_ticket is None
+                        or p.itinerary.min_points_per_bonus_ticket
+                        <= effective_points_balance
+                    )
+                ]
+
         if not raw_proposals:
             if persist_results:
                 self.repository.save_search_query(query)
             return []
-
-        # Finalize FBVS_cash across commercial cash proposals in the batch and compute CTOS
-        cash_proposals = [
-            p
-            for p in raw_proposals
-            if p.itinerary is not None
-            and p.itinerary.fulfillment_strategy == FulfillmentStrategy.COMMERCIAL_CASH_ONLY
-        ]
-        if cash_proposals:
-            costs = [p.itinerary.total_out_of_pocket_cash_usd for p in cash_proposals if p.itinerary]
-            benchmarks = [p.itinerary.full_cash_benchmark_usd for p in cash_proposals if p.itinerary]
-            c_min = min(costs)
-            c_max = max(max(costs), max(benchmarks) * 1.15, c_min + 250.0)
-            denom = max(c_max - c_min, 1.0)
-            for p in cash_proposals:
-                assert p.itinerary is not None
-                cost = p.itinerary.total_out_of_pocket_cash_usd
-                all_dir = all(
-                    leg.is_direct
-                    for leg in (p.itinerary.outbound_legs + p.itinerary.inbound_legs)
-                )
-                stop_pen = 0.0 if all_dir else 12.0
-                fbvs_c = round(
-                    min(100.0, max(0.0, 100.0 * (1.0 - (cost - c_min) / denom) - stop_pen)),
-                    1,
-                )
-                p.flight_bonus_value_score = fbvs_c
-                p.combined_trip_optimization_score = self._compute_ctos(
-                    p.holiday_alignment_score,
-                    fbvs_c,
-                    wss=p.weather_suitability_score,
-                    has_weather_filter=has_weather_filter,
-                    min_weather_threshold=effective_tau,
-                )
-                p.explanation_summary_he = self._build_explanation_he(
-                    window=CandidateVacationWindow(
-                        start_date=p.itinerary.departure_date,
-                        end_date=p.itinerary.return_date,
-                        trip_nights=p.itinerary.trip_nights,
-                        window_set_type=p.window_set_type,
-                        associated_holiday_codes=p.associated_holiday_codes,
-                        school_absence_penalty=p.school_absence_penalty,
-                        childcare_coverage_gain=p.childcare_coverage_gain,
-                        holiday_alignment_score=p.holiday_alignment_score,
-                    ),
-                    itinerary=p.itinerary,
-                    fbvs=fbvs_c,
-                    ctos=p.combined_trip_optimization_score,
-                    wss=p.weather_suitability_score if has_weather_filter else None,
-                    weather_summary_he=(
-                        p.weather_metrics.weather_summary_he
-                        if p.weather_metrics
-                        else ""
-                    ),
-                )
 
         # Apply HARD_THRESHOLD filtering with graceful 3-option fallback when requested
         if has_weather_filter and query.weather_filter_mode == "HARD_THRESHOLD":
@@ -3032,25 +2587,68 @@ class BonusVacationPlannerService:
                 if len(relaxed_passing) >= 3:
                     raw_proposals = relaxed_passing
 
+        # Fixed strategy order used only to break ties between equally scored results.
+        strategy_rank: dict[str, int] = {
+            name: idx
+            for idx, name in enumerate(
+                (
+                    "FULL_BONUS_SAME_CABIN",
+                    "SPLIT_CABIN_BONUS",
+                    "MULTI_CLUB_PER_PASSENGER_SPLIT",
+                    "HYBRID_BONUS_PLUS_CASH",
+                    "ONE_WAY_BONUS_ONE_WAY_CASH",
+                    "CASH_AND_POINTS",
+                    "COMMERCIAL_CASH_ONLY",
+                )
+            )
+        }
+
         def _proposal_sort_key(p: VacationOptionProposal) -> tuple[Any, ...]:
+            """Ascending key: scores first (higher is better), then non-cash tie-breakers.
+
+            No cash value takes part in the ordering. Equal scores are ordered by the fixed
+            strategy order, more bonus tickets first, then dates, destination, carrier and
+            flight numbers, so the order never depends on the order results were produced in.
+            """
+            itin = p.itinerary
+            if itin is not None:
+                strat_code = (
+                    itin.fulfillment_strategy.value
+                    if isinstance(itin.fulfillment_strategy, Enum)
+                    else str(itin.fulfillment_strategy)
+                )
+                all_legs = list(itin.outbound_legs) + list(itin.inbound_legs)
+                tie_breakers: tuple[Any, ...] = (
+                    strategy_rank.get(strat_code, len(strategy_rank)),
+                    -int(itin.bonus_tickets_count),
+                    itin.departure_date.isoformat(),
+                    itin.return_date.isoformat(),
+                    str(itin.destination_iata or ""),
+                    str(itin.return_origin_iata or ""),
+                    str(itin.primary_carrier_iata or ""),
+                    "/".join(str(leg.flight_number or "") for leg in all_legs),
+                    "/".join(str(leg.departure_time_local or "") for leg in all_legs),
+                )
+            else:
+                tie_breakers = (len(strategy_rank), 0, "", "", "", "", "", "", "")
             if has_weather_filter:
                 return (
-                    p.weather_suitability_score >= effective_tau,
-                    p.combined_trip_optimization_score,
-                    p.weather_suitability_score,
-                    p.flight_bonus_value_score,
-                    p.holiday_alignment_score,
-                    p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
+                    0 if p.weather_suitability_score >= effective_tau else 1,
+                    -p.combined_trip_optimization_score,
+                    -p.weather_suitability_score,
+                    -p.flight_bonus_value_score,
+                    -p.holiday_alignment_score,
+                    *tie_breakers,
                 )
             return (
-                p.combined_trip_optimization_score,
-                p.flight_bonus_value_score,
-                p.holiday_alignment_score,
-                p.itinerary.net_cash_saved_usd if p.itinerary else 0.0,
+                -p.combined_trip_optimization_score,
+                -p.flight_bonus_value_score,
+                -p.holiday_alignment_score,
+                *tie_breakers,
             )
 
-        # Sort descending
-        raw_proposals.sort(key=_proposal_sort_key, reverse=True)
+        # Best first
+        raw_proposals.sort(key=_proposal_sort_key)
 
         # Keep top proposals while ensuring strategy, destination, and canonical benchmark diversity
         selected_proposals: list[VacationOptionProposal] = []
@@ -3099,7 +2697,7 @@ class BonusVacationPlannerService:
                 selected_proposals.append(p)
                 selected_ids.add(p.id)
 
-        selected_proposals.sort(key=_proposal_sort_key, reverse=True)
+        selected_proposals.sort(key=_proposal_sort_key)
         selected_proposals = selected_proposals[:36]
 
         if persist_results:
@@ -3124,10 +2722,7 @@ class BonusVacationPlannerService:
         n_seated: int,
     ) -> VacationOptionProposal:
         itinerary.search_query_id = query.id
-        if itinerary.utilizes_elal_bonus:
-            fbvs = self._compute_fbvs_bonus(itinerary, n_seated)
-        else:
-            fbvs = 70.0
+        fbvs = self._compute_fbvs_bonus(itinerary, n_seated)
 
         has_weather_filter = bool(query.preferred_vacation_types)
         effective_tau = self.weather_engine.get_effective_threshold(

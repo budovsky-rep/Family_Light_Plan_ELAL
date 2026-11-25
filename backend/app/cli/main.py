@@ -484,7 +484,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     f"Strategy={it.get('fulfillment_strategy', '')} | "
                     f"HAS={float(p.get('holiday_alignment_score', 0.0)):.1f} | "
                     f"CTOS={float(p.get('combined_trip_optimization_score', 0.0)):.2f} | "
-                    f"Est. Cash: ~${float(it.get('total_out_of_pocket_cash_usd', 0.0)):,.0f} (non-binding)"
+                    f"Bonus={it.get('bonus_direction_coverage') or 'NONE'}"
                 )
         return 0
 

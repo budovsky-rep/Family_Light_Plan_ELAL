@@ -29,8 +29,11 @@ from backend.app.schemas.domain import (
     PassengerLoyaltyWallet,
 )
 from tests.e2e.test_tier1_features import (
+    RUN11_REMOVED_RESPONSE_KEYS,
     Tier1BaseTestCase,
     _as_dict,
+    _assert_run11_proposal_contract,
+    _assert_run11_search_response_contract,
     _get_field,
     _save_profile_to_repo_or_sqlite,
 )
@@ -75,18 +78,34 @@ class Tier3PairwiseTestBase(Tier1BaseTestCase):
         payload.setdefault("family_profile_id", prof.id)
         proposals = planner.search_vacations(payload, profile=prof)
         self.assertGreater(len(proposals), 0, f"Expected proposals for {payload}")
+        is_bonus_search = (
+            payload.get("airline_selection_mode") == "EL_AL_ONLY"
+            and payload.get("search_elal_bonus_tickets", True) is not False
+        )
         for p in proposals:
             self.assertGreaterEqual(p.holiday_alignment_score, 0.0)
             self.assertLessEqual(p.holiday_alignment_score, 100.0)
             self.assertFalse(hasattr(p, "parent_pto_days_used"))
             self.assertFalse(hasattr(p, "vacation_utilization_score"))
-            self.assertIn("~$", p.explanation_summary_he)
             self.assertGreaterEqual(p.flight_bonus_value_score, 0.0)
             self.assertLessEqual(p.flight_bonus_value_score, 100.0)
             self.assertGreaterEqual(p.combined_trip_optimization_score, 0.0)
             self.assertLessEqual(p.combined_trip_optimization_score, 100.0)
             self.assertIsNotNone(p.itinerary)
-            self.assertTrue(p.itinerary.is_cash_price_estimate)
+            # Run 11: no cash / points-total keys, the new seat and direction keys are
+            # present and consistent, the explanation is free of price wording and the
+            # bonus score is the documented function of seats and party size.
+            prop_dict = _as_dict(p)
+            for removed_top in RUN11_REMOVED_RESPONSE_KEYS:
+                self.assertNotIn(removed_top, prop_dict)
+            itin = _assert_run11_proposal_contract(self, p)
+            if is_bonus_search:
+                # A bonus search returns only results with bonus seats in some direction
+                self.assertNotEqual(itin["bonus_direction_coverage"], "NONE")
+                self.assertNotEqual(itin["fulfillment_strategy"], "COMMERCIAL_CASH_ONLY")
+            if itin["fulfillment_strategy"] == "COMMERCIAL_CASH_ONLY":
+                self.assertEqual(itin["bonus_direction_coverage"], "NONE")
+                self.assertEqual(p.flight_bonus_value_score, 0.0)
         return proposals
 
 
@@ -109,6 +128,7 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertGreater(body["count"], 0)
+        _assert_run11_search_response_contract(self, body, is_bonus_search=True)
         strats = {p["itinerary"]["fulfillment_strategy"] for p in body["proposals"]}
         self.assertTrue(bool(strats & {"FULL_BONUS_SAME_CABIN", "SPLIT_CABIN_BONUS", "HYBRID_BONUS_PLUS_CASH"}))
         self.assertTrue(any(p["itinerary"]["requires_two_plus_seat_verification"] for p in body["proposals"]))
@@ -124,11 +144,18 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
             "date_selection_mode": "SPECIFIC_DATES", "airline_selection_mode": "ALL_AIRLINES",
             "specific_departure_date": "2027-04-11", "specific_return_date": "2027-04-18", "flex_days_plus_minus": 2, "destination_iatas": ["FCO"],
         })
-        self.assertTrue(any(_get_field(p.itinerary, "fulfillment_strategy") == "COMMERCIAL_CASH_ONLY" for p in proposals))
-        for p in proposals:
-            it = p.itinerary
-            self.assertGreaterEqual(it.total_baggage_fees_usd, 0.0)
-            self.assertAlmostEqual(it.total_out_of_pocket_cash_usd, it.total_supplemental_cash_fares_usd + it.total_baggage_fees_usd + it.total_taxes_and_fees_usd, places=1)
+        commercial = [p for p in proposals if _get_field(p.itinerary, "fulfillment_strategy") == "COMMERCIAL_CASH_ONLY"]
+        self.assertGreater(len(commercial), 0)
+        for p in commercial:
+            # 2 adults + children aged 4 and 14 = 4 seated passengers, all on commercial
+            # tickets; a commercial-only result states no bonus seats and no points figure.
+            it = p.itinerary.to_dict()
+            self.assertEqual(it["seated_passengers_count"], 4)
+            self.assertEqual(it["cash_tickets_count"], 4)
+            self.assertEqual(it["bonus_tickets_count"], 0)
+            self.assertEqual(it["bonus_direction_coverage"], "NONE")
+            self.assertIsNone(it["min_points_per_bonus_ticket"])
+            self.assertEqual(p.flight_bonus_value_score, 0.0)
 
     def test_pw03_specific_elal_daycare_avios_split_cabin(self) -> None:
         children = [ChildFramework(child_age_years=2, framework_type="DAYCARE_SUPERVISED", school_week_days=6)]
@@ -180,8 +207,14 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
         self.assertTrue(all(p.itinerary.destination_iata == "FCO" for p in proposals))
         hybrid = [p for p in proposals if _get_field(p.itinerary, "fulfillment_strategy") == "HYBRID_BONUS_PLUS_CASH"]
         self.assertGreater(len(hybrid), 0)
-        self.assertGreater(hybrid[0].itinerary.total_matmid_points, 0)
-        self.assertGreater(hybrid[0].itinerary.total_supplemental_cash_fares_usd, 0.0)
+        hyb_it = hybrid[0].itinerary.to_dict()
+        self.assertEqual(hyb_it["seated_passengers_count"], 5)
+        self.assertGreaterEqual(hyb_it["bonus_tickets_count"], 1)
+        self.assertGreaterEqual(hyb_it["cash_tickets_count"], 1)
+        self.assertEqual(hyb_it["bonus_tickets_count"] + hyb_it["cash_tickets_count"], 5)
+        self.assertEqual(hyb_it["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(hyb_it["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(hyb_it["min_points_basis"], "ROUND_TRIP")
 
     def test_pw06_specific_all_airlines_elem46_miles_and_more_cash_only(self) -> None:
         children = [ChildFramework(child_age_years=10, framework_type="ELEMENTARY_4_6", school_week_days=5)]
@@ -236,7 +269,12 @@ class TestTier3PairwiseCombinatorialMatrix(Tier3PairwiseTestBase):
             "specific_departure_date": "2027-08-17", "specific_return_date": "2027-08-24", "flex_days_plus_minus": 0, "destination_iatas": ["ATH"],
         })
         self.assertEqual(proposals[0].per_child_impact[0].bridge_school_days_missed, 0)
-        self.assertTrue(any(p.itinerary.cents_per_point_value >= 0.0 for p in proposals))
+        cp = [p for p in proposals if _get_field(p.itinerary, "fulfillment_strategy") == "CASH_AND_POINTS"]
+        self.assertGreater(len(cp), 0)
+        cp_it = cp[0].itinerary.to_dict()
+        self.assertIsNone(cp_it["min_points_per_bonus_ticket"])
+        self.assertIsNone(cp_it["min_points_basis"])
+        self.assertNotEqual(cp_it["bonus_direction_coverage"], "NONE")
         self.assertIn(proposals[0].itinerary.fulfillment_strategy, ("CASH_AND_POINTS", "FULL_BONUS_SAME_CABIN", "HYBRID_BONUS_PLUS_CASH", "SPLIT_CABIN_BONUS", "COMMERCIAL_CASH_ONLY"))
 
     def test_pw10_specific_all_airlines_haredi_israeli_cc_cash_only(self) -> None:

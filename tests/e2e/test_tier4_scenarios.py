@@ -38,8 +38,11 @@ from backend.app.schemas.domain import (
     suggest_framework_for_age,
 )
 from tests.e2e.test_tier1_features import (
+    RUN11_FORBIDDEN_PRICE_TEXT,
+    RUN11_NEW_ITINERARY_KEYS,
     Tier1BaseTestCase,
     _as_dict,
+    _assert_run11_search_response_contract,
     _get_field,
     _save_profile_to_repo_or_sqlite,
 )
@@ -101,7 +104,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "max_bridge_days_shift": 2,
         })
         self.assertEqual(search_resp.status_code, 200)
-        proposals = search_resp.json()["proposals"]
+        search_body = search_resp.json()
+        _assert_run11_search_response_contract(self, search_body, is_bonus_search=True)
+        proposals = search_body["proposals"]
         self.assertGreater(len(proposals), 0)
         apr11_hybrid = [
             p for p in proposals
@@ -112,15 +117,30 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertGreater(len(apr11_hybrid), 0)
         flagship = apr11_hybrid[0]
         it = flagship["itinerary"]
-        self.assertEqual(it["total_matmid_points"], 142000)
-        self.assertAlmostEqual(it["total_taxes_and_fees_usd"], 390.0, delta=25.0)
-        self.assertAlmostEqual(it["total_supplemental_cash_fares_usd"], 460.0, delta=30.0)
-        self.assertAlmostEqual(it["net_cash_saved_usd"], 2100.0, delta=100.0)
-        self.assertAlmostEqual(it["cents_per_point_value"], 1.48, delta=0.10)
-        self.assertTrue(it["is_cash_price_estimate"])
-        self.assertIn("~$", flagship["explanation_summary_he"])
+        # Seeded Rome 2027-04-11..18 for 5 seated passengers (2 adults + 3 children):
+        # Outbound LY381 has E=2+, P=2+, B=0 -> 4 bonus seats; Inbound LY384 has E=2+, P=1, B=2+ -> 5 bonus seats.
+        # Round-trip seat slots = min(2,2) econ + min(2,1+1) prem = 4 -> hybrid allocates 4 bonus + 1 commercial.
+        # Cheapest single round-trip bonus ticket = 15,000 + 15,000 = 30,000 pts.
+        # Seat-only FBVS (PROJECT.md E2): round(100 * (min(1, 4/5) + min(1, 5/5)) / 2, 1) = 90.0.
+        # Overall CTOS (PROJECT.md E2 / U2): round(0.55 * HAS + 0.45 * FBVS, 1) = round(0.55 * 68.4 + 40.5, 1) = 78.1.
+        self.assertEqual(it["seated_passengers_count"], 5)
+        self.assertEqual(it["bonus_tickets_count"], 4)
+        self.assertEqual(it["cash_tickets_count"], 1)
+        self.assertEqual(it["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(it["outbound_bonus_seats"], 4)
+        self.assertEqual(it["inbound_bonus_seats"], 5)
+        self.assertEqual(it["min_points_per_bonus_ticket"], 30000)
+        self.assertEqual(it["min_points_basis"], "ROUND_TRIP")
+        self.assertIn("בונוס בשני הכיוונים", flagship["explanation_summary_he"])
+        self.assertEqual(flagship["flight_bonus_value_score"], 90.0)
         self.assertAlmostEqual(flagship["holiday_alignment_score"], 68.4, places=1)
-        self.assertGreater(flagship["combined_trip_optimization_score"], 80.0)
+        expected_ctos = round(
+            0.55 * flagship["holiday_alignment_score"]
+            + 0.45 * flagship["flight_bonus_value_score"],
+            1,
+        )
+        self.assertAlmostEqual(flagship["combined_trip_optimization_score"], expected_ctos, places=1)
+        self.assertAlmostEqual(flagship["combined_trip_optimization_score"], 78.1, delta=0.1)
 
         maximizer = self.get_maximizer(self.get_calendar_service(repo))
         prof_obj = self.get_default_profile(db_path)
@@ -261,15 +281,24 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "enabled_loyalty_programs": ["ELAL_MATMID", "BRITISH_AVIOS", "FLYING_BLUE", "MILES_AND_MORE", "AMEX_MR_ISRAEL"],
         })
         self.assertEqual(resp.status_code, 200)
-        proposals = resp.json()["proposals"]
+        body = resp.json()
+        _assert_run11_search_response_contract(self, body, is_bonus_search=True)
+        proposals = body["proposals"]
         self.assertGreater(len(proposals), 0)
-        self.assertTrue(any(len(p["itinerary"]["points_used_by_wallet"]) > 0 for p in proposals))
+        mc_props = [
+            p for p in proposals
+            if p["itinerary"]["fulfillment_strategy"] == "MULTI_CLUB_PER_PASSENGER_SPLIT"
+        ]
+        self.assertGreater(len(mc_props), 0)
         for p in proposals:
             it = p["itinerary"]
             self.assertNotIn("family_ticket_allocation", it)
             self.assertEqual(it["seated_passengers_count"], 5)
-            self.assertGreaterEqual(it["bonus_tickets_count"], 0)
-            self.assertTrue(it["is_cash_price_estimate"])
+            self.assertGreaterEqual(it["bonus_tickets_count"], 1)
+            self.assertNotEqual(it["bonus_direction_coverage"], "NONE")
+        for mc in mc_props:
+            self.assertEqual(mc["itinerary"]["min_points_basis"], "ROUND_TRIP")
+            self.assertGreater(mc["itinerary"]["min_points_per_bonus_ticket"], 0)
 
     def test_scenario_07_mode1_specific_dates_without_frameworks_and_age_classification(self) -> None:
         self.assertEqual(classify_passenger_type(1, infant_seat=False), "INFANT_LAP")
@@ -363,12 +392,19 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "preferred_cabins": ["ECONOMY", "PREMIUM", "BUSINESS"],
         })
         self.assertEqual(resp.status_code, 200)
-        proposals = resp.json()["proposals"]
+        body = resp.json()
+        _assert_run11_search_response_contract(self, body, is_bonus_search=True)
+        proposals = body["proposals"]
         self.assertGreater(len(proposals), 0)
         strats = {p["itinerary"]["fulfillment_strategy"] for p in proposals}
         self.assertIn("SPLIT_CABIN_BONUS", strats)
         split_props = [p for p in proposals if p["itinerary"]["fulfillment_strategy"] == "SPLIT_CABIN_BONUS"]
-        self.assertAlmostEqual(split_props[0]["itinerary"]["total_supplemental_cash_fares_usd"], 0.0)
+        split_it = split_props[0]["itinerary"]
+        self.assertEqual(split_it["cash_tickets_count"], 0)
+        self.assertEqual(split_it["bonus_tickets_count"], split_it["seated_passengers_count"])
+        self.assertEqual(split_it["bonus_direction_coverage"], "BOTH_DIRECTIONS")
+        self.assertEqual(split_it["min_points_basis"], "ROUND_TRIP")
+        self.assertGreater(split_it["min_points_per_bonus_ticket"], 0)
         has_open_jaw_or_one_way = any(
             p["itinerary"]["fulfillment_strategy"] == "ONE_WAY_BONUS_ONE_WAY_CASH"
             or p["itinerary"]["return_origin_iata"] != p["itinerary"]["destination_iata"]
@@ -477,8 +513,13 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         ])
         self.assertEqual(r_srch.returncode, 0, r_srch.stderr)
         self.assertTrue(json_out.exists() and json_out.stat().st_size > 50)
+        _assert_run11_search_response_contract(
+            self, json.loads(json_out.read_text("utf-8")), is_bonus_search=True
+        )
         self.assertIn("HAS=", r_srch.stdout)
-        self.assertIn("~$", r_srch.stdout)
+        self.assertIn("Bonus=", r_srch.stdout)
+        for forbidden in RUN11_FORBIDDEN_PRICE_TEXT:
+            self.assertNotIn(forbidden, r_srch.stdout)
 
         r_bad_ics = run_cli([
             "search", "--mode", "holiday-direct", "--holiday", "PESACH", "--year", "2027",
@@ -1629,6 +1670,10 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertIn("מאגר כרטיסי הבונוס של אל על", guest_draft_state["awardNoteText"])
             self.assertIn("מאגר טיסות הבונוס מתעדכן פעם ביום", guest_draft_state["awardNoteBodyText"])
             self.assertNotIn("rbddataclients", guest_draft_state["awardNoteText"].lower())
+            for cash_tok in ("הערכת מחיר", "הערכות מחיר", "במזומן", "חיסכון משוער", "¢", "~$", "Est. Cash"):
+                self.assertNotIn(cash_tok, guest_draft_state["zeroAlertText"])
+                self.assertNotIn(cash_tok, guest_draft_state["awardNoteText"])
+                self.assertNotIn(cash_tok, guest_draft_state["awardNoteBodyText"])
             self.assertIn("התחברות עם Gmail", guest_draft_state["btnTextBefore"])
             self.assertTrue(
                 str(guest_draft_state["assignedUrl"]).startswith(
@@ -1668,8 +1713,14 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(post_login_state["matmid"], "150000")
             self.assertFalse(post_login_state["saveBtnHiddenAfterLogin"])
             self.assertFalse(post_login_state["hasZeroAlertAfterLogin"])
-            self.assertIn("~$", post_login_state["firstCardText"])
-            self.assertIn("הערכת מחיר במזומן", post_login_state["firstCardText"])
+            for removed_card_tok in ("~$", "הערכת מחיר במזומן", "חיסכון משוער", "¢", "נקודות מתמיד"):
+                self.assertNotIn(removed_card_tok, post_login_state["firstCardText"])
+            self.assertTrue(
+                "בונוס בשני הכיוונים" in post_login_state["firstCardText"]
+                or "בונוס בכיוון אחד בלבד" in post_login_state["firstCardText"]
+            )
+            self.assertIn("כדאיות בונוס", post_login_state["firstCardText"])
+            self.assertIn("/100", post_login_state["firstCardText"])
             self.assertFalse(post_login_state["feedbackHidden"])
             self.assertIn("נשמר", post_login_state["feedback"])
             self.assertNotIn("fvp_pending_oauth_draft", post_login_state["ssRemaining"])
@@ -1831,8 +1882,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         )
         self.assertEqual(s_resp.status_code, 200)
         s_body = s_resp.json()
-        self.assertIn("cash_pricing_disclaimer_he", s_body)
-        self.assertIn("cash_pricing_disclaimer_en", s_body)
+        _assert_run11_search_response_contract(self, s_body, is_bonus_search=True)
         self.assertGreaterEqual(len(s_body["proposals"]), 2)
         p0 = s_body["proposals"][0]
         it0 = p0["itinerary"]
@@ -1841,11 +1891,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "bonus_tickets_count",
             "cash_tickets_count",
             "primary_cabin",
-            "estimated_cash_usd",
-            "is_cash_price_estimate",
+            *RUN11_NEW_ITINERARY_KEYS,
         ):
             self.assertIn(req_it_key, it0)
-        self.assertTrue(it0["is_cash_price_estimate"])
         self.assertNotIn("family_ticket_allocation", it0)
         self.assertIn("holiday_alignment_score", p0)
         for removed_prop_key in (
@@ -2862,6 +2910,660 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 })()"""
             )
             self.assertTrue(ls_vis)
+
+    def test_scenario_24_run11_seat_based_cards_direction_statements_and_min_points_e2e(
+        self,
+    ) -> None:
+        """Scenario 24 (Run 11 R1–R4 & U3–U5): Headless Chrome verification of price-free seat-based cards, direction coupons, 1-ticket min points, mixed strategies & zero-bonus empty state."""
+        import base64 as _b64
+        import re as _re
+        import shutil as _shutil
+        import signal as _signal
+        import socket
+        import struct as _struct
+        import subprocess
+        import time
+        import urllib.parse as _urlparse
+        import urllib.request
+
+        chrome_bin = Path("/usr/bin/google-chrome")
+        self.assertTrue(chrome_bin.exists(), "Headless Chrome binary required at /usr/bin/google-chrome")
+
+        old_lf = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+
+        def _restore_lf() -> None:
+            if old_lf is None:
+                os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+            else:
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_lf
+
+        self.addCleanup(_restore_lf)
+
+        seeded_db_path, _repo = self.make_isolated_env(auto_seed=True)
+        seeded_client = self.get_client(seeded_db_path)
+
+        chrome_tmp = tempfile.TemporaryDirectory(
+            prefix="tier4_scen24_chrome_", ignore_cleanup_errors=True
+        )
+        self.addCleanup(lambda: _shutil.rmtree(chrome_tmp.name, ignore_errors=True))
+        self.addCleanup(chrome_tmp.cleanup)
+
+        html_text = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        css_text = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        js_text = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+
+        inlined_html = _re.sub(
+            r'<link[^>]+(?:fonts\.googleapis\.com|fonts\.gstatic\.com|manifest\.webmanifest)[^>]*>',
+            "",
+            html_text,
+        )
+        inlined_html = _re.sub(r"<noscript>.*?</noscript>", "", inlined_html, flags=_re.S)
+        inlined_html = inlined_html.replace(
+            '<link rel="stylesheet" href="/src/styles/app.css" />',
+            f"<style>{css_text}</style>",
+        )
+        inlined_html = _re.sub(
+            r'<script[^>]+src="/src/app\.js"[^>]*></script>', "", inlined_html
+        )
+        bridge_preamble = """<script>
+(function() {
+  window.__FVP_REFERENCE_DATE__ = '2026-11-19';
+  window.__fvpJsErrors = [];
+  window.addEventListener('error', function(e) { window.__fvpJsErrors.push(String(e.message || e)); });
+  window.addEventListener('unhandledrejection', function(e) { window.__fvpJsErrors.push(String(e.reason || e)); });
+  const _ss = {};
+  const _ls = {};
+  function _mkStore(backing) {
+    return {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(backing, k) ? backing[k] : null; },
+      setItem(k, v) { backing[String(k)] = String(v); },
+      removeItem(k) { delete backing[String(k)]; },
+      clear() { Object.keys(backing).forEach((k) => delete backing[k]); },
+      get length() { return Object.keys(backing).length; }
+    };
+  }
+  Object.defineProperty(window, 'sessionStorage', { value: _mkStore(_ss), configurable: true });
+  Object.defineProperty(window, 'localStorage', { value: _mkStore(_ls), configurable: true });
+  let _reqSeq = 0;
+  const _pending = new Map();
+  window.__fvpResolveFetch = function(id, status, headersObj, bodyText) {
+    const p = _pending.get(id);
+    if (!p) return;
+    _pending.delete(id);
+    p.resolve(new Response(bodyText, { status: status, headers: headersObj || {} }));
+  };
+  window.fetch = function(input, init) {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    if (urlStr.endsWith('/sw.js')) {
+      return Promise.resolve(new Response('', { status: 200, headers: { 'Content-Type': 'application/javascript' } }));
+    }
+    const opts = init || {};
+    const id = ++_reqSeq;
+    return new Promise((resolve, reject) => {
+      _pending.set(id, { resolve, reject });
+      window.__fvpHostFetch(JSON.stringify({
+        id: id,
+        method: opts.method || 'GET',
+        url: urlStr,
+        headers: opts.headers || {},
+        body: opts.body || null
+      }));
+    });
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register = function() { return Promise.resolve({}); };
+  }
+})();
+</script>"""
+        mounted_doc = inlined_html.replace("<head>", "<head>" + bridge_preamble, 1).replace(
+            "</body>", f"<script>{js_text}</script></body>", 1
+        )
+
+        active_browser_client = seeded_client
+        proc_c = subprocess.Popen(
+            [
+                str(chrome_bin),
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={chrome_tmp.name}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        def _kill_chrome() -> None:
+            try:
+                os.killpg(proc_c.pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc_c.wait(timeout=3.0)
+            except Exception:
+                pass
+
+        self.addCleanup(_kill_chrome)
+
+        active_port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
+        deadline = time.time() + 12.0
+        while time.time() < deadline and not active_port_file.exists():
+            time.sleep(0.05)
+        self.assertTrue(active_port_file.exists())
+        cdp_port = int(active_port_file.read_text("utf-8").splitlines()[0].strip())
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5.0) as r_list:
+            targets = json.loads(r_list.read().decode("utf-8"))
+        page_target = next(t for t in targets if t.get("type") == "page")
+        ws_parsed = _urlparse.urlsplit(page_target["webSocketDebuggerUrl"])
+
+        sock = socket.create_connection(("127.0.0.1", cdp_port), timeout=10.0)
+        self.addCleanup(sock.close)
+        ws_key = _b64.b64encode(os.urandom(16)).decode("ascii")
+        sock.sendall(
+            (
+                f"GET {ws_parsed.path} HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{cdp_port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {ws_key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("ascii")
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        ws_leftover = bytearray(buf[buf.index(b"\r\n\r\n") + 4 :])
+
+        def _ws_send_json(obj: dict[str, Any]) -> None:
+            raw_b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            mask = os.urandom(4)
+            ln = len(raw_b)
+            if ln < 126:
+                hdr = bytes([0x81, 0x80 | ln]) + mask
+            elif ln < 65536:
+                hdr = bytes([0x81, 0x80 | 126]) + _struct.pack("!H", ln) + mask
+            else:
+                hdr = bytes([0x81, 0x80 | 127]) + _struct.pack("!Q", ln) + mask
+            sock.sendall(hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(raw_b)))
+
+        def _ws_recv_exact(n: int) -> bytes:
+            while len(ws_leftover) < n:
+                more = sock.recv(65536)
+                if not more:
+                    raise EOFError("CDP WebSocket closed unexpectedly")
+                ws_leftover.extend(more)
+            out_b = bytes(ws_leftover[:n])
+            del ws_leftover[:n]
+            return out_b
+
+        def _ws_recv_msg() -> dict[str, Any]:
+            fragments: list[bytes] = []
+            while True:
+                b0, b1 = _ws_recv_exact(2)
+                fin = bool(b0 & 0x80)
+                opcode = b0 & 0x0F
+                masked_flag = bool(b1 & 0x80)
+                ln = b1 & 0x7F
+                if ln == 126:
+                    ln = _struct.unpack("!H", _ws_recv_exact(2))[0]
+                elif ln == 127:
+                    ln = _struct.unpack("!Q", _ws_recv_exact(8))[0]
+                mkey = _ws_recv_exact(4) if masked_flag else b""
+                payload_b = _ws_recv_exact(ln)
+                if masked_flag:
+                    payload_b = bytes(b ^ mkey[i % 4] for i, b in enumerate(payload_b))
+                if opcode == 0x9:
+                    mask_p = os.urandom(4)
+                    sock.sendall(
+                        bytes([0x8A, 0x80 | len(payload_b)])
+                        + mask_p
+                        + bytes(b ^ mask_p[i % 4] for i, b in enumerate(payload_b))
+                    )
+                    continue
+                fragments.append(payload_b)
+                if fin:
+                    return json.loads(b"".join(fragments).decode("utf-8"))
+
+        msg_counter = 0
+
+        def _handle_binding_event(ev_msg: dict[str, Any]) -> None:
+            if (
+                ev_msg.get("method") == "Runtime.bindingCalled"
+                and ev_msg.get("params", {}).get("name") == "__fvpHostFetch"
+            ):
+                req_info = json.loads(ev_msg["params"]["payload"])
+                parsed_u = _urlparse.urlsplit(req_info["url"])
+                path_qs = parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")
+                j_body = json.loads(req_info["body"]) if req_info.get("body") else None
+                resp_obj = active_browser_client.request(
+                    req_info["method"],
+                    path_qs,
+                    json_body=j_body,
+                    headers=req_info.get("headers") or {},
+                )
+                nonlocal msg_counter
+                msg_counter += 1
+                expr = (
+                    f"window.__fvpResolveFetch({int(req_info['id'])}, "
+                    f"{int(resp_obj.status_code)}, {json.dumps(dict(resp_obj.headers))}, {json.dumps(resp_obj.text)});"
+                )
+                _ws_send_json({"id": msg_counter, "method": "Runtime.evaluate", "params": {"expression": expr}})
+
+        def _cdp_call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            nonlocal msg_counter
+            msg_counter += 1
+            target_id = msg_counter
+            _ws_send_json({"id": target_id, "method": method, "params": params or {}})
+            while True:
+                incoming = _ws_recv_msg()
+                if "method" in incoming:
+                    _handle_binding_event(incoming)
+                    continue
+                if incoming.get("id") == target_id:
+                    return incoming
+
+        def _cdp_eval(js_expr: str) -> Any:
+            res = _cdp_call(
+                "Runtime.evaluate",
+                {"expression": js_expr, "awaitPromise": True, "returnByValue": True},
+            )
+            inner = res.get("result", {})
+            if "exceptionDetails" in inner:
+                raise AssertionError(f"CDP JS exception: {inner['exceptionDetails']}")
+            return inner.get("result", {}).get("value")
+
+        _cdp_call("Page.enable")
+        _cdp_call("Runtime.enable")
+        _cdp_call("Runtime.addBinding", {"name": "__fvpHostFetch"})
+        frame_id = _cdp_call("Page.getFrameTree")["result"]["frameTree"]["frame"]["id"]
+
+        _cdp_call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False},
+        )
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 2), 30))"
+            ):
+                break
+
+        forbidden_ui_tokens = (
+            "הערכת מחיר במזומן",
+            "חיסכון משוער",
+            "¢",
+            "~$",
+            "Est. Cash",
+            "Est. Net Saved",
+            "נקודות מתמיד",
+            "Matmid Points",
+        )
+
+        # 0. Verify balance-0 guest banners (`#zero-points-search-alert` & `#award-source-note-banner`) are cash-free and keep required hooks
+        boot_banners = _cdp_eval(
+            """(() => {
+              const zeroEl = document.getElementById('zero-points-search-alert');
+              const focusCta = zeroEl ? zeroEl.querySelector('[data-focus-matmid="true"]') : null;
+              const noteEl = document.getElementById('award-source-note-banner');
+              const noteSummary = noteEl ? noteEl.querySelector('.award-note-summary') : null;
+              const noteBody = noteEl ? noteEl.querySelector('.award-note-body') : null;
+              return {
+                jsErrors: window.__fvpJsErrors,
+                hasZeroAlert: Boolean(zeroEl),
+                zeroText: zeroEl ? zeroEl.textContent : '',
+                hasFocusCta: Boolean(focusCta),
+                noteSummaryText: noteSummary ? noteSummary.textContent : '',
+                noteBodyHtml: noteBody ? noteBody.innerHTML : '',
+                noteBodyText: noteBody ? noteBody.textContent : ''
+              };
+            })()"""
+        )
+        self.assertEqual(boot_banners["jsErrors"], [])
+        self.assertTrue(boot_banners["hasZeroAlert"])
+        self.assertTrue(boot_banners["hasFocusCta"])
+        self.assertIn("יתרת מתמיד 0", boot_banners["zeroText"])
+        self.assertIn("מאגר כרטיסי הבונוס של אל על", boot_banners["noteSummaryText"])
+        self.assertIn("<strong>מאגר טיסות הבונוס מתעדכן פעם ביום.</strong>", boot_banners["noteBodyHtml"])
+        for tok in (*forbidden_ui_tokens, "מחיר", "מזומן", "תעריפי ייחוס"):
+            self.assertNotIn(tok, boot_banners["zeroText"])
+            self.assertNotIn(tok, boot_banners["noteSummaryText"])
+            self.assertNotIn(tok, boot_banners["noteBodyText"])
+
+        # Helper to snapshot all rendered `.proposal-card` elements in the current locale
+        card_inspector_js = """(() => {
+          const cards = Array.from(document.querySelectorAll('.proposal-card'));
+          return {
+            jsErrors: window.__fvpJsErrors,
+            dir: document.documentElement.getAttribute('dir'),
+            legacyDomCount: document.querySelectorAll('.two-plus-verify-banner, .proposal-pass-footer, .stub-estimate-note, .stub-fare-saved').length,
+            hasShowcase: Boolean(document.querySelector('.awaiting-flights-showcase')),
+            cards: cards.map((c) => {
+              const stmtEl = c.querySelector('.bonus-direction-statement');
+              const kpiBonus = c.querySelector('.kpi-cell[data-kpi="bonus-value"]');
+              const ctosEl = c.querySelector('.stub-ctos-badge');
+              const minPtsEl = c.querySelector('.min-points-ticket');
+              const stratTagEl = c.querySelector('.bonus-strategy-tag');
+              const twoPlusEl = c.querySelector('.two-plus-note');
+              const bookEl = c.querySelector('a[data-elal-book-link="true"]');
+              const lanes = Array.from(c.querySelectorAll('.bonus-lane')).map((l) => {
+                const seatsEl = l.querySelector('.bonus-lane-seats');
+                const flightEl = l.querySelector('.bonus-lane-flight');
+                return {
+                  direction: l.getAttribute('data-direction'),
+                  hasBonus: l.getAttribute('data-has-bonus'),
+                  visible: l.getBoundingClientRect().height > 0 && l.getBoundingClientRect().width > 0,
+                  seatsAttr: seatsEl ? seatsEl.getAttribute('data-seats') : null,
+                  twoPlusAttr: seatsEl ? seatsEl.getAttribute('data-two-plus') : null,
+                  seatsText: seatsEl ? seatsEl.textContent.replace(/\\s+/g, ' ').trim() : '',
+                  flightText: flightEl ? flightEl.textContent.replace(/\\s+/g, ' ').trim() : ''
+                };
+              });
+              return {
+                text: c.textContent || '',
+                strategy: c.getAttribute('data-strategy'),
+                bonusDirections: c.getAttribute('data-bonus-directions'),
+                stmtVisible: Boolean(stmtEl && stmtEl.getBoundingClientRect().height > 0),
+                stmtText: stmtEl ? stmtEl.textContent.trim() : '',
+                stratTagText: stratTagEl ? stratTagEl.textContent.trim() : null,
+                twoPlusText: twoPlusEl ? twoPlusEl.textContent.replace(/\\s+/g, ' ').trim() : null,
+                hasKpiBonus: Boolean(kpiBonus && kpiBonus.getBoundingClientRect().height > 0),
+                kpiBonusText: kpiBonus ? kpiBonus.textContent.replace(/\\s+/g, ' ').trim() : '',
+                hasCtosBadge: Boolean(ctosEl && ctosEl.getBoundingClientRect().height > 0),
+                ctosText: ctosEl ? ctosEl.textContent.replace(/\\s+/g, ' ').trim() : '',
+                minPoints: minPtsEl ? {
+                  pointsAttr: minPtsEl.getAttribute('data-min-points'),
+                  scopeAttr: minPtsEl.getAttribute('data-scope'),
+                  labelText: (minPtsEl.querySelector('.stub-fare-label') || {}).textContent || '',
+                  valText: (minPtsEl.querySelector('.stub-fare-val') || {}).textContent || ''
+                } : null,
+                bookTitle: bookEl ? (bookEl.getAttribute('title') || '') : '',
+                lanes
+              };
+            })
+          };
+        })()"""
+
+        # 1. R1 + R2 + R3 + R4 (Both Directions): 4-pax family (2 adults + 2 children [5, 9]), Matmid = 30,000 on FCO 2027-04-11..18
+        _cdp_eval(
+            """(async () => {
+              document.getElementById('btn-add-child').click();
+              document.getElementById('btn-add-child').click();
+              const c0 = document.querySelector('[data-child-age="0"]');
+              c0.value = '5'; c0.dispatchEvent(new Event('input', { bubbles: true })); c0.dispatchEvent(new Event('change', { bubbles: true }));
+              const c1 = document.querySelector('[data-child-age="1"]');
+              c1.value = '9'; c1.dispatchEvent(new Event('input', { bubbles: true })); c1.dispatchEvent(new Event('change', { bubbles: true }));
+              const mEl = document.getElementById('prof-matmid-points');
+              mEl.value = '30000'; mEl.dispatchEvent(new Event('input', { bubbles: true })); mEl.dispatchEvent(new Event('change', { bubbles: true }));
+              document.querySelector('[data-mode="SPECIFIC_DATES"]').click();
+              document.getElementById('input-dep-date').value = '2027-04-11';
+              document.getElementById('input-ret-date').value = '2027-04-18';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ROM"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+              for (let i = 0; i < 80; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                if (cards.length > 0 && cards.every((el) => (el.textContent || '').includes('FCO'))) break;
+              }
+              const toggleBtn = document.querySelector('[data-toggle-all-proposals]');
+              if (toggleBtn) toggleBtn.click();
+            })()"""
+        )
+
+        for expected_dir, expected_stmt, expected_min_30k, expected_min_15k, expected_seats_lbl in (
+            ("rtl", "בונוס בשני הכיוונים", "החל מ-30,000", "החל מ-15,000", "2+ מושבי בונוס"),
+            ("ltr", "Bonus seats in both directions", "from 30,000", "from 15,000", "2+ bonus seats"),
+        ):
+            if expected_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+            fco_snap = _cdp_eval(card_inspector_js)
+            self.assertEqual(fco_snap["jsErrors"], [])
+            self.assertEqual(fco_snap["dir"], expected_dir)
+            self.assertEqual(fco_snap["legacyDomCount"], 0)
+            self.assertGreaterEqual(len(fco_snap["cards"]), 4)
+
+            by_strat = {c["strategy"]: c for c in fco_snap["cards"]}
+            for req_strat in (
+                "FULL_BONUS_SAME_CABIN",
+                "HYBRID_BONUS_PLUS_CASH",
+                "ONE_WAY_BONUS_ONE_WAY_CASH",
+                "CASH_AND_POINTS",
+            ):
+                self.assertIn(req_strat, by_strat)
+
+            for card in fco_snap["cards"]:
+                for bad_tok in (*forbidden_ui_tokens, "120,000", "מחיר", "price"):
+                    self.assertNotIn(bad_tok, card["text"])
+                    self.assertNotIn(bad_tok, card["bookTitle"])
+                self.assertEqual(card["bonusDirections"], "both")
+                self.assertTrue(card["stmtVisible"])
+                self.assertEqual(card["stmtText"], expected_stmt)
+                self.assertTrue(card["hasKpiBonus"])
+                self.assertIn("/100", card["kpiBonusText"])
+                self.assertTrue(card["hasCtosBadge"])
+                self.assertIn("/100", card["ctosText"])
+                self.assertEqual(len(card["lanes"]), 2)
+                for expected_lane_dir in ("outbound", "inbound"):
+                    lane = next(l for l in card["lanes"] if l["direction"] == expected_lane_dir)
+                    self.assertTrue(lane["visible"])
+                    self.assertEqual(lane["hasBonus"], "true")
+                    self.assertEqual(lane["twoPlusAttr"], "true")
+                    self.assertGreaterEqual(int(lane["seatsAttr"]), 2)
+                    self.assertEqual(lane["seatsText"], expected_seats_lbl)
+                self.assertIsNotNone(card["twoPlusText"])
+                self.assertIn("4", card["twoPlusText"])
+
+            # R2: 4-pax FULL_BONUS_SAME_CABIN appears at balance 30,000 with 1-ticket minimum `החל מ-30,000` / `from 30,000`
+            full_card = by_strat["FULL_BONUS_SAME_CABIN"]
+            self.assertIsNone(full_card["stratTagText"])
+            self.assertEqual(
+                full_card["minPoints"],
+                {
+                    "pointsAttr": "30000",
+                    "scopeAttr": "round_trip",
+                    "labelText": (
+                        "נקודות לכרטיס בונוס אחד (הלוך ושוב)"
+                        if expected_dir == "rtl"
+                        else "Points for one bonus ticket (round trip)"
+                    ),
+                    "valText": expected_min_30k,
+                },
+            )
+            self.assertIsNotNone(by_strat["HYBRID_BONUS_PLUS_CASH"]["stratTagText"])
+            self.assertEqual(by_strat["HYBRID_BONUS_PLUS_CASH"]["minPoints"]["pointsAttr"], "30000")
+            self.assertEqual(by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]["minPoints"]["pointsAttr"], "15000")
+            self.assertEqual(by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]["minPoints"]["scopeAttr"], "one_way")
+            self.assertEqual(by_strat["ONE_WAY_BONUS_ONE_WAY_CASH"]["minPoints"]["valText"], expected_min_15k)
+            # R3 / E4: CASH_AND_POINTS carries no points row
+            self.assertIsNone(by_strat["CASH_AND_POINTS"]["minPoints"])
+
+        # Switch back to Hebrew RTL before Step 2
+        _cdp_eval("if (document.documentElement.getAttribute('dir') !== 'rtl') document.getElementById('btn-toggle-locale').click(); true;")
+
+        # 2. R4 (One Direction — Seeded Outbound-Only): ATH 2026-12-06..12 with balance = 0 (U3)
+        _cdp_eval(
+            """(async () => {
+              const mEl = document.getElementById('prof-matmid-points');
+              mEl.value = '0'; mEl.dispatchEvent(new Event('input', { bubbles: true })); mEl.dispatchEvent(new Event('change', { bubbles: true }));
+              document.getElementById('btn-dest-clear-all').click();
+              await new Promise((r) => setTimeout(r, 80));
+              document.getElementById('input-dep-date').value = '2026-12-06';
+              document.getElementById('input-ret-date').value = '2026-12-12';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ATH"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+              for (let i = 0; i < 80; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                if (cards.length > 0 && cards.every((el) => (el.textContent || '').includes('ATH') && el.getAttribute('data-bonus-directions') === 'outbound')) break;
+              }
+            })()"""
+        )
+
+        for expected_dir, expected_stmt, expected_no_bonus, expected_comm_flight in (
+            ("rtl", "בונוס בכיוון אחד בלבד — הלוך", "אין בונוס", "טיסה מסחרית (אין בונוס)"),
+            ("ltr", "Bonus seats one way only — outbound", "No bonus seats", "Commercial flight (no bonus)"),
+        ):
+            if expected_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+            ath_snap = _cdp_eval(card_inspector_js)
+            self.assertEqual(ath_snap["jsErrors"], [])
+            self.assertGreaterEqual(len(ath_snap["cards"]), 2)
+            ath_strats = {c["strategy"] for c in ath_snap["cards"]}
+            self.assertIn("ONE_WAY_BONUS_ONE_WAY_CASH", ath_strats)
+            self.assertIn("CASH_AND_POINTS", ath_strats)
+            for card in ath_snap["cards"]:
+                for bad_tok in forbidden_ui_tokens:
+                    self.assertNotIn(bad_tok, card["text"])
+                self.assertEqual(card["bonusDirections"], "outbound")
+                self.assertTrue(card["stmtVisible"])
+                self.assertEqual(card["stmtText"], expected_stmt)
+                out_lane = next(l for l in card["lanes"] if l["direction"] == "outbound")
+                in_lane = next(l for l in card["lanes"] if l["direction"] == "inbound")
+                self.assertEqual(out_lane["hasBonus"], "true")
+                self.assertIn("LY541", out_lane["flightText"])
+                self.assertEqual(in_lane["hasBonus"], "false")
+                self.assertEqual(in_lane["seatsAttr"], "0")
+                self.assertEqual(in_lane["twoPlusAttr"], "false")
+                self.assertEqual(in_lane["seatsText"], expected_no_bonus)
+                self.assertEqual(in_lane["flightText"], expected_comm_flight)
+
+        _cdp_eval("if (document.documentElement.getAttribute('dir') !== 'rtl') document.getElementById('btn-toggle-locale').click(); true;")
+
+        # 3. U4 (Zero-Bonus Empty State) & R4 (Inbound-Only + 1 Exact Seat + LY_CASH) on isolated live-mode DB
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "1"
+        live_db_path, _live_repo = self.make_isolated_env(auto_seed=True)
+        live_client = self.get_client(live_db_path)
+        active_browser_client = live_client
+
+        # 3a. Sync explicit zero-seat rows for BCN 2027-05-10..17 -> search must render 0 `.proposal-card` elements and show `.awaiting-flights-showcase` (U4)
+        z_sync = live_client.post(
+            "/api/v1/elal-bonus/sync",
+            json={
+                "origin": "TLV",
+                "destinations": ["BCN"],
+                "start_date": "2027-05-09",
+                "end_date": "2027-05-18",
+                "force_refresh": True,
+                "rbd_payload": [
+                    {
+                        "destination_iata": "BCN",
+                        "direction": "OUTBOUND",
+                        "flight_number": "LY0393",
+                        "flight_date": "2027-05-10",
+                        "economy_seats": 0,
+                        "premium_seats": 0,
+                        "business_seats": 0,
+                    },
+                    {
+                        "destination_iata": "BCN",
+                        "direction": "INBOUND",
+                        "flight_number": "LY0394",
+                        "flight_date": "2027-05-17",
+                        "economy_seats": 0,
+                        "premium_seats": 0,
+                        "business_seats": 0,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(z_sync.status_code, 200)
+
+        _cdp_eval(
+            """(async () => {
+              document.getElementById('btn-dest-clear-all').click();
+              await new Promise((r) => setTimeout(r, 60));
+              document.getElementById('input-dep-date').value = '2027-05-10';
+              document.getElementById('input-ret-date').value = '2027-05-17';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="BCN"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+              for (let i = 0; i < 80; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                if (document.querySelector('.awaiting-flights-showcase')) break;
+              }
+            })()"""
+        )
+        empty_snap = _cdp_eval(card_inspector_js)
+        self.assertEqual(empty_snap["jsErrors"], [])
+        self.assertEqual(len(empty_snap["cards"]), 0)
+        self.assertTrue(empty_snap["hasShowcase"])
+
+        # 3b. Sync single INBOUND-only 1-seat row for MAD 2027-05-05 -> renders inbound-only statement + `מושב בונוס 1` / `1 bonus seat`
+        in_sync = live_client.post(
+            "/api/v1/elal-bonus/sync",
+            json={
+                "origin": "TLV",
+                "destinations": ["MAD"],
+                "start_date": "2027-04-27",
+                "end_date": "2027-05-06",
+                "force_refresh": True,
+                "rbd_payload": [
+                    {
+                        "destination_iata": "MAD",
+                        "direction": "INBOUND",
+                        "flight_number": "LY0398",
+                        "flight_date": "2027-05-05",
+                        "economy_seats": 1,
+                        "premium_seats": 0,
+                        "business_seats": 0,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(in_sync.status_code, 200)
+
+        _cdp_eval(
+            """(async () => {
+              document.getElementById('btn-dest-clear-all').click();
+              await new Promise((r) => setTimeout(r, 60));
+              document.getElementById('input-dep-date').value = '2027-04-28';
+              document.getElementById('input-ret-date').value = '2027-05-05';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="MAD"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+              for (let i = 0; i < 80; i++) {
+                await new Promise((r) => setTimeout(r, 30));
+                if (document.querySelectorAll('.proposal-card[data-bonus-directions="inbound"]').length >= 1) break;
+              }
+            })()"""
+        )
+        for expected_dir, expected_stmt, expected_one_seat in (
+            ("rtl", "בונוס בכיוון אחד בלבד — חזור", "מושב בונוס 1"),
+            ("ltr", "Bonus seats one way only — return", "1 bonus seat"),
+        ):
+            if expected_dir == "ltr":
+                _cdp_eval("document.getElementById('btn-toggle-locale').click(); true;")
+            mad_snap = _cdp_eval(card_inspector_js)
+            self.assertEqual(mad_snap["jsErrors"], [])
+            self.assertGreaterEqual(len(mad_snap["cards"]), 1)
+            for card in mad_snap["cards"]:
+                self.assertEqual(card["bonusDirections"], "inbound")
+                self.assertEqual(card["stmtText"], expected_stmt)
+                out_lane = next(l for l in card["lanes"] if l["direction"] == "outbound")
+                in_lane = next(l for l in card["lanes"] if l["direction"] == "inbound")
+                self.assertEqual(out_lane["hasBonus"], "false")
+                self.assertEqual(in_lane["hasBonus"], "true")
+                self.assertEqual(in_lane["seatsAttr"], "1")
+                self.assertEqual(in_lane["twoPlusAttr"], "false")
+                self.assertEqual(in_lane["seatsText"], expected_one_seat)
 
 
 if __name__ == "__main__":

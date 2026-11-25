@@ -1027,20 +1027,20 @@
     const labelsHe = {
       FULL_BONUS_SAME_CABIN: 'בונוס מלא באותה מחלקה',
       SPLIT_CABIN_BONUS: 'בונוס מפוצל בין מחלקות (אותה טיסה)',
-      HYBRID_BONUS_PLUS_CASH: 'שילוב בונוס + השלמת מזומן משוערת',
-      ONE_WAY_BONUS_ONE_WAY_CASH: 'כיוון בונוס + כיוון מזומן משוער',
-      CASH_AND_POINTS: 'מזומן משוער + נקודות (Cash & Points)',
+      HYBRID_BONUS_PLUS_CASH: 'בונוס לחלק מהנוסעים + כרטיסים מסחריים',
+      ONE_WAY_BONUS_ONE_WAY_CASH: 'כיוון אחד בבונוס + כיוון אחד מסחרי',
+      CASH_AND_POINTS: 'נקודות + כסף (Cash & Points)',
       MULTI_CLUB_PER_PASSENGER_SPLIT: 'פיצול נקודות בין מועדונים ונוסעים',
-      COMMERCIAL_CASH_ONLY: 'כרטיסים מסחריים (הערכת מחיר)'
+      COMMERCIAL_CASH_ONLY: 'כרטיסים מסחריים (ללא בונוס)'
     };
     const labelsEn = {
       FULL_BONUS_SAME_CABIN: 'Full Bonus (Same Cabin)',
       SPLIT_CABIN_BONUS: 'Split-Cabin Bonus (Same Flight)',
-      HYBRID_BONUS_PLUS_CASH: 'Hybrid Bonus + Est. Cash',
-      ONE_WAY_BONUS_ONE_WAY_CASH: 'One-Way Bonus + Est. Cash',
-      CASH_AND_POINTS: 'Est. Cash & Points',
+      HYBRID_BONUS_PLUS_CASH: 'Bonus for some travelers + commercial tickets',
+      ONE_WAY_BONUS_ONE_WAY_CASH: 'One way on bonus + one way commercial',
+      CASH_AND_POINTS: 'Points + money (Cash & Points)',
       MULTI_CLUB_PER_PASSENGER_SPLIT: 'Multi-Club Per-Passenger Split',
-      COMMERCIAL_CASH_ONLY: 'Commercial Fares (Est. Price)'
+      COMMERCIAL_CASH_ONLY: 'Commercial tickets (no bonus)'
     };
     return (isHe ? labelsHe[code] : labelsEn[code]) || code;
   }
@@ -1051,27 +1051,6 @@
     if (code === 'RECOMMENDED') return isHe ? '🌟 החופשה המומלצת ביותר' : '🌟 Best Overall Vacation';
     if (code === 'TOP_CHOICE') return isHe ? '✨ בחירה מובילה' : '✨ Top Choice';
     return isHe ? '🏖️ חלופה מומלצת' : '🏖️ Alternative Option';
-  }
-
-  function buildIntuitiveProposalSummary(p) {
-    const it = p.itinerary || {};
-    const isHe = state.locale === 'he';
-    const city = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
-    const stratLabel = formatStrategyLabel(it.fulfillment_strategy);
-    const pts = Number(it.total_matmid_points || 0).toLocaleString();
-    const cashOop = Number(it.total_out_of_pocket_cash_usd || 0).toFixed(0);
-    const savedNum = Math.round(Number(it.net_cash_saved_usd || 0));
-    const estSavedDisplay =
-      savedNum > 0 ? `~+$${savedNum}` : savedNum < 0 ? `~-$${Math.abs(savedNum)}` : '~$0';
-    const totalScore = Number(p.combined_trip_optimization_score || 0).toFixed(1);
-    const hasScore = Number(p.holiday_alignment_score ?? 0).toFixed(1);
-    const bonusScore = Number(p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0).toFixed(1);
-    const weatherScore = Number(p.weather_suitability_score || 0).toFixed(1);
-
-    if (!isHe) {
-      return `${city} (${it.destination_iata}) | ${it.departure_date} to ${it.return_date} (${it.trip_nights} nights) | Strategy: ${stratLabel} | Points: ${pts} | Est. Cash Price: ~$${cashOop} (Est. Saved: ${estSavedDisplay}) | Overall Score: ${totalScore}/100 (Weather: ${weatherScore}, School Break Fit: ${hasScore}, Bonus Value: ${bonusScore})`;
-    }
-    return `${city} (${it.destination_iata}) | ${it.departure_date} עד ${it.return_date} (${it.trip_nights} לילות) | אסטרטגיה: ${stratLabel} | נקודות: ${pts} | הערכת מחיר במזומן: ~$${cashOop} (חיסכון משוער: ${estSavedDisplay}) | ציון משוקלל: ${totalScore}/100 (מזג אוויר: ${weatherScore}, התאמה לחופשת בי״ס: ${hasScore}, כדאיות טיסה ובונוס: ${bonusScore})`;
   }
 
   function classifyFareByAge(ageYears) {
@@ -1730,24 +1709,173 @@
     return `https://www.google.com/travel/flights?${params.toString()}`;
   }
 
-  function formatLegFlightBadge(leg) {
-    if (!leg || !leg.flight_number) return '';
-    const fn = String(leg.flight_number).trim();
-    if (fn === 'LY_CASH') {
-      const cashLabel = state.locale === 'he' ? 'טיסה מסחרית (אין בונוס)' : 'Commercial (no award)';
-      return `<span class="route-flight-meta">${escapeHtml(cashLabel)}</span>`;
+  function resolveBonusDirectionInfo(itineraryObj) {
+    const it = itineraryObj || {};
+    const rawCov = String(it.bonus_direction_coverage || '').trim().toUpperCase();
+    const hasOutRaw =
+      it.outbound_bonus_seats !== null &&
+      it.outbound_bonus_seats !== undefined &&
+      it.outbound_bonus_seats !== '';
+    const hasInRaw =
+      it.inbound_bonus_seats !== null &&
+      it.inbound_bonus_seats !== undefined &&
+      it.inbound_bonus_seats !== '';
+    const outSeatsNum = hasOutRaw ? Math.max(0, Math.round(Number(it.outbound_bonus_seats) || 0)) : 0;
+    const inSeatsNum = hasInRaw ? Math.max(0, Math.round(Number(it.inbound_bonus_seats) || 0)) : 0;
+    const outTwoPlus = Boolean(it.outbound_bonus_seats_is_two_plus);
+    const inTwoPlus = Boolean(it.inbound_bonus_seats_is_two_plus);
+
+    let coverage = rawCov;
+    if (
+      coverage !== 'BOTH_DIRECTIONS' &&
+      coverage !== 'OUTBOUND_ONLY' &&
+      coverage !== 'INBOUND_ONLY' &&
+      coverage !== 'NONE'
+    ) {
+      if (hasOutRaw || hasInRaw) {
+        if (outSeatsNum >= 1 && inSeatsNum >= 1) coverage = 'BOTH_DIRECTIONS';
+        else if (outSeatsNum >= 1) coverage = 'OUTBOUND_ONLY';
+        else if (inSeatsNum >= 1) coverage = 'INBOUND_ONLY';
+        else coverage = 'NONE';
+      } else {
+        const outLegFn = String((it.outbound_legs && it.outbound_legs[0] && it.outbound_legs[0].flight_number) || '').trim();
+        const inLegFn = String((it.inbound_legs && it.inbound_legs[0] && it.inbound_legs[0].flight_number) || '').trim();
+        const fallbackOut = Boolean(it.outbound_bonus_id) && outLegFn !== 'LY_CASH';
+        const fallbackIn = Boolean(it.inbound_bonus_id) && inLegFn !== 'LY_CASH';
+        if (fallbackOut && fallbackIn) coverage = 'BOTH_DIRECTIONS';
+        else if (fallbackOut) coverage = 'OUTBOUND_ONLY';
+        else if (fallbackIn) coverage = 'INBOUND_ONLY';
+        else coverage = 'NONE';
+      }
     }
-    const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
-    const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
-    const times = depT && arrT ? ` · ${depT}–${arrT}` : depT ? ` · ${depT}` : '';
-    return `<span class="route-flight-meta">${escapeHtml(fn + times)}</span>`;
+
+    if (coverage === 'NONE') {
+      return {
+        coverage: 'NONE',
+        dirAttr: 'none',
+        outbound: { hasBonus: false, seats: 0, twoPlus: false },
+        inbound: { hasBonus: false, seats: 0, twoPlus: false }
+      };
+    }
+
+    const outHasBonus =
+      coverage === 'BOTH_DIRECTIONS' || coverage === 'OUTBOUND_ONLY'
+        ? (hasOutRaw ? outSeatsNum >= 1 : true)
+        : false;
+    const inHasBonus =
+      coverage === 'BOTH_DIRECTIONS' || coverage === 'INBOUND_ONLY'
+        ? (hasInRaw ? inSeatsNum >= 1 : true)
+        : false;
+
+    if (!outHasBonus && !inHasBonus) {
+      return {
+        coverage: 'NONE',
+        dirAttr: 'none',
+        outbound: { hasBonus: false, seats: 0, twoPlus: false },
+        inbound: { hasBonus: false, seats: 0, twoPlus: false }
+      };
+    }
+
+    const effectiveCov =
+      outHasBonus && inHasBonus
+        ? 'BOTH_DIRECTIONS'
+        : outHasBonus
+          ? 'OUTBOUND_ONLY'
+          : 'INBOUND_ONLY';
+    const dirAttr =
+      effectiveCov === 'BOTH_DIRECTIONS'
+        ? 'both'
+        : effectiveCov === 'OUTBOUND_ONLY'
+          ? 'outbound'
+          : 'inbound';
+
+    return {
+      coverage: effectiveCov,
+      dirAttr,
+      outbound: {
+        hasBonus: outHasBonus,
+        seats: outHasBonus ? Math.max(1, outSeatsNum) : 0,
+        twoPlus: outHasBonus && outTwoPlus
+      },
+      inbound: {
+        hasBonus: inHasBonus,
+        seats: inHasBonus ? Math.max(1, inSeatsNum) : 0,
+        twoPlus: inHasBonus && inTwoPlus
+      }
+    };
+  }
+
+  function getRenderableBonusProposals(proposalsList) {
+    if (!Array.isArray(proposalsList)) return [];
+    return proposalsList.filter((p) => {
+      const info = resolveBonusDirectionInfo(p && p.itinerary);
+      return info.coverage !== 'NONE';
+    });
+  }
+
+  function formatBonusDirectionStatement(coverage, isHe) {
+    if (coverage === 'BOTH_DIRECTIONS') {
+      return isHe ? 'בונוס בשני הכיוונים' : 'Bonus seats in both directions';
+    }
+    if (coverage === 'OUTBOUND_ONLY') {
+      return isHe ? 'בונוס בכיוון אחד בלבד — הלוך' : 'Bonus seats one way only — outbound';
+    }
+    if (coverage === 'INBOUND_ONLY') {
+      return isHe ? 'בונוס בכיוון אחד בלבד — חזור' : 'Bonus seats one way only — return';
+    }
+    return isHe ? 'אין מושבי בונוס בתאריכים האלה' : 'No bonus seats on these dates';
+  }
+
+  function renderBonusCouponLane(directionKey, lane, leg, isHe) {
+    const hasBonus = Boolean(lane && lane.hasBonus);
+    const seatsNum = hasBonus ? Math.max(1, Number(lane.seats || 1)) : 0;
+    const twoPlus = Boolean(hasBonus && lane.twoPlus);
+    const eyebrowText =
+      directionKey === 'outbound'
+        ? (isHe ? 'הלוך' : 'Outbound')
+        : (isHe ? 'חזור' : 'Return');
+
+    let seatsInnerHtml = '';
+    if (!hasBonus) {
+      seatsInnerHtml = `<span class="bonus-lane-empty">${isHe ? 'אין בונוס' : 'No bonus seats'}</span>`;
+    } else if (twoPlus) {
+      seatsInnerHtml = `<span class="bonus-lane-count" dir="ltr">2+</span> <span class="bonus-lane-unit">${isHe ? 'מושבי בונוס' : 'bonus seats'}</span>`;
+    } else if (seatsNum === 1) {
+      seatsInnerHtml = isHe
+        ? `<span class="bonus-lane-unit">מושב בונוס</span> <span class="bonus-lane-count" dir="ltr">1</span>`
+        : `<span class="bonus-lane-count" dir="ltr">1</span> <span class="bonus-lane-unit">bonus seat</span>`;
+    } else {
+      seatsInnerHtml = `<span class="bonus-lane-count" dir="ltr">${seatsNum}</span> <span class="bonus-lane-unit">${isHe ? 'מושבי בונוס' : 'bonus seats'}</span>`;
+    }
+
+    const fn = leg && leg.flight_number ? String(leg.flight_number).trim() : '';
+    let flightTagHtml = '';
+    if (!hasBonus || !fn || fn === 'LY_CASH') {
+      const commercialLabel = isHe ? 'טיסה מסחרית (אין בונוס)' : 'Commercial flight (no bonus)';
+      flightTagHtml = `<span class="bonus-lane-flight bonus-lane-flight-commercial">${escapeHtml(commercialLabel)}</span>`;
+    } else {
+      const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
+      const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
+      const times = depT && arrT ? ` · ${depT}–${arrT}` : depT ? ` · ${depT}` : '';
+      flightTagHtml = `<span class="bonus-lane-flight" dir="ltr">${escapeHtml(fn + times)}</span>`;
+    }
+
+    return `
+      <div class="bonus-lane" data-direction="${directionKey}" data-has-bonus="${hasBonus ? 'true' : 'false'}">
+        <span class="bonus-lane-eyebrow">${escapeHtml(eyebrowText)}</span>
+        <div class="bonus-lane-seats" data-seats="${seatsNum}" data-two-plus="${twoPlus ? 'true' : 'false'}">
+          ${seatsInnerHtml}
+        </div>
+        ${flightTagHtml}
+      </div>
+    `;
   }
 
   function updateZoneResultsTitle() {
     const zResults = document.getElementById('zone-results-title');
     if (!zResults) return;
     const isHe = state.locale === 'he';
-    const count = (state.proposals && state.proposals.length) || 0;
+    const count = getRenderableBonusProposals(state.proposals).length;
     const countSuffix = count > 0 ? ` (${count})` : '';
     zResults.textContent = isHe
       ? `תוצאות חיפוש, דירוג חופשות וניצול כרטיסי בונוס${countSuffix}`
@@ -1758,6 +1886,7 @@
     const container = document.getElementById('proposals-container');
     if (!container) return;
     const isHe = state.locale === 'he';
+    const renderableProposals = getRenderableBonusProposals(state.proposals);
     updateZoneResultsTitle();
 
     if (state.validationErrorHe || state.validationErrorEn) {
@@ -1777,7 +1906,7 @@
       return;
     }
 
-    if (!state.proposals || state.proposals.length === 0) {
+    if (renderableProposals.length === 0) {
       const NO_SYNCED_FLIGHTS_TOKEN_HE = 'אין משיכה של טיסות מהשרת';
       const rawHe = String(state.statusMessageHe || '');
       const isStandardUnsynced = !rawHe || rawHe.includes(NO_SYNCED_FLIGHTS_TOKEN_HE);
@@ -1830,15 +1959,15 @@
               <strong class="zero-points-alert-title">
                 💡 ${
                   isHe
-                    ? 'החיפוש רץ עם יתרת מתמיד 0 — מוצגות כרגע הערכות מחיר במזומן בלבד (כרטיסים מסחריים, לא מחייב)'
-                    : 'Search ran with 0 Matmid points — showing non-binding estimated commercial cash prices only'
+                    ? 'החיפוש רץ עם יתרת מתמיד 0 — מוצגים מושבי הבונוס הפנויים ומספר הנקודות לכרטיס אחד'
+                    : 'Search ran with 0 Matmid points — showing open bonus seats and the points one ticket takes'
                 }
               </strong>
               <p class="zero-points-alert-body">
                 ${
                   isHe
-                    ? 'כדי לחשב כרטיסי בונוס בנקודות, הזינו את יתרת המתמיד שלכם והריצו חיפוש מחדש.'
-                    : 'Enter your household Matmid balance and run Search again to unlock award seat options.'
+                    ? 'הזינו את יתרת המתמיד כדי לראות לאילו כרטיסי בונוס יש לכם מספיק נקודות.'
+                    : 'Enter your Matmid balance to see which bonus tickets your points cover.'
                 }
               </p>
             </div>
@@ -1854,14 +1983,14 @@
         <summary class="award-note-summary">
           ℹ️ <strong>${
             isHe
-              ? 'הערה על מאגר כרטיסי הבונוס של אל על והערכות המחיר:'
-              : 'EL AL Award Seat Database & Price Estimate Note:'
+              ? 'הערה על מאגר כרטיסי הבונוס של אל על:'
+              : 'About the EL AL award seat database:'
           }</strong>
         </summary>
         <p class="award-note-body">${
           isHe
-            ? '<strong>מאגר טיסות הבונוס מתעדכן פעם ביום.</strong> זמינות המושבים, הערכת הנקודות והערכת התשלום במזומן (מסים והשלמת כרטיסים) אינן מחייבות ומתבססות על מאגר כרטיסי הבונוס של אל על ותעריפי ייחוס. הזמינות בזמן אמת והמחיר הסופי בנקודות ובמזומן נקבעים בעת בחירת הטיסות להזמנה.'
-            : "<strong>The bonus flight database is updated once daily.</strong> Seat availability, point figures, and cash amounts (taxes and fare supplements) are non-binding estimates based on EL AL's Classic Award database and reference fares. Real-time availability and final point and cash pricing are determined at flight selection."
+            ? '<strong>מאגר טיסות הבונוס מתעדכן פעם ביום.</strong> מספר מושבי הבונוס ומספר הנקודות לכרטיס מבוססים על מאגר כרטיסי הבונוס של אל על ואינם מחייבים. "2+" פירושו שאל על מאשרת לפחות 2 מושבי בונוס בטיסה. הזמינות והנקודות הסופיות נקבעות בעת ההזמנה באל על.'
+            : '<strong>The bonus flight database is updated once daily.</strong> Bonus seat counts and points per ticket come from EL AL\'s award seat database and are not binding. "2+" means EL AL confirms at least 2 bonus seats on the flight. Final availability and points are set when you book with EL AL.'
         }</p>
       </details>
     `;
@@ -1874,14 +2003,15 @@
       `
       : '';
 
-    const totalCount = state.proposals.length;
+    const totalCount = renderableProposals.length;
     const visibleList = state.showAllProposals
-      ? state.proposals
-      : state.proposals.slice(0, INITIAL_PROPOSALS_LIMIT);
+      ? renderableProposals
+      : renderableProposals.slice(0, INITIAL_PROPOSALS_LIMIT);
 
     const cardsHtml = visibleList
       .map((p, idx) => {
         const it = p.itinerary || {};
+        const dirInfo = resolveBonusDirectionInfo(it);
         const wm = p.weather_metrics || null;
         const wssVal = Number(
           p.weather_suitability_score ??
@@ -1918,7 +2048,11 @@
             : (wm.weather_summary_en ||
               `Expected ${Number(wm.avg_day_high_c || 0).toFixed(0)}°C day / ${Number(wm.avg_night_low_c || 0).toFixed(0)}°C night` +
                 (wm.sea_water_temp_c !== null && wm.sea_water_temp_c !== undefined ? `, sea ${Number(wm.sea_water_temp_c).toFixed(0)}°C` : '') +
-                `, ~${Number(wm.sunshine_hours_per_day || 0).toFixed(1)}h daily sunshine & ~${Number(wm.estimated_rain_days_in_trip || 0).toFixed(1)} rain days.`);
+                ', ~' +
+                Number(wm.sunshine_hours_per_day || 0).toFixed(1) +
+                'h daily sunshine & ~' +
+                Number(wm.estimated_rain_days_in_trip || 0).toFixed(1) +
+                ' rain days.');
           weatherStripHtml = `
             <div class="weather-telemetry-strip">
               <div class="weather-telemetry-row">
@@ -1940,21 +2074,6 @@
         const paxInfo = buildHouseholdPassengerSummary(state.profile, it, isHe);
         const seatedCount = paxInfo.seatedCount;
 
-        const twoPlusVerifyBannerHtml = it.requires_two_plus_seat_verification
-          ? `
-            <div class="two-plus-verify-banner">
-              <strong>ℹ️ ${isHe ? `מכסת 2+ מושבים במאגר כרטיסי הבונוס של אל על (${seatedCount} מושבים נדרשים):` : `EL AL Award Seat Database 2+ Cap (${seatedCount} seats needed):`}</strong>
-              <span>
-                ${
-                  isHe
-                    ? `מאגר כרטיסי הבונוס של אל על מאשר לפחות 2 מושבי בונוס בטיסה זו. אם בחיפוש ל-${seatedCount} נוסעים באתר אל על מוצג מחיר נקודות דינמי גבוה יותר, מומלץ לבדוק תחילה הזמנה של 2 מושבי בונוס בנפרד.`
-                    : `EL AL's Classic Award seat database confirms at least 2 award seats on this flight. If searching for ${seatedCount} passengers on EL AL switches to higher dynamic point pricing, try checking 2 award seats first.`
-                }
-              </span>
-            </div>
-          `
-          : '';
-
         const rankNum = p.rank_order || p.rank || (idx + 1);
         const tierCode = p.recommendation_tier || (idx === 0 ? 'RECOMMENDED' : idx < 4 ? 'TOP_CHOICE' : 'ALTERNATIVE');
         const tierBadgeText = formatRecommendationTierLabel(tierCode);
@@ -1971,41 +2090,84 @@
         const schoolHtml = schoolMissed === 0
           ? `<span class="num">0</span> ${isHe ? 'ימים ✓' : 'days ✓'}`
           : `<span class="num">${escapeHtml(schoolMissed)}</span> ${isHe ? 'ימים' : 'days'}`;
-        const stratText = formatStrategyLabel(it.fulfillment_strategy);
+
+        const strategyCode = String(it.fulfillment_strategy || 'FULL_BONUS_SAME_CABIN');
+        const stratText = formatStrategyLabel(strategyCode);
+        const strategyTagHtml =
+          strategyCode !== 'FULL_BONUS_SAME_CABIN'
+            ? `<span class="bonus-strategy-tag" title="${escapeHtml(stratText)}">${escapeHtml(stratText)}</span>`
+            : '';
+
+        const directionStatementText = formatBonusDirectionStatement(dirInfo.coverage, isHe);
+        const directionBadgeCls =
+          dirInfo.coverage === 'BOTH_DIRECTIONS'
+            ? 'bonus-direction-badge'
+            : 'bonus-direction-badge bonus-direction-badge-partial';
+
         const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
         const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
         const elalBookUrl = resolveElAlBookingUrl(it);
         const outLeg = (it.outbound_legs && it.outbound_legs[0]) || null;
         const inLeg = (it.inbound_legs && it.inbound_legs[0]) || null;
-        const outFlightBadgeHtml = formatLegFlightBadge(outLeg);
-        const inFlightBadgeHtml = formatLegFlightBadge(inLeg);
-        // Flight-number tags get their own line of the route bar: outbound at the start edge, inbound at the end edge
-        const flightsRowHtml = outFlightBadgeHtml || inFlightBadgeHtml
-          ? `
-                  <div class="route-flights-row">
-                    <span class="route-flight-slot">${outFlightBadgeHtml}</span>
-                    <span class="route-flight-slot route-flight-slot-end">${inFlightBadgeHtml}</span>
-                  </div>`
+        const outboundCouponHtml = renderBonusCouponLane('outbound', dirInfo.outbound, outLeg, isHe);
+        const inboundCouponHtml = renderBonusCouponLane('inbound', dirInfo.inbound, inLeg, isHe);
+
+        const showTwoPlusNote =
+          dirInfo.outbound.twoPlus ||
+          dirInfo.inbound.twoPlus ||
+          Boolean(it.requires_two_plus_seat_verification);
+        const twoPlusTailText = isHe
+          ? ' = לפחות 2 מושבי בונוס בטיסה; ייתכן שיש יותר.'
+          : ' = at least 2 bonus seats on this flight; there may be more.';
+        const twoPlusPartyHint =
+          seatedCount > 2
+            ? (isHe
+                ? ` נדרשים ${seatedCount} מושבים — כדאי לבדוק הזמנה של 2 ועוד 2.`
+                : ` ${seatedCount} seats needed — try booking 2 and 2.`)
+            : '';
+        const twoPlusNoteHtml = showTwoPlusNote
+          ? `<p class="two-plus-note"><span dir="ltr">2+</span>${escapeHtml(twoPlusTailText + twoPlusPartyHint)}</p>`
           : '';
+
         const returnOriginLabel =
           it.return_origin_iata && it.return_origin_iata !== it.destination_iata
             ? `${it.destination_iata}/${it.return_origin_iata}`
             : it.destination_iata;
-        const ptsTotal = Number(it.total_matmid_points || 0).toLocaleString();
-        const oopCash = Number(it.total_out_of_pocket_cash_usd || 0).toFixed(0);
-        const netSavedNum = Math.round(Number(it.net_cash_saved_usd || 0));
-        const estSavedDisplay =
-          netSavedNum > 0
-            ? `~+$${netSavedNum}`
-            : netSavedNum < 0
-              ? `~-$${Math.abs(netSavedNum)}`
-              : '~$0';
-        const savedRowCls = netSavedNum > 0 ? 'stub-fare-row stub-fare-saved' : 'stub-fare-row';
-        const cppVal = Number(it.cents_per_point_value || 0).toFixed(2);
+
+        const rawMinPts = it.min_points_per_bonus_ticket;
+        const minPtsNum =
+          rawMinPts !== null && rawMinPts !== undefined && rawMinPts !== ''
+            ? Math.round(Number(rawMinPts))
+            : NaN;
+        const hasMinPts = Number.isFinite(minPtsNum) && minPtsNum > 0;
+        const rawBasis = String(it.min_points_basis || '').trim().toUpperCase();
+        const minPtsScope =
+          rawBasis === 'ONE_WAY'
+            ? 'one_way'
+            : rawBasis === 'ROUND_TRIP'
+              ? 'round_trip'
+              : dirInfo.coverage === 'BOTH_DIRECTIONS'
+                ? 'round_trip'
+                : 'one_way';
+        const minPtsLabel =
+          minPtsScope === 'round_trip'
+            ? (isHe ? 'נקודות לכרטיס בונוס אחד (הלוך ושוב)' : 'Points for one bonus ticket (round trip)')
+            : (isHe ? 'נקודות לכרטיס בונוס אחד (כיוון אחד)' : 'Points for one bonus ticket (one way)');
+        const minPtsFormatted = hasMinPts ? minPtsNum.toLocaleString('en-US') : '';
+        const minPtsValue = hasMinPts
+          ? (isHe ? `החל מ-${minPtsFormatted}` : `from ${minPtsFormatted}`)
+          : '';
+        const minPointsRowHtml = hasMinPts
+          ? `
+                  <div class="stub-fare-row min-points-ticket" data-min-points="${minPtsNum}" data-scope="${minPtsScope}">
+                    <span class="stub-fare-label">${escapeHtml(minPtsLabel)}</span>
+                    <span class="stub-fare-val stub-fare-points">${escapeHtml(minPtsValue)}</span>
+                  </div>`
+          : '';
 
         const elalBookBtnHtml = elalBookUrl
           ? `
-              <a class="btn-elal-book" href="${escapeHtml(elalBookUrl)}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת הטיסה ב-Google Flights לבדיקת מחיר סופי והזמנה באל על' : 'Open flight on Google Flights to verify live final price & book on EL AL'}">
+              <a class="btn-elal-book" href="${escapeHtml(elalBookUrl)}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת הטיסה ב-Google Flights לבדיקת זמינות והזמנה באל על' : 'Open the flight on Google Flights to check availability and book with EL AL'}">
                 <span>✈️ ${isHe ? 'להזמנת טיסת אל על' : 'Book EL AL Flight'}</span>
                 <span dir="ltr" aria-hidden="true">↗</span>
               </a>
@@ -2013,7 +2175,7 @@
           : '';
 
         return `
-          <article class="proposal-card tier-${escapeHtml(tierCode)}">
+          <article class="proposal-card tier-${escapeHtml(tierCode)}" data-strategy="${escapeHtml(strategyCode)}" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}">
             <div class="proposal-pass-grid">
               <div class="proposal-pass-main">
                 <div class="proposal-top-bar">
@@ -2046,7 +2208,22 @@
                   <div class="route-endpoint route-endpoint-end">
                     <span class="route-iata">${escapeHtml(returnOriginLabel)}</span>
                     <span class="route-date">${escapeHtml(it.return_date)}</span>
-                  </div>${flightsRowHtml}
+                  </div>
+                </div>
+
+                <div class="bonus-direction-block">
+                  <div class="bonus-direction-header">
+                    <span class="${directionBadgeCls}">
+                      <span class="bonus-direction-dot" aria-hidden="true"></span>
+                      <span class="bonus-direction-statement">${escapeHtml(directionStatementText)}</span>
+                    </span>
+                    ${strategyTagHtml}
+                  </div>
+                  <div class="bonus-lanes">
+                    ${outboundCouponHtml}
+                    ${inboundCouponHtml}
+                  </div>
+                  ${twoPlusNoteHtml}
                 </div>
 
                 <div class="score-strip pass-kpi-grid">
@@ -2058,7 +2235,7 @@
                     <span class="kpi-cell-label">🎒 ${isHe ? 'חיסור מבי״ס' : 'School Missed'}</span>
                     <strong class="kpi-cell-val kpi-cell-val-text">${schoolHtml}</strong>
                   </div>
-                  <div class="score-pill kpi-cell">
+                  <div class="score-pill kpi-cell" data-kpi="bonus-value">
                     <span class="kpi-cell-label">💎 ${isHe ? 'כדאיות בונוס' : 'Award Value'}</span>
                     <strong class="kpi-cell-val" dir="ltr">${Number(fbvsVal).toFixed(1)}/100</strong>
                   </div>
@@ -2074,31 +2251,15 @@
                     <span class="stub-ctos-num">${Number(p.combined_trip_optimization_score || 0).toFixed(1)}</span>
                     <span class="stub-ctos-max">/100</span>
                   </div>
-                  <span class="stub-strategy-tag" title="${escapeHtml(stratText)}">${escapeHtml(stratText)}</span>
                 </div>
 
                 <div class="stub-fare-ledger">
-                  <div class="stub-pax-summary">👥 ${escapeHtml(paxInfo.paxSummaryText)}</div>
-                  <div class="stub-fare-row">
-                    <span class="stub-fare-label">💳 ${isHe ? 'נקודות מתמיד' : 'Matmid Points'}</span>
-                    <span class="stub-fare-val stub-fare-points" dir="ltr">${ptsTotal}</span>
-                  </div>
-                  <div class="stub-fare-row">
-                    <span class="stub-fare-label">💵 ${isHe ? 'הערכת מחיר במזומן' : 'Est. Cash Price'}</span>
-                    <span class="stub-fare-val" dir="ltr">~$${oopCash}</span>
-                  </div>
-                  <div class="${savedRowCls}">
-                    <span class="stub-fare-label">${isHe ? 'חיסכון משוער' : 'Est. Net Saved'}</span>
-                    <span class="stub-fare-val" dir="ltr">${estSavedDisplay} (${cppVal}¢)</span>
-                  </div>
-                  <p class="stub-estimate-note">${isHe ? '* הערכה לא מחייבת — המחיר הסופי נקבע בבחירת הטיסה' : '* Non-binding estimate — final price set at flight selection'}</p>
+                  <div class="stub-pax-summary">👥 ${escapeHtml(paxInfo.paxSummaryText)}</div>${minPointsRowHtml}
                 </div>
 
                 ${elalBookBtnHtml ? `<div class="stub-actions-stack">${elalBookBtnHtml}</div>` : ''}
               </div>
             </div>
-
-            ${twoPlusVerifyBannerHtml ? `<div class="proposal-pass-footer">${twoPlusVerifyBannerHtml}</div>` : ''}
           </article>
         `;
       })

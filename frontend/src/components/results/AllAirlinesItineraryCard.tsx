@@ -1,18 +1,18 @@
 /**
  * AllAirlinesItineraryCard Component (`frontend/src/components/results/AllAirlinesItineraryCard.tsx`)
  * Renders commercial & multi-club partner airline itineraries (`ALL_AIRLINES` mode)
- * with normalized family baggage costs (`FamilyBaggageNormalizer`) and multi-club
- * per-passenger award split (`MULTI_CLUB_PER_PASSENGER_SPLIT`).
+ * with family baggage allowance metadata and multi-club per-passenger award split
+ * (`MULTI_CLUB_PER_PASSENGER_SPLIT`).
  */
 
-export interface CommercialBaggageBreakdown {
+export interface CarrierItinerarySummary {
   carrier_code: string;
   carrier_name: string;
-  base_fare_usd: number;
-  normalized_baggage_fee_usd: number;
-  total_normalized_family_usd: number;
+  included_checked_bags: number;
+  is_direct_flight: boolean;
 }
 
-export function formatNormalizedBaggageLabel(breakdown: CommercialBaggageBreakdown): string {
-  return `${breakdown.carrier_name} (${breakdown.carrier_code}) — הערכת מחיר משפחתי כולל כבודה (לא מחייב): ~$${breakdown.total_normalized_family_usd.toFixed(0)}`;
+export function formatCarrierItineraryLabel(summary: CarrierItinerarySummary): string {
+  const flightMode = summary.is_direct_flight ? 'טיסה ישירה' : 'טיסת המשך';
+  return `${summary.carrier_name} (${summary.carrier_code}) — ${flightMode} · כבודה משפחתית: ${summary.included_checked_bags}`;
 }

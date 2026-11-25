@@ -133,13 +133,6 @@ _REMOVED_PTO_SEARCH_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_CASH_PRICING_DISCLAIMER_HE = (
-    "סכומי המזומן, המסים והחיסכון מוצגים כהערכה לא מחייבת בלבד; המחיר הסופי נקבע בעת בחירת הטיסה."
-)
-_CASH_PRICING_DISCLAIMER_EN = (
-    "Cash, tax, and savings figures are non-binding estimates only; final pricing is determined at flight selection."
-)
-
 
 def _validate_optional_str(
     val: Any,
@@ -2005,9 +1998,6 @@ class VacationPlannerAPIRouter:
                     "expanded_destinations": expanded_dests,
                     "count": len(proposals),
                     "live_fetch_mode": live_mode,
-                    "is_cash_price_estimate": True,
-                    "cash_pricing_disclaimer_he": _CASH_PRICING_DISCLAIMER_HE,
-                    "cash_pricing_disclaimer_en": _CASH_PRICING_DISCLAIMER_EN,
                     "status_message_he": status_msg_he,
                     "status_message_en": status_msg_en,
                     "weather_fallback_message_he": weather_fallback_he,
