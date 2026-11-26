@@ -1695,11 +1695,37 @@ class VacationPlannerAPIRouter:
                         d.isoformat() for d in matrix.framework_delta_union_dates
                     ],
                     "candidate_windows": [c.to_dict() for c in candidates],
+                    "workplace_holidays": self.calendar_service.get_workplace_holidays_for_school_year(
+                        norm_year
+                    ),
                 }
                 return (
                     200,
                     private_json_headers,
                     json.dumps(timeline_payload, ensure_ascii=False),
+                )
+
+            # 5b. GET /api/v1/workplace-calendar/{school_year}
+            if method_u == "GET" and path.startswith("/api/v1/workplace-calendar/"):
+                school_year_raw = path[len("/api/v1/workplace-calendar/") :]
+                norm_year = _validate_school_year_strict(school_year_raw)
+                workplace_holidays = (
+                    self.calendar_service.get_workplace_holidays_for_school_year(norm_year)
+                )
+                wp_payload = {
+                    "school_year": norm_year,
+                    "school_year_hebrew": (
+                        workplace_holidays[0]["school_year_hebrew"]
+                        if workplace_holidays
+                        else ""
+                    ),
+                    "count": len(workplace_holidays),
+                    "workplace_holidays": workplace_holidays,
+                }
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(wp_payload, ensure_ascii=False),
                 )
 
             # 6. POST /api/v1/elal-bonus/sync

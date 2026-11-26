@@ -1069,5 +1069,187 @@ class TestM1FoundationDbCalendarMaximizer(unittest.TestCase):
                 self.assertGreaterEqual(arr_in_h, dep_in_h)
 
 
+class TestRun14WorkplaceHolidayCalendarAndCost(unittest.TestCase):
+    """Run 14 (M14): Statutory Israeli workplace holiday calendar & 4-bucket workday cost engine."""
+
+    def test_run14_statutory_workplace_holidays_and_knesset_shifts_2025_2029(self) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        expected_codes = [
+            "ROSH_HASHANAH",
+            "YOM_KIPPUR",
+            "SUKKOT_I",
+            "CHOL_HAMOED_SUKKOT",
+            "SIMCHAT_TORAH",
+            "PESACH_I",
+            "CHOL_HAMOED_PESACH",
+            "PESACH_VII",
+            "YOM_HAATZMAUT",
+            "SHAVUOT",
+        ]
+
+        # Verify 10 chronological statutory periods + exact Knesset Yom HaAtzmaut shifts across 2024-2029
+        expected_atzmaut = {
+            "2024-2025": "2025-05-01",  # Thu (shifted from Fri 5 Iyar)
+            "2025-2026": "2026-04-22",  # Wed
+            "2026-2027": "2027-05-12",  # Wed
+            "2027-2028": "2028-05-02",  # Tue (shifted from Mon 5 Iyar)
+            "2028-2029": "2029-04-19",  # Thu (shifted from Sat 5 Iyar)
+        }
+        for sy, exp_atz in expected_atzmaut.items():
+            periods = IsraeliWorkplaceCalendarService.get_workplace_holidays_for_school_year(sy)
+            self.assertEqual([p["holiday_code"] for p in periods], expected_codes)
+            by_code = {p["holiday_code"]: p for p in periods}
+            self.assertEqual(by_code["YOM_HAATZMAUT"]["start_date"], exp_atz)
+            self.assertEqual(by_code["YOM_HAATZMAUT"]["end_date"], exp_atz)
+            self.assertEqual(by_code["YOM_HAATZMAUT"]["workplace_status"], "OFFICIAL_HOLIDAY")
+            self.assertEqual(by_code["YOM_HAATZMAUT"]["workday_cost_per_day"], 0.0)
+            self.assertEqual(by_code["CHOL_HAMOED_SUKKOT"]["calendar_days"], 6)
+            self.assertEqual(by_code["CHOL_HAMOED_SUKKOT"]["workplace_status"], "CHOL_HAMOED")
+            self.assertEqual(by_code["CHOL_HAMOED_SUKKOT"]["workday_cost_per_day"], 0.5)
+            self.assertEqual(by_code["CHOL_HAMOED_PESACH"]["calendar_days"], 5)
+            self.assertEqual(by_code["CHOL_HAMOED_PESACH"]["workplace_status"], "CHOL_HAMOED")
+            self.assertEqual(by_code["CHOL_HAMOED_PESACH"]["workday_cost_per_day"], 0.5)
+            # Chronological ordering & zero "בוגרים" anywhere
+            starts = [p["start_date"] for p in periods]
+            self.assertEqual(starts, sorted(starts))
+            for entry in periods:
+                for val in entry.values():
+                    self.assertNotIn("בוגרים", str(val))
+
+        # Far-horizon algorithmic support (1900..2100)
+        for edge_sy in ("1900-1901", "2099-2100"):
+            edge_periods = IsraeliWorkplaceCalendarService.get_workplace_holidays_for_school_year(edge_sy)
+            self.assertEqual(len(edge_periods), 10)
+
+        # Statutory independence from MoE school-only break windows:
+        # 1) 2028-05-31 (Wed, 6 Sivan) is statutory Shavuot (0.0), whereas 2028-06-01 (Thu, 7 Sivan Isru Chag) is regular workday (1.0)
+        self.assertEqual(IsraeliWorkplaceCalendarService.classify_workday_date("2028-05-31"), ("OFFICIAL_HOLIDAY", 0.0))
+        self.assertEqual(IsraeliWorkplaceCalendarService.classify_workday_date("2028-06-01"), ("REGULAR_WORKDAY", 1.0))
+        # 2) YK-Sukkot MoE bridge days 11-13 Tishrei 5787 (2026-09-22..24 Tue-Thu) are regular 1.0 workdays
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost("2026-09-22", "2026-09-24")[
+                "workplace_vacation_days_cost"
+            ],
+            3.0,
+        )
+        # 3) Pre-Pesach school break days (e.g. 2027-04-18..21 Sun-Wed before Seder Thu 2027-04-22) are regular 1.0 workdays
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost("2027-04-18", "2027-04-21")[
+                "workplace_vacation_days_cost"
+            ],
+            4.0,
+        )
+        # 4) Hanukkah & Purim Sun-Thu days are regular 1.0 workdays in the Israeli workplace calendar
+        self.assertEqual(IsraeliWorkplaceCalendarService.classify_workday_date("2026-12-07"), ("REGULAR_WORKDAY", 1.0))
+        self.assertEqual(IsraeliWorkplaceCalendarService.classify_workday_date("2027-03-23"), ("REGULAR_WORKDAY", 1.0))
+
+    def test_run14_four_bucket_daily_precedence_and_weekend_override(self) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        # Pure Sun-Thu regular workweek: 5 * 1.0 = 5.0
+        reg_week = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost("2026-11-08", "2026-11-12")
+        self.assertEqual(reg_week["workplace_vacation_days_cost"], 5.0)
+        self.assertEqual(reg_week["regular_workdays_count"], 5)
+        self.assertEqual(reg_week["weekend_days_count"], 0)
+
+        # Pure Fri-Sat weekend: 0.0
+        wknd = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost("2026-11-13", "2026-11-14")
+        self.assertEqual(wknd["workplace_vacation_days_cost"], 0.0)
+        self.assertEqual(wknd["weekend_days_count"], 2)
+
+        # Pesach 2027 (2027-04-22 Thu .. 2027-04-28 Wed, 7 days):
+        # Thu 04-22 Pesach I (0.0 official), Fri 04-23 & Sat 04-24 Chol HaMoed on Fri-Sat -> 0.0 WEEKEND override!
+        # Sun-Tue 04-25..27 Chol HaMoed (3 * 0.5 = 1.5), Wed 04-28 Pesach VII (0.0 official) -> total 1.5!
+        pes_2027 = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost("2027-04-22", "2027-04-28")
+        self.assertEqual(pes_2027["workplace_vacation_days_cost"], 1.5)
+        self.assertEqual(pes_2027["regular_workdays_count"], 0)
+        self.assertEqual(pes_2027["chol_hamoed_workdays_count"], 3)
+        self.assertEqual(pes_2027["official_holiday_workdays_saved_count"], 2)
+        self.assertEqual(pes_2027["weekend_days_count"], 2)
+        self.assertEqual(pes_2027["holiday_or_weekend_days_count"], 4)
+
+        # Sukkot 2026 (2026-09-26 Sat .. 2026-10-03 Sat, 8 days):
+        # Sat 09-26 Sukkot I on Sat (weekend), Sun-Thu 09-27..10-01 Chol HaMoed (5 * 0.5 = 2.5),
+        # Fri 10-02 Hoshana Rabbah on Fri (weekend 0.0!), Sat 10-03 Simchat Torah on Sat (weekend) -> 2.5!
+        suk_2026 = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost("2026-09-26", "2026-10-03")
+        self.assertEqual(suk_2026["workplace_vacation_days_cost"], 2.5)
+        self.assertEqual(suk_2026["chol_hamoed_workdays_count"], 5)
+        self.assertEqual(suk_2026["official_holiday_workdays_saved_count"], 0)
+        self.assertEqual(suk_2026["weekend_days_count"], 3)
+
+    def test_run14_proposal_auto_compute_and_sqlite_roundtrip_zero_ddl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = SQLiteRepository(Path(tmpdir) / "run14_roundtrip.db", auto_seed=False)
+            try:
+                q = FlightSearchQuery(
+                    id="run14-q1",
+                    family_profile_id=None,
+                    date_selection_mode=DateSelectionMode.SPECIFIC_DATES,
+                    airline_selection_mode=AirlineSelectionMode.EL_AL_ONLY,
+                    destination_iatas=["FCO"],
+                    specific_departure_date=date(2027, 4, 22),
+                    specific_return_date=date(2027, 4, 28),
+                )
+                itin = FlightItinerary(
+                    id="run14-itin1",
+                    search_query_id="run14-q1",
+                    origin_iata="TLV",
+                    destination_iata="FCO",
+                    return_origin_iata="FCO",
+                    destination_city_he="רומא",
+                    destination_city_en="Rome",
+                    departure_date=date(2027, 4, 22),
+                    return_date=date(2027, 4, 28),
+                    trip_nights=6,
+                    primary_carrier_iata="LY",
+                    is_elal_flight=True,
+                    utilizes_elal_bonus=True,
+                    fulfillment_strategy=FulfillmentStrategy.FULL_BONUS_SAME_CABIN,
+                )
+                prop = VacationOptionProposal(
+                    id="run14-prop1",
+                    search_query_id="run14-q1",
+                    itinerary_id="run14-itin1",
+                    associated_holiday_codes=["PESACH"],
+                    window_set_type="SPECIFIC_USER_WINDOW",
+                    holiday_alignment_score=95.0,
+                    flight_bonus_value_score=100.0,
+                    combined_trip_optimization_score=97.2,
+                    itinerary=itin,
+                )
+                self.assertEqual(prop.workplace_vacation_days_cost, 1.5)
+                self.assertEqual(prop.chol_hamoed_workdays_count, 3)
+                self.assertEqual(prop.official_holiday_workdays_saved_count, 2)
+                self.assertEqual(prop.weekend_days_count, 2)
+                self.assertEqual(prop.holiday_or_weekend_days_count, 4)
+
+                d = prop.to_dict()
+                for forbidden in (
+                    "total_vacation_days",
+                    "parent_pto_days_used",
+                    "pto_efficiency_ratio",
+                    "vacation_utilization_score",
+                ):
+                    self.assertNotIn(forbidden, d)
+
+                repo.save_search_results(q, [prop])
+                reloaded = repo.get_proposal_by_id("run14-prop1")
+                self.assertIsNotNone(reloaded)
+                self.assertEqual(reloaded.workplace_vacation_days_cost, 1.5)
+                self.assertEqual(reloaded.chol_hamoed_workdays_count, 3)
+                self.assertEqual(reloaded.holiday_or_weekend_days_count, 4)
+
+                cached = repo.get_cached_proposals_for_query("run14-q1", ttl_seconds=3600)
+                self.assertEqual(len(cached), 1)
+                self.assertEqual(cached[0].workplace_vacation_days_cost, 1.5)
+            finally:
+                repo.close()
+
+
 if __name__ == "__main__":
     unittest.main()

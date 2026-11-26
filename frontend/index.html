@@ -52,7 +52,7 @@
       </div>
     </div>
     <nav class="desktop-zone-nav" aria-label="ניווט אזורי שולחן עבודה" data-aria-he="ניווט אזורי שולחן עבודה" data-aria-en="Workspace zone navigation">
-      <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar">📅 לוח חופשות</button>
+      <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar" aria-haspopup="dialog" aria-expanded="false" aria-controls="zone-calendar">📅 לוח חופשות</button>
     </nav>
     <div class="header-summary-pills">
       <div class="header-auth-wrap" id="header-auth-wrap">
@@ -610,11 +610,11 @@
         </div>
       </section>
 
-      <!-- Zone 3 (Optional): Multi-Child MoE Calendar & Annual Auto-Updater -->
-      <section class="zone-card" id="zone-calendar" aria-labelledby="zone-calendar-title" hidden style="display: none;">
-        <div class="zone-header">
+      <!-- Zone 3 (Popup Dialog): Shared MoE School Vacations & Public/Workplace Holidays Ledger -->
+      <section class="zone-card calendar-popup-modal" id="zone-calendar" aria-labelledby="zone-calendar-title" hidden style="display: none;">
+        <div class="zone-header calendar-popup-header">
           <div class="zone-title-wrap">
-            <h2 id="zone-calendar-title">לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)</h2>
+            <h2 id="zone-calendar-title" data-he="לוח חופשות משרד החינוך ולוח חגים ומועדים במשק" data-en="School Vacations &amp; Public / Workplace Holidays">לוח חופשות משרד החינוך ולוח חגים ומועדים במשק</h2>
           </div>
           <div class="zone-actions-row">
             <span class="pill pill-calendar-sync" id="calendar-sync-badge">OFFICIAL_MOE_CIRCULAR</span>
@@ -626,23 +626,53 @@
             </button>
           </div>
         </div>
-        <div class="calendar-scroll-wrapper">
-          <table class="calendar-heatmap-table" id="moe-calendar-table">
-            <thead>
-              <tr>
-                <th class="sticky-col" data-he="חג / חופשה" data-en="Holiday / Break">חג / חופשה</th>
-                <th data-he="מסגרת חינוכית" data-en="Educational Framework">מסגרת חינוכית</th>
-                <th data-he="תחילת חופשה" data-en="Break Starts">תחילת חופשה</th>
-                <th data-he="סיום חופשה" data-en="Break Ends">סיום חופשה</th>
-                <th data-he="חזרה ללימודים" data-en="School Resumes">חזרה ללימודים</th>
-                <th data-he="ימים" data-en="Days">ימים</th>
-                <th data-he="קייטנת ניצנים" data-en="Nitzanim Camp">קייטנת ניצנים</th>
-              </tr>
-            </thead>
-            <tbody id="moe-calendar-tbody">
-              <tr><td colspan="7" data-he="טוען נתוני לוח חופשות משרד החינוך..." data-en="Loading official MoE calendar data...">טוען נתוני לוח חופשות משרד החינוך...</td></tr>
-            </tbody>
-          </table>
+        <div class="calendar-dual-grid" id="calendar-dual-grid">
+          <div class="calendar-ledger-col calendar-ledger-col-moe" id="calendar-col-moe">
+            <div class="calendar-ledger-head">
+              <h3 class="calendar-ledger-title" id="moe-ledger-title" data-he="🏫 לוח חופשות משרד החינוך" data-en="🏫 School Vacation Calendar">🏫 לוח חופשות משרד החינוך</h3>
+            </div>
+            <p class="calendar-ledger-sub" id="moe-ledger-sub" data-he="חופשות לימודים וקייטנות ניצנים לפי מסגרת חינוך" data-en="Official MoE school breaks &amp; Nitzanim camp coverage">חופשות לימודים וקייטנות ניצנים לפי מסגרת חינוך</p>
+            <div class="calendar-scroll-wrapper">
+              <table class="calendar-heatmap-table" id="moe-calendar-table">
+                <thead>
+                  <tr>
+                    <th class="sticky-col" data-he="חג / חופשה" data-en="Holiday / Break">חג / חופשה</th>
+                    <th data-he="מסגרת חינוכית" data-en="Educational Framework">מסגרת חינוכית</th>
+                    <th data-he="תחילת חופשה" data-en="Break Starts">תחילת חופשה</th>
+                    <th data-he="סיום חופשה" data-en="Break Ends">סיום חופשה</th>
+                    <th data-he="חזרה ללימודים" data-en="School Resumes">חזרה ללימודים</th>
+                    <th data-he="ימים" data-en="Days">ימים</th>
+                    <th data-he="קייטנת ניצנים" data-en="Nitzanim Camp">קייטנת ניצנים</th>
+                  </tr>
+                </thead>
+                <tbody id="moe-calendar-tbody">
+                  <tr><td colspan="7" data-he="טוען נתוני לוח חופשות משרד החינוך..." data-en="Loading official MoE calendar data...">טוען נתוני לוח חופשות משרד החינוך...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="calendar-ledger-col calendar-ledger-col-work" id="calendar-col-workplace">
+            <div class="calendar-ledger-head">
+              <h3 class="calendar-ledger-title" id="workplace-ledger-title" data-he="🏢 לוח חגים ומועדים במשק" data-en="🏢 Public &amp; Workplace Holidays">🏢 לוח חגים ומועדים במשק</h3>
+              <span class="pill pill-calendar-sync" id="workplace-schedule-badge" data-he="א׳–ה׳ · שישי–שבת 0" data-en="Sun–Thu · Fri–Sat 0d">א׳–ה׳ · שישי–שבת 0</span>
+            </div>
+            <p class="calendar-ledger-sub" id="workplace-ledger-sub" data-he="שבתון/סופ״ש = 0 · חול המועד = 0.5 · א׳–ה׳ רגיל = 1" data-en="Holiday/Fri–Sat = 0d · Chol HaMoed = 0.5d · Sun–Thu = 1d">שבתון/סופ״ש = 0 · חול המועד = 0.5 · א׳–ה׳ רגיל = 1</p>
+            <div class="calendar-scroll-wrapper">
+              <table class="work-holiday-table" id="workplace-calendar-table">
+                <thead>
+                  <tr>
+                    <th data-he="חג / מועד" data-en="Holiday">חג / מועד</th>
+                    <th data-he="תאריכים" data-en="Dates">תאריכים</th>
+                    <th data-he="ימים" data-en="Days">ימים</th>
+                    <th data-he="חופשת עבודה" data-en="Workday Cost">חופשת עבודה</th>
+                  </tr>
+                </thead>
+                <tbody id="workplace-calendar-tbody">
+                  <tr><td colspan="4" data-he="טוען לוח חגים ומועדים במשק..." data-en="Loading public &amp; workplace holidays...">טוען לוח חגים ומועדים במשק...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -656,8 +686,9 @@
     </div>
   </footer>
 
-  <!-- Mobile Bottom-Sheet Backdrop (<1180px) -->
+  <!-- Mobile Bottom-Sheet Backdrop (<1180px) & Shared Calendar Modal Backdrop -->
   <div class="profile-sheet-backdrop" id="profile-sheet-backdrop" hidden style="display: none;"></div>
+  <div class="calendar-modal-backdrop" id="calendar-modal-backdrop" hidden style="display: none;"></div>
 
   <!-- Thumb-Ergonomic Mobile Bottom Navigation Dock (Hidden on Desktop `>=1024px`) -->
   <nav class="mobile-thumb-dock" id="mobile-thumb-dock" aria-label="ניווט מהיר במובייל" data-aria-he="ניווט מהיר במובייל" data-aria-en="Mobile quick navigation">
@@ -673,7 +704,7 @@
       <span class="mobile-dock-icon" aria-hidden="true">✈️</span>
       <span class="mobile-dock-label" data-he="חלופות" data-en="Deals">חלופות</span>
     </button>
-    <button type="button" class="mobile-dock-btn" id="btn-mobile-dock-calendar" data-dock-zone="zone-calendar">
+    <button type="button" class="mobile-dock-btn" id="btn-mobile-dock-calendar" data-dock-zone="zone-calendar" aria-haspopup="dialog" aria-expanded="false" aria-controls="zone-calendar">
       <span class="mobile-dock-icon" aria-hidden="true">📅</span>
       <span class="mobile-dock-label" data-he="חופשות" data-en="Calendar">חופשות</span>
     </button>

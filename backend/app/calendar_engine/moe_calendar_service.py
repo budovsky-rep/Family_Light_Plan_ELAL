@@ -549,6 +549,184 @@ class HebrewCalendarRuleProjector:
         }
 
 
+class IsraeliWorkplaceCalendarService:
+    """Deterministic Israeli public & statutory workplace holiday calendar (`לוח חגים ומועדים במשק`).
+
+    Projects statutory holidays directly via `HebrewCalendarRuleProjector` across `1900..2100`
+    (never derived from `moe_vacation_windows`) and evaluates per-person workday vacation cost
+    under the fixed Sunday–Thursday Israeli workplace schedule:
+    1. Friday–Saturday (`weekday in (4, 5)`) -> `0.0` (strict precedence even on holidays/Chol HaMoed)
+    2. 9 statutory official Israeli work holidays falling Sun–Thu -> `0.0`
+    3. Chol HaMoed Sukkot (`16–21 Tishrei`) & Chol HaMoed Pesach (`16–20 Nissan`) on Sun–Thu -> `0.5`
+    4. All other Sunday–Thursday workdays -> `1.0`
+    """
+
+    _YEAR_HOLIDAYS_CACHE: dict[int, tuple[frozenset[date], frozenset[date]]] = {}
+    _SCHOOL_YEAR_PERIODS_CACHE: dict[str, tuple[dict[str, Any], ...]] = {}
+
+    @staticmethod
+    def _coerce_date(val: date | datetime | str) -> date:
+        if isinstance(val, datetime):
+            return val.date()
+        if isinstance(val, date):
+            return val
+        s = str(val).strip()
+        if "T" in s:
+            s = s.split("T", 1)[0]
+        return date.fromisoformat(s)
+
+    @classmethod
+    def get_year_holiday_sets(
+        cls, hebrew_year: int
+    ) -> tuple[frozenset[date], frozenset[date]]:
+        """Return `(official_holidays_9d, chol_hamoed_11d)` for Hebrew year `hebrew_year`."""
+        cached = cls._YEAR_HOLIDAYS_CACHE.get(hebrew_year)
+        if cached is not None:
+            return cached
+
+        rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(hebrew_year)
+        pes1 = HebrewCalendarRuleProjector.pesach_first_day(hebrew_year)
+        atz = HebrewCalendarRuleProjector.yom_haatzmaut_date(hebrew_year)
+
+        official_days = frozenset(
+            {
+                rh1,  # 1 Tishrei — Rosh Hashanah I
+                rh1 + timedelta(days=1),  # 2 Tishrei — Rosh Hashanah II
+                rh1 + timedelta(days=9),  # 10 Tishrei — Yom Kippur
+                rh1 + timedelta(days=14),  # 15 Tishrei — Sukkot I
+                rh1 + timedelta(days=21),  # 22 Tishrei — Simchat Torah / Shemini Atzeret
+                pes1,  # 15 Nissan — Pesach I
+                pes1 + timedelta(days=6),  # 21 Nissan — Pesach VII
+                atz,  # Observed 5 Iyar — Yom HaAtzmaut (with Knesset Fri/Sat/Mon shifts)
+                pes1 + timedelta(days=50),  # 6 Sivan — Shavuot
+            }
+        )
+        chol_hamoed_days = frozenset(
+            [rh1 + timedelta(days=offset) for offset in range(15, 21)]  # 16–21 Tishrei (6d)
+            + [pes1 + timedelta(days=offset) for offset in range(1, 6)]  # 16–20 Nissan (5d)
+        )
+        pair = (official_days, chol_hamoed_days)
+        cls._YEAR_HOLIDAYS_CACHE[hebrew_year] = pair
+        return pair
+
+    @classmethod
+    def classify_workday_date(cls, target_date: date | str) -> tuple[str, float]:
+        """Classify a single calendar date under the 4-bucket Israeli workplace rule."""
+        d = cls._coerce_date(target_date)
+        if d.weekday() in (4, 5):  # Friday=4, Saturday=5
+            return ("WEEKEND", 0.0)
+
+        h_spring = d.year + 3760
+        h_autumn = d.year + 3761
+        off_s, chol_s = cls.get_year_holiday_sets(h_spring)
+        off_a, chol_a = cls.get_year_holiday_sets(h_autumn)
+
+        if d in off_s or d in off_a:
+            return ("OFFICIAL_HOLIDAY", 0.0)
+        if d in chol_s or d in chol_a:
+            return ("CHOL_HAMOED", 0.5)
+        return ("REGULAR_WORKDAY", 1.0)
+
+    @classmethod
+    def evaluate_trip_workdays_cost(
+        cls, start_date: date | str, end_date: date | str
+    ) -> dict[str, Any]:
+        """Evaluate inclusive `[start_date, end_date]` per-person workplace vacation-days cost."""
+        s_date = cls._coerce_date(start_date)
+        e_date = cls._coerce_date(end_date)
+        if e_date < s_date:
+            return {
+                "workplace_vacation_days_cost": 0.0,
+                "regular_workdays_count": 0,
+                "chol_hamoed_workdays_count": 0,
+                "official_holiday_workdays_saved_count": 0,
+                "weekend_days_count": 0,
+                "holiday_or_weekend_days_count": 0,
+            }
+
+        regular_cnt = 0
+        chol_cnt = 0
+        holiday_saved_cnt = 0
+        weekend_cnt = 0
+        total_days = (e_date - s_date).days + 1
+
+        for idx in range(total_days):
+            d = s_date + timedelta(days=idx)
+            bucket, _cost = cls.classify_workday_date(d)
+            if bucket == "WEEKEND":
+                weekend_cnt += 1
+            elif bucket == "OFFICIAL_HOLIDAY":
+                holiday_saved_cnt += 1
+            elif bucket == "CHOL_HAMOED":
+                chol_cnt += 1
+            else:
+                regular_cnt += 1
+
+        total_cost = round(regular_cnt * 1.0 + chol_cnt * 0.5, 1)
+        return {
+            "workplace_vacation_days_cost": total_cost,
+            "regular_workdays_count": regular_cnt,
+            "chol_hamoed_workdays_count": chol_cnt,
+            "official_holiday_workdays_saved_count": holiday_saved_cnt,
+            "weekend_days_count": weekend_cnt,
+            "holiday_or_weekend_days_count": holiday_saved_cnt + weekend_cnt,
+        }
+
+    @classmethod
+    def get_workplace_holidays_for_school_year(
+        cls, school_year: str
+    ) -> list[dict[str, Any]]:
+        """Return the 10 chronological statutory Israeli workplace holiday/Chol HaMoed periods."""
+        norm_year = normalize_school_year(school_year)
+        cached = cls._SCHOOL_YEAR_PERIODS_CACHE.get(norm_year)
+        if cached is not None:
+            return [dict(item) for item in cached]
+
+        heb_year, heb_label = gregorian_school_year_to_hebrew_year(norm_year)
+        rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(heb_year)
+        pes1 = HebrewCalendarRuleProjector.pesach_first_day(heb_year)
+        atz = HebrewCalendarRuleProjector.yom_haatzmaut_date(heb_year)
+
+        raw_specs: tuple[tuple[str, str, str, date, date, str], ...] = (
+            ("ROSH_HASHANAH", "ראש השנה", "Rosh Hashanah", rh1, rh1 + timedelta(days=1), "OFFICIAL_HOLIDAY"),
+            ("YOM_KIPPUR", "יום הכיפורים", "Yom Kippur", rh1 + timedelta(days=9), rh1 + timedelta(days=9), "OFFICIAL_HOLIDAY"),
+            ("SUKKOT_I", "חג סוכות א׳", "Sukkot I", rh1 + timedelta(days=14), rh1 + timedelta(days=14), "OFFICIAL_HOLIDAY"),
+            ("CHOL_HAMOED_SUKKOT", "חול המועד סוכות", "Chol HaMoed Sukkot", rh1 + timedelta(days=15), rh1 + timedelta(days=20), "CHOL_HAMOED"),
+            ("SIMCHAT_TORAH", "שמיני עצרת / שמחת תורה", "Simchat Torah", rh1 + timedelta(days=21), rh1 + timedelta(days=21), "OFFICIAL_HOLIDAY"),
+            ("PESACH_I", "חג פסח א׳", "Passover I", pes1, pes1, "OFFICIAL_HOLIDAY"),
+            ("CHOL_HAMOED_PESACH", "חול המועד פסח", "Chol HaMoed Pesach", pes1 + timedelta(days=1), pes1 + timedelta(days=5), "CHOL_HAMOED"),
+            ("PESACH_VII", "שביעי של פסח", "Passover VII", pes1 + timedelta(days=6), pes1 + timedelta(days=6), "OFFICIAL_HOLIDAY"),
+            ("YOM_HAATZMAUT", "יום העצמאות", "Independence Day", atz, atz, "OFFICIAL_HOLIDAY"),
+            ("SHAVUOT", "חג השבועות", "Shavuot", pes1 + timedelta(days=50), pes1 + timedelta(days=50), "OFFICIAL_HOLIDAY"),
+        )
+
+        entries: list[dict[str, Any]] = []
+        for code, name_he, name_en, s_d, e_d, status in raw_specs:
+            is_official = status == "OFFICIAL_HOLIDAY"
+            eval_res = cls.evaluate_trip_workdays_cost(s_d, e_d)
+            entries.append(
+                {
+                    "id": f"workplace_{heb_year}_{code}",
+                    "school_year": norm_year,
+                    "school_year_hebrew": heb_label,
+                    "holiday_code": code,
+                    "name_he": name_he,
+                    "name_en": name_en,
+                    "start_date": s_d.isoformat(),
+                    "end_date": e_d.isoformat(),
+                    "calendar_days": (e_d - s_d).days + 1,
+                    "workplace_status": status,
+                    "workday_cost_per_day": 0.0 if is_official else 0.5,
+                    "effective_workdays_cost": eval_res["workplace_vacation_days_cost"],
+                    "status_badge_he": "שבתון · 0 ימי חופש" if is_official else "חול המועד · 0.5 יום",
+                    "status_badge_en": "Holiday · 0d" if is_official else "Chol HaMoed · 0.5d",
+                }
+            )
+
+        cls._SCHOOL_YEAR_PERIODS_CACHE[norm_year] = tuple(entries)
+        return [dict(item) for item in entries]
+
+
 class MoECalendarAutoUpdaterService:
     """Annual MoE Calendar Auto-Updater (`Layer 1` Bundled/Remote + `Layer 2` Hebrew Rule Projector)."""
 
@@ -664,6 +842,22 @@ class MoECalendarService:
     def get_calendar_metadata(self, school_year: str) -> dict[str, Any]:
         norm_year = normalize_school_year(school_year)
         return self.auto_updater.load_or_project_calendar_doc(norm_year)
+
+    def get_workplace_holidays_for_school_year(
+        self, school_year: str
+    ) -> list[dict[str, Any]]:
+        """Return the 10 chronological statutory Israeli workplace holiday/Chol HaMoed periods."""
+        return IsraeliWorkplaceCalendarService.get_workplace_holidays_for_school_year(
+            school_year
+        )
+
+    def evaluate_trip_workdays_cost(
+        self, start_date: date | str, end_date: date | str
+    ) -> dict[str, Any]:
+        """Evaluate inclusive `[start_date, end_date]` per-person Israeli workplace vacation-days cost."""
+        return IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost(
+            start_date, end_date
+        )
 
     def get_upcoming_holidays_for_rolling_year(
         self,

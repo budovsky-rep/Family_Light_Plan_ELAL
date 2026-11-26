@@ -3904,5 +3904,133 @@ class TestRun12ConsistentBonusBadges(unittest.TestCase):
                 self.assertEqual(len(prop["per_child_impact"]), 2)
 
 
+class TestRun14WorkplaceHolidayCalendarAndCost(unittest.TestCase):
+    """Run 14 (M14): Per-person workday cost invariance, scoring/selector invariance & API contracts."""
+
+    def test_run14_per_person_invariance_and_scoring_ranking_holiday_selector_invariance(
+        self,
+    ) -> None:
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "run14_m2_inv.db")
+
+            # 1. Verify #select-direct-holiday / upcoming API stays at exact 11 canonical holidays
+            up_resp = client.get("/api/v1/moe-calendar/upcoming?as_of=2026-11-26")
+            self.assertEqual(up_resp.status_code, 200)
+            up_data = up_resp.json()
+            self.assertEqual(up_data["count"], 11)
+            self.assertEqual(len(up_data["holidays"]), 11)
+
+            # 2. Verify workplace_vacation_days_cost is strictly per single working traveler
+            #    (identical across adults_count = 1, 2, 4 and 0 vs 2 children), while CTOS stays 0.55*HAS + 0.45*FBVS
+            costs_by_party: list[dict[tuple[str, str, str], float]] = []
+            for adults_n, kids in (
+                (1, []),
+                (2, []),
+                (4, []),
+                (
+                    2,
+                    [
+                        {"child_age_years": 7, "framework_type": "ELEMENTARY_1_3"},
+                        {"child_age_years": 11, "framework_type": "ELEMENTARY_4_6"},
+                    ],
+                ),
+            ):
+                s_resp = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "SPECIFIC_DATES",
+                        "specific_departure_date": "2027-04-11",
+                        "specific_return_date": "2027-04-18",
+                        "flex_days_plus_minus": 0,
+                        "airline_selection_mode": "EL_AL_ONLY",
+                        "destination_iatas": ["FCO"],
+                        "inline_profile": {
+                            "adults_count": adults_n,
+                            "matmid_points_balance": 0,
+                            "children": kids,
+                        },
+                    },
+                )
+                self.assertEqual(s_resp.status_code, 200)
+                props = s_resp.json()["proposals"]
+                self.assertGreater(len(props), 0)
+                party_map: dict[tuple[str, str, str], float] = {}
+                for p in props:
+                    it = p["itinerary"]
+                    key = (
+                        it["destination_iata"],
+                        it["departure_date"],
+                        it["return_date"],
+                    )
+                    # 2027-04-11 (Sun) .. 2027-04-18 (Sun): 6 regular Sun-Thu workdays + Fri-Sat (2 weekend) = 6.0
+                    self.assertEqual(p["workplace_vacation_days_cost"], 6.0)
+                    self.assertEqual(p["regular_workdays_count"], 6)
+                    self.assertEqual(p["chol_hamoed_workdays_count"], 0)
+                    self.assertEqual(p["weekend_days_count"], 2)
+                    self.assertEqual(p["holiday_or_weekend_days_count"], 2)
+                    # CTOS formula (SOFT_PRIORITIZE default -> 0.55 * HAS + 0.45 * FBVS) has zero workplace weight
+                    expected_ctos = round(
+                        0.55 * float(p["holiday_alignment_score"])
+                        + 0.45 * float(p["flight_bonus_value_score"]),
+                        1,
+                    )
+                    self.assertAlmostEqual(
+                        float(p["combined_trip_optimization_score"]),
+                        expected_ctos,
+                        places=1,
+                    )
+                    party_map[key] = p["workplace_vacation_days_cost"]
+                costs_by_party.append(party_map)
+
+            for pm in costs_by_party[1:]:
+                self.assertEqual(pm, costs_by_party[0])
+
+    def test_run14_calendar_api_endpoints_and_legacy_pto_422_preservation(self) -> None:
+        import json
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "run14_m2_api.db")
+
+            # GET /api/v1/moe-calendar/{school_year} includes workplace_holidays (10 entries, zero "בוגרים")
+            moe_resp = client.get("/api/v1/moe-calendar/2026-2027")
+            self.assertEqual(moe_resp.status_code, 200)
+            moe_json = moe_resp.json()
+            self.assertIn("workplace_holidays", moe_json)
+            self.assertEqual(len(moe_json["workplace_holidays"]), 10)
+            self.assertNotIn("בוגרים", json.dumps(moe_json["workplace_holidays"], ensure_ascii=False))
+
+            # Companion GET /api/v1/workplace-calendar/{school_year} + strict 422 validation
+            wp_resp = client.get("/api/v1/workplace-calendar/2026-2027")
+            self.assertEqual(wp_resp.status_code, 200)
+            wp_json = wp_resp.json()
+            self.assertEqual(wp_json["school_year"], "2026-2027")
+            self.assertEqual(wp_json["count"], 10)
+            self.assertEqual(wp_json["workplace_holidays"], moe_json["workplace_holidays"])
+            self.assertEqual(client.get("/api/v1/workplace-calendar/2019-2020").status_code, 422)
+            self.assertEqual(client.get("/api/v1/workplace-calendar/not-a-year").status_code, 422)
+
+            # Legacy PTO search keys still strictly rejected with HTTP 422
+            for legacy_key in (
+                "workweek_type",
+                "erev_chag_pto_weight",
+                "chol_hamoed_pto_weight",
+                "annual_pto_budget",
+                "max_pto_per_trip",
+            ):
+                bad_search = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "SPECIFIC_DATES",
+                        "specific_departure_date": "2027-04-11",
+                        "specific_return_date": "2027-04-18",
+                        legacy_key: 5,
+                    },
+                )
+                self.assertEqual(bad_search.status_code, 422, legacy_key)
+
+
 if __name__ == "__main__":
     unittest.main()

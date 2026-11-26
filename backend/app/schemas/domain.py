@@ -1841,6 +1841,12 @@ class VacationOptionProposal(_DomainModelBase):
     combined_trip_optimization_score: float = 0.0
     explanation_summary_he: str = ""
     itinerary: Optional[FlightItinerary] = None
+    workplace_vacation_days_cost: float = 0.0
+    regular_workdays_count: int = 0
+    chol_hamoed_workdays_count: int = 0
+    official_holiday_workdays_saved_count: int = 0
+    weekend_days_count: int = 0
+    holiday_or_weekend_days_count: int = 0
     created_at: Optional[str] = field(default_factory=_now_iso)
 
     def __post_init__(self) -> None:
@@ -1911,6 +1917,44 @@ class VacationOptionProposal(_DomainModelBase):
             self.itinerary = FlightItinerary.from_dict(self.itinerary)
         if self.itinerary is not None and not self.itinerary_id:
             self.itinerary_id = self.itinerary.id
+        if (
+            self.itinerary is not None
+            and self.itinerary.departure_date is not None
+            and self.itinerary.return_date is not None
+        ):
+            from backend.app.calendar_engine.moe_calendar_service import (
+                IsraeliWorkplaceCalendarService,
+            )
+
+            wp_eval = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost(
+                self.itinerary.departure_date, self.itinerary.return_date
+            )
+            self.workplace_vacation_days_cost = float(
+                wp_eval["workplace_vacation_days_cost"]
+            )
+            self.regular_workdays_count = int(wp_eval["regular_workdays_count"])
+            self.chol_hamoed_workdays_count = int(wp_eval["chol_hamoed_workdays_count"])
+            self.official_holiday_workdays_saved_count = int(
+                wp_eval["official_holiday_workdays_saved_count"]
+            )
+            self.weekend_days_count = int(wp_eval["weekend_days_count"])
+            self.holiday_or_weekend_days_count = int(
+                wp_eval["holiday_or_weekend_days_count"]
+            )
+        else:
+            self.workplace_vacation_days_cost = round(
+                float(self.workplace_vacation_days_cost or 0.0), 1
+            )
+            self.regular_workdays_count = int(self.regular_workdays_count or 0)
+            self.chol_hamoed_workdays_count = int(self.chol_hamoed_workdays_count or 0)
+            self.official_holiday_workdays_saved_count = int(
+                self.official_holiday_workdays_saved_count or 0
+            )
+            self.weekend_days_count = int(self.weekend_days_count or 0)
+            self.holiday_or_weekend_days_count = int(
+                self.holiday_or_weekend_days_count
+                or (self.official_holiday_workdays_saved_count + self.weekend_days_count)
+            )
         if not self.created_at:
             self.created_at = _now_iso()
 
@@ -1941,6 +1985,12 @@ class VacationOptionProposal(_DomainModelBase):
             "combined_trip_optimization_score": self.combined_trip_optimization_score,
             "explanation_summary_he": self.explanation_summary_he,
             "itinerary": self.itinerary.to_dict() if self.itinerary else None,
+            "workplace_vacation_days_cost": self.workplace_vacation_days_cost,
+            "regular_workdays_count": self.regular_workdays_count,
+            "chol_hamoed_workdays_count": self.chol_hamoed_workdays_count,
+            "official_holiday_workdays_saved_count": self.official_holiday_workdays_saved_count,
+            "weekend_days_count": self.weekend_days_count,
+            "holiday_or_weekend_days_count": self.holiday_or_weekend_days_count,
             "created_at": self.created_at,
         }
 
@@ -2001,6 +2051,20 @@ class VacationOptionProposal(_DomainModelBase):
             ),
             explanation_summary_he=str(data.get("explanation_summary_he") or ""),
             itinerary=itin,
+            workplace_vacation_days_cost=float(
+                data.get("workplace_vacation_days_cost", 0.0) or 0.0
+            ),
+            regular_workdays_count=int(data.get("regular_workdays_count", 0) or 0),
+            chol_hamoed_workdays_count=int(
+                data.get("chol_hamoed_workdays_count", 0) or 0
+            ),
+            official_holiday_workdays_saved_count=int(
+                data.get("official_holiday_workdays_saved_count", 0) or 0
+            ),
+            weekend_days_count=int(data.get("weekend_days_count", 0) or 0),
+            holiday_or_weekend_days_count=int(
+                data.get("holiday_or_weekend_days_count", 0) or 0
+            ),
             created_at=data.get("created_at") or _now_iso(),
         )
 

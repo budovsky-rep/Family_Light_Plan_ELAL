@@ -4199,7 +4199,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         # Mobile bottom nav must be hidden on desktop
         self.assertRegex(html, r'<nav[^>]*class="mobile-bottom-nav"[^>]*hidden')
 
-        # Run 3 + Run 7 UI invariants on GET /
+        # Run 3 + Run 7 + Run 14 UI invariants on GET /
         for removed_token in (
             'id="select-direct-year"',
             'id="tab-mode-moe"',
@@ -4214,15 +4214,23 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "brand-badge",
             'id="prof-pto-budget"',
             "תקציב חופש",
-            "ימי החופש",
-            "ימי חופש",
             "מקסום ימי חופש",
             "פירוט הקצאת",
             "btn-ics-link",
             "export.ics",
         ):
             self.assertNotIn(removed_token, html)
-        self.assertIsNone(re.search(r"(?<![א-ת])יום חופש(?![א-ת])", html))
+        for run14_token in (
+            'id="workplace-calendar-table"',
+            'id="workplace-calendar-tbody"',
+            'id="calendar-modal-backdrop"',
+            "לוח חגים ומועדים במשק",
+            "חופשת עבודה",
+        ):
+            self.assertIn(run14_token, html)
+        self.assertIsNone(
+            re.search(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])", html)
+        )
 
         soup = BeautifulSoup(html, "html.parser")
         dest_sel = soup.find("select", id="select-destination")
@@ -4956,6 +4964,139 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         ):
             self.assertIn(req_js, app_js)
         self.assertEqual(app_js.count("window.location.assign(loginUrl);"), 1)
+
+    def test_f31_9_run14_workplace_calendar_cost_zero_children_and_popup_contracts(
+        self,
+    ) -> None:
+        """Run 14 (`M14`): statutory Israeli workplace calendar, 4-bucket workday cost, 0-children suppression & shared dual-calendar popup."""
+        import re as _re
+        from bs4 import BeautifulSoup
+
+        html = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        app_js = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+        domain_ts = (PROJECT_ROOT / "frontend" / "src" / "types" / "domain.ts").read_text("utf-8")
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 1. Shared toggleable popup markup & dual side-by-side ledgers
+        cal_zone = soup.find("section", id="zone-calendar")
+        self.assertIsNotNone(cal_zone)
+        self.assertTrue(cal_zone.has_attr("hidden"))
+        self.assertIn("calendar-popup-modal", cal_zone.get("class") or [])
+        self.assertNotIn("בוגרים", cal_zone.get_text(" ", strip=True))
+
+        dual_grid = cal_zone.find(id="calendar-dual-grid")
+        self.assertIsNotNone(dual_grid)
+        col_moe = dual_grid.find(id="calendar-col-moe")
+        col_work = dual_grid.find(id="calendar-col-workplace")
+        self.assertIsNotNone(col_moe)
+        self.assertIsNotNone(col_work)
+        self.assertIsNotNone(col_moe.find("table", id="moe-calendar-table"))
+        self.assertIsNotNone(col_work.find("table", id="workplace-calendar-table"))
+        self.assertIsNotNone(col_work.find("tbody", id="workplace-calendar-tbody"))
+        self.assertIsNotNone(soup.find(id="calendar-modal-backdrop"))
+
+        for trig_id in ("btn-toggle-calendar", "btn-mobile-dock-calendar"):
+            trig = soup.find("button", id=trig_id)
+            self.assertIsNotNone(trig, trig_id)
+            self.assertEqual(trig.get("aria-haspopup"), "dialog")
+            self.assertEqual(trig.get("aria-expanded"), "false")
+            self.assertEqual(trig.get("aria-controls"), "zone-calendar")
+
+        # 2. Terminology guard: zero standalone "בוגרים" across frontend assets
+        bogrim_re = _re.compile(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])")
+        for asset_name, asset_txt in (
+            ("index.html", html),
+            ("app.js", app_js),
+            ("app.css", css),
+            ("domain.ts", domain_ts),
+        ):
+            self.assertIsNone(bogrim_re.search(asset_txt), f"Forbidden בוגרים in {asset_name}")
+
+        # 3. CSS & JS Run 14 contracts
+        self.assertNotIn("left", css.lower())
+        self.assertNotIn("right", css.lower())
+        self.assertNotIn("ellipsis", css.lower())
+        for req_css in (
+            ".flight-bonus-points-pill",
+            '.stub-kpi-grid[data-paired-vacation="true"]',
+            ".calendar-modal-backdrop",
+            "#zone-calendar.is-calendar-open",
+            ".calendar-dual-grid",
+            ".work-holiday-table",
+        ):
+            self.assertIn(req_css, css)
+        self.assertNotIn("stub-pax-summary", app_js)
+        self.assertNotIn("stub-fare-ledger", app_js)
+        for req_js in (
+            "projectWorkplaceHolidaysClient",
+            "computeTripWorkdaysClient",
+            "lastSearchProfile",
+            "hasChildrenInSearch",
+            'data-kpi="workdays-cost"',
+            "renderWorkplaceCalendarTable",
+            "CALENDAR_MODAL_INERT_SELECTORS",
+            "חופשת עבודה",
+            "Workdays Off",
+        ):
+            self.assertIn(req_js, app_js)
+        for req_html in (
+            "לוח חגים ומועדים במשק",
+            "Public &amp; Workplace Holidays",
+            "לוח חופשות משרד החינוך",
+            "School Vacation Calendar",
+        ):
+            self.assertIn(req_html, html)
+
+        # Selective inert must NEVER include #app-header or #mobile-thumb-dock so 2nd click closes popup
+        inert_block = app_js.split("CALENDAR_MODAL_INERT_SELECTORS", 1)[1].split("];", 1)[0]
+        self.assertNotIn("#app-header", inert_block)
+        self.assertNotIn("#mobile-thumb-dock", inert_block)
+
+        # 4. REST API contracts on isolated DB
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        client = self.get_client(db_path)
+
+        cal_resp = client.get("/api/v1/moe-calendar/2026-2027")
+        self.assertEqual(cal_resp.status_code, 200)
+        cal_json = cal_resp.json()
+        self.assertEqual(len(cal_json.get("workplace_holidays") or []), 10)
+        self.assertNotIn("בוגרים", json.dumps(cal_json["workplace_holidays"], ensure_ascii=False))
+
+        wp_resp = client.get("/api/v1/workplace-calendar/2026-2027")
+        self.assertEqual(wp_resp.status_code, 200)
+        self.assertEqual(wp_resp.json()["count"], 10)
+        self.assertEqual(client.get("/api/v1/workplace-calendar/1899-1900").status_code, 422)
+
+        srch = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-04-22",
+                "specific_return_date": "2027-04-28",
+                "flex_days_plus_minus": 0,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA", "FCO", "ATH"],
+                "inline_profile": {"adults_count": 2, "matmid_points_balance": 0, "children": []},
+            },
+        )
+        self.assertEqual(srch.status_code, 200)
+        props = srch.json()["proposals"]
+        self.assertGreater(len(props), 0)
+        for p in props:
+            self.assertEqual(p["workplace_vacation_days_cost"], 1.5)
+            self.assertEqual(p["chol_hamoed_workdays_count"], 3)
+            self.assertEqual(p["official_holiday_workdays_saved_count"], 2)
+            self.assertEqual(p["weekend_days_count"], 2)
+            self.assertEqual(p["holiday_or_weekend_days_count"], 4)
+            for legacy_pto_key in (
+                "total_vacation_days",
+                "parent_pto_days_used",
+                "pto_efficiency_ratio",
+                "vacation_utilization_score",
+            ):
+                self.assertNotIn(legacy_pto_key, p)
 
 
 # ============================================================================

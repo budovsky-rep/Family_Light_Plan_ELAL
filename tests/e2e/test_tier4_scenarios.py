@@ -2233,9 +2233,16 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             )
             self.assertTrue(guest_draft_state["saveBtnHiddenOnGuest"])
             self.assertEqual(guest_draft_state["removedCount"], 0)
-            for removed_tok in ("פירוט הקצאת", "ימי החופש", "ימי חופש", "ייצוא .ics"):
+            for removed_tok in ("פירוט הקצאת", "ייצוא .ics", "תקציב חופש"):
                 self.assertNotIn(removed_tok, guest_draft_state["bodyTxt"])
-            self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", guest_draft_state["bodyTxt"]))
+            self.assertIn("חופשת עבודה", guest_draft_state["bodyTxt"])
+            self.assertNotIn('התאמה לחופשת בי"ס', guest_draft_state["bodyTxt"])
+            self.assertIsNone(
+                _re.search(
+                    r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])",
+                    guest_draft_state["bodyTxt"],
+                )
+            )
             self.assertIn("יתרת מתמיד 0", guest_draft_state["zeroAlertText"])
             self.assertIn("מאגר כרטיסי הבונוס של אל על", guest_draft_state["awardNoteText"])
             self.assertIn("מאגר טיסות הבונוס מתעדכן פעם ביום", guest_draft_state["awardNoteBodyText"])
@@ -2414,15 +2421,19 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "allocations-table",
             "btn-ics-link",
             "פירוט הקצאת",
-            "ימי החופש",
-            "ימי חופש",
             "ייצוא .ics",
             "export.ics",
         ):
             self.assertNotIn(removed_asset_tok, html_text)
             self.assertNotIn(removed_asset_tok, js_text)
-        self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", html_text))
-        self.assertIsNone(_re.search(r"(?<![א-ת])יום חופש(?![א-ת])", js_text))
+        self.assertIn("לוח חגים ומועדים במשק", html_text)
+        self.assertIn("חופשת עבודה", js_text)
+        self.assertIsNone(
+            _re.search(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])", html_text)
+        )
+        self.assertIsNone(
+            _re.search(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])", js_text)
+        )
 
         manifest = client.get("/manifest.webmanifest").json()
         self.assertEqual(manifest["theme_color"], "#0B1F3A")
@@ -2885,15 +2896,20 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(cmp_bar_check["cmpMatches"], 0)
         self.assertFalse(cmp_bar_check["hasCompareBody"])
 
-        # (e) Tapping `#btn-mobile-dock-calendar` opens `#zone-calendar` in <768px card-stack layout without overflow
+        # (e) Tapping `#btn-mobile-dock-calendar` opens `#zone-calendar` shared popup in <768px card-stack layout without overflow
         mob_cal = _cdp_eval(
             """(() => {
               document.getElementById('btn-mobile-dock-calendar').click();
+              const calZone = document.getElementById('zone-calendar');
               const tbl = document.getElementById('moe-calendar-table');
+              const wrkTbl = document.getElementById('workplace-calendar-table');
               const docEl = document.documentElement;
               const res = {
-                calHidden: document.getElementById('zone-calendar').hasAttribute('hidden'),
+                calHidden: calZone.hasAttribute('hidden'),
+                calPos: getComputedStyle(calZone).position,
                 tblDisplay: getComputedStyle(tbl).display,
+                wrkTblDisplay: getComputedStyle(wrkTbl).display,
+                wrkRows: document.querySelectorAll('#workplace-calendar-tbody tr').length,
                 scrollWidth: docEl.scrollWidth,
                 clientWidth: docEl.clientWidth
               };
@@ -2902,7 +2918,10 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             })()"""
         )
         self.assertFalse(mob_cal["calHidden"])
+        self.assertEqual(mob_cal["calPos"], "fixed")
         self.assertEqual(mob_cal["tblDisplay"], "block")
+        self.assertEqual(mob_cal["wrkTblDisplay"], "block")
+        self.assertEqual(mob_cal["wrkRows"], 10)
         self.assertLessEqual(mob_cal["scrollWidth"], mob_cal["clientWidth"])
 
         # (f) Opening `#zone-profile` sheet at <1180px (`390x844`), then resizing to 1440x900 (`>=1180px`) unlocks body cleanly
@@ -2956,7 +2975,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   const deskNav = document.querySelector('.desktop-zone-nav');
                   const prof = document.getElementById('zone-profile');
                   const bookBtn = document.querySelector('a[data-elal-book-link="true"]');
+                  const calZone = document.getElementById('zone-calendar');
                   const tbl = document.getElementById('moe-calendar-table');
+                  const wrkTbl = document.getElementById('workplace-calendar-table');
+                  const calPos = getComputedStyle(calZone).position;
+                  const wrkTblDisplay = getComputedStyle(wrkTbl).display;
                   document.getElementById('btn-close-calendar').click();
                   const calBtnActiveAfterClose = calBtn.classList.contains('active');
                   return {
@@ -2980,7 +3003,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     railEditText: document.getElementById('btn-open-profile-sheet').textContent.trim(),
                     adultsFieldVisible: document.getElementById('prof-adults-count').getBoundingClientRect().height > 0,
                     bookHeight: bookBtn ? bookBtn.getBoundingClientRect().height : 0,
+                    calPos,
                     tblDisplay: getComputedStyle(tbl).display,
+                    wrkTblDisplay,
                     calBtnActiveWhenOpen,
                     calBtnActiveAfterClose,
                     jsErrors: window.__fvpJsErrors
@@ -3002,7 +3027,9 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(desk["railEditText"], "עריכה" if target_dir == "rtl" else "Edit")
             self.assertGreater(desk["bookHeight"], 0)
             self.assertLessEqual(desk["bookHeight"], 42)
+            self.assertEqual(desk["calPos"], "fixed")
             self.assertEqual(desk["tblDisplay"], "table")
+            self.assertEqual(desk["wrkTblDisplay"], "table")
             self.assertTrue(desk["calBtnActiveWhenOpen"])
             self.assertFalse(desk["calBtnActiveAfterClose"])
 
@@ -4680,9 +4707,6 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             "120,000",
             "מחיר",
             "price",
-            "ימי החופש",
-            "ימי חופש",
-            "יום חופש",
             "rbddataclients",
             "החופשה המומלצת ביותר",
             "בחירה מובילה",
@@ -4705,6 +4729,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 "weather_dest_tok": "כף גרקו",
                 "kpi_labels": {
                     "school-fit": 'התאמה לחופשת בי"ס',
+                    "workdays-cost": "חופשת עבודה",
                 },
                 "paren_tok": "חיסור",
             },
@@ -4719,6 +4744,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 "weather_dest_tok": "Larnaca",
                 "kpi_labels": {
                     "school-fit": "School Break Fit",
+                    "workdays-cost": "Workdays Off",
                 },
                 "paren_tok": "missed",
             },
@@ -4742,8 +4768,10 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     cards: cards.map((c) => {
                       const mainEl = c.querySelector('.proposal-pass-main');
                       const stubEl = c.querySelector('.proposal-pass-stub');
-                      const paxEl = stubEl ? stubEl.querySelector('.stub-pax-summary') : null;
+                      const minPtsInMain = mainEl ? mainEl.querySelector('.min-points-ticket') : null;
+                      const paxInStub = stubEl ? stubEl.querySelector('.stub-pax-summary') : null;
                       const wEl = stubEl ? stubEl.querySelector('.stub-weather-card[data-weather-compact="true"]') : null;
+                      const workEl = stubEl ? stubEl.querySelector('.kpi-cell[data-kpi="workdays-cost"]') : null;
                       const fitEl = stubEl ? stubEl.querySelector('.kpi-cell[data-kpi="school-fit"]') : null;
                       const parenEl = fitEl ? fitEl.querySelector('.kpi-missed-paren') : null;
                       const seaEl = wEl ? wEl.querySelector('[data-weather-sea]') : null;
@@ -4787,7 +4815,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                         origPairRight: origPairRect.right,
                         destPairLeft: destPairRect.left,
                         destPairRight: destPairRect.right,
-                        hasPaxAndWeatherSameStub: Boolean(paxEl && wEl && fitEl && paxEl.closest('.proposal-pass-stub') === wEl.closest('.proposal-pass-stub')),
+                        hasWeatherAndPairedVacationBelowInStub: Boolean(!paxInStub && !stubEl.querySelector('.min-points-ticket') && (c.getAttribute('data-strategy') === 'CASH_AND_POINTS' || minPtsInMain) && wEl && workEl && fitEl && wEl.getBoundingClientRect().bottom <= workEl.getBoundingClientRect().top + 2.0 && Math.abs(fitEl.getBoundingClientRect().top - workEl.getBoundingClientRect().bottom) <= 6.0),
                         parenText: parenEl ? parenEl.textContent.trim() : '',
                         weatherVisible: Boolean(wRect && wRect.width > 0 && wRect.height > 0),
                         weatherText: wEl ? wEl.textContent.replace(/\\s+/g, ' ').trim() : '',
@@ -4811,12 +4839,18 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             for card in snap["cards"]:
                 for bad_tok in forbidden_card_tokens:
                     self.assertNotIn(bad_tok, card["text"])
+                self.assertIsNone(
+                    _re.search(
+                        r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])",
+                        card["text"],
+                    )
+                )
                 for stmt_a, tag_b in contradictory_pairs:
                     self.assertFalse(
                         stmt_a in card["text"] and tag_b in card["text"],
                         f"Contradictory bonus badges on card: {card}",
                     )
-                self.assertTrue(card["hasPaxAndWeatherSameStub"])
+                self.assertTrue(card["hasWeatherAndPairedVacationBelowInStub"])
                 self.assertTrue(card["parenText"].startswith("(") and card["parenText"].endswith(")"))
                 self.assertIn(locale_spec["paren_tok"], card["parenText"])
                 self.assertTrue(card["weatherVisible"])
@@ -5729,6 +5763,499 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         )
         browser.settle()
         self.assertFalse(browser_client.get("/api/v1/auth/session").json()["authenticated"])
+        self.assertEqual(browser.js_errors(), [])
+
+    def test_scenario_28_run14_workplace_cost_zero_children_and_dual_calendar_popup_e2e(
+        self,
+    ) -> None:
+        """Scenario 28 (Run 14 M14): Real Headless-Chrome CDP verification across `1440x900`, `390x844`, and `360x800`
+        (`he` RTL & `en` LTR) for:
+        1. `0`-children complete school-vacation suppression + `[data-kpi="workdays-cost"]` & unclipped tooltip + `lastSearchProfile` lock.
+        2. `>= 1`-child non-expanding card geometry (`dW == 0`, `dH <= 4.0px` vs `36c40ad` DPR=2 baseline, single-line header for 1-digit & 2-digit workdays).
+        3. Shared toggleable main-page popup (`#zone-calendar.is-calendar-open`, `position: fixed`, side-by-side MoE + `"לוח חגים ומועדים במשק"`, 1st click opens, 2nd click on same trigger closes, plus `Escape` & `#btn-close-calendar`).
+        4. Zero `"בוגרים"` across all KPI cells, tooltips, cards, and `#zone-calendar`.
+        """
+        import re as _re
+
+        bogrim_re = _re.compile(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])")
+        db_path, repo = self.make_isolated_env(auto_seed=True)
+        # Also seed a 15-night two-digit workday flight pair on FCO (2027-05-02 Sun .. 2027-05-17 Mon:
+        # includes Yom HaAtzmaut Wed 2027-05-12 -> 10.0 regular workdays!) to verify 2-digit inline fit!
+        from backend.app.schemas.domain import ElAlBonusAvailability
+
+        repo.upsert_elal_bonus(
+            [
+                ElAlBonusAvailability(
+                    id="LY381_2027-04-20",
+                    flight_number="LY381",
+                    origin_iata="TLV",
+                    destination_iata="FCO",
+                    direction="OUTBOUND",
+                    flight_date=date(2027, 4, 20),
+                    departure_time_local="07:30",
+                    arrival_time_local="10:15",
+                    economy_award_seats=4,
+                    economy_points_per_pax=15000,
+                    taxes_usd_per_pax=48.75,
+                    expires_at="2099-12-31T23:59:59Z",
+                ),
+                ElAlBonusAvailability(
+                    id="LY384_2027-05-09",
+                    flight_number="LY384",
+                    origin_iata="FCO",
+                    destination_iata="TLV",
+                    direction="INBOUND",
+                    flight_date=date(2027, 5, 9),
+                    departure_time_local="12:00",
+                    arrival_time_local="16:25",
+                    economy_award_seats=4,
+                    economy_points_per_pax=15000,
+                    taxes_usd_per_pax=48.75,
+                    expires_at="2099-12-31T23:59:59Z",
+                ),
+            ]
+        )
+        client = self.get_client(db_path)
+
+        browser = _Run13ChromeSession(self, client, reference_date="2026-11-26")
+
+        def set_dpr2_vp(w: int, h: int, is_mob: bool) -> None:
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": is_mob},
+            )
+            browser.pump(80)
+
+        # Authoritative `36c40ad` DPR=2 baseline `.proposal-card` dimensions (Card #0, ref `2026-11-26`)
+        baseline_0_children = {
+            (1440, 900, "rtl"): (881.0, 303.28),
+            (1440, 900, "ltr"): (881.0, 303.28),
+            (390, 844, "rtl"): (332.0, 593.06),
+            (390, 844, "ltr"): (332.0, 591.06),
+            (360, 800, "rtl"): (302.0, 593.06),
+            (360, 800, "ltr"): (302.0, 608.86),
+        }
+        baseline_1_child = {
+            (1440, 900, "rtl"): (881.0, 303.28),
+            (1440, 900, "ltr"): (881.0, 338.27),
+            (390, 844, "rtl"): (332.0, 608.86),
+            (390, 844, "ltr"): (332.0, 624.66),
+            (360, 800, "rtl"): (302.0, 608.86),
+            (360, 800, "ltr"): (302.0, 624.66),
+        }
+
+        set_dpr2_vp(1440, 900, False)
+        browser.mount()
+
+        # ------------------------------------------------------------------
+        # PART 1: `0` Children (`children = []`) — Complete School-Vacation Suppression
+        # ------------------------------------------------------------------
+        for vp_w, vp_h, is_mob in ((1440, 900, False), (390, 844, True), (360, 800, True)):
+            set_dpr2_vp(vp_w, vp_h, is_mob)
+            for target_dir in ("rtl", "ltr"):
+                cur_dir = browser.eval("document.documentElement.getAttribute('dir')")
+                if cur_dir != target_dir:
+                    browser.real_click("#btn-toggle-locale")
+                    browser.pump(60)
+                snap0 = browser.eval(
+                    """(() => {
+                      window.scrollTo(0, 0);
+                      const docEl = document.documentElement;
+                      const hdr = document.getElementById('app-header').getBoundingClientRect();
+                      const resZone = document.getElementById('zone-results');
+                      const cards = Array.from(document.querySelectorAll('.proposal-card'));
+                      const c0 = cards[0];
+                      const cr = c0.getBoundingClientRect();
+                      const wCell = c0.querySelector('.stub-kpi-grid > [data-kpi="workdays-cost"]');
+                      const tip = wCell ? wCell.querySelector('.kpi-tooltip[role="tooltip"]') : null;
+                      c0.scrollIntoView({ behavior: 'instant', block: 'center' });
+                      wCell.click();
+                      const tr = tip.getBoundingClientRect();
+                      const tipOpenDisplay = getComputedStyle(tip).display;
+                      const tipTxt = tip.textContent.replace(/\\s+/g, ' ').trim();
+                      wCell.click();
+                      window.scrollTo(0, 0);
+                      const hdrRow = c0.querySelector('.bonus-direction-header');
+                      const ptsPill = c0.querySelector('.proposal-pass-main .flight-bonus-points-pill');
+                      const ptsIconR = ptsPill ? ptsPill.querySelector('.flight-points-icon').getBoundingClientRect() : null;
+                      const ptsLblR = ptsPill ? ptsPill.querySelector('.stub-fare-label').getBoundingClientRect() : null;
+                      const ptsValR = ptsPill ? ptsPill.querySelector('.stub-fare-val').getBoundingClientRect() : null;
+                      const hdrRowR = hdrRow.getBoundingClientRect();
+                      const ptsPillR = ptsPill ? ptsPill.getBoundingClientRect() : null;
+                      return {
+                        dir: docEl.getAttribute('dir'),
+                        scrollW: docEl.scrollWidth,
+                        clientW: docEl.clientWidth,
+                        headerH: hdr.height,
+                        firstCardY: c0.getBoundingClientRect().top,
+                        cardW: Math.round(cr.width * 100) / 100,
+                        cardH: Math.round(cr.height * 100) / 100,
+                        schoolDomCount: resZone.querySelectorAll('[data-kpi="school-fit"], [data-school-missed], .kpi-missed-paren, [id^="kpi-tip-fit-"]').length,
+                        paxSummaryCount: resZone.querySelectorAll('.stub-pax-summary, .stub-fare-ledger').length,
+                        minPtsInMain: Boolean(c0.querySelector('.proposal-pass-main .min-points-ticket')),
+                        minPtsInStub: Boolean(c0.querySelector('.proposal-pass-stub .min-points-ticket')),
+                        ptsJustify: ptsPill ? getComputedStyle(ptsPill).justifyContent : '',
+                        ptsRightDelta: ptsPillR ? Math.abs(hdrRowR.right - ptsPillR.right) : 999,
+                        ptsLeftDelta: ptsPillR ? Math.abs(ptsPillR.left - hdrRowR.left) : 999,
+                        ptsIconLblRtlGap: (ptsIconR && ptsLblR) ? Math.abs(ptsIconR.left - ptsLblR.right) : 999,
+                        ptsValRtlAligned: (ptsPillR && ptsLblR && ptsValR)
+                          ? (Math.abs(ptsLblR.left - ptsValR.right) <= 12.0 || Math.abs(ptsPillR.right - ptsValR.right) <= 14.0)
+                          : false,
+                        workBelowWeather: c0.querySelector('.stub-weather-card').getBoundingClientRect().bottom <= wCell.getBoundingClientRect().top + 2.0,
+                        workValBelowHead: wCell.querySelector('.kpi-cell-val').getBoundingClientRect().top >= wCell.querySelector('.kpi-cell-head').getBoundingClientRect().bottom - 1.0,
+                        resultsText: resZone.textContent || '',
+                        resultsAria: Array.from(resZone.querySelectorAll('[title], [aria-label]')).map((e) => (e.getAttribute('title') || '') + ' ' + (e.getAttribute('aria-label') || '')).join(' '),
+                        workLabel: wCell.querySelector('.kpi-cell-label').textContent.trim(),
+                        workVal: wCell.querySelector('.kpi-cell-val').textContent.replace(/\\s+/g, ' ').trim(),
+                        tipOpenDisplay,
+                        tipTxt,
+                        tipLeft: tr.left,
+                        tipRight: tr.right,
+                        innerW: window.innerWidth,
+                        bodyTxt: document.body.textContent || ''
+                      };
+                    })()"""
+                )
+                self.assertEqual(snap0["dir"], target_dir)
+                self.assertLessEqual(snap0["scrollW"], snap0["clientW"])
+                if vp_w == 390:
+                    self.assertLess(snap0["firstCardY"], 900.0)
+                if vp_w == 360:
+                    self.assertLessEqual(snap0["headerH"], 68.0)
+                self.assertEqual(snap0["schoolDomCount"], 0)
+                self.assertEqual(snap0["paxSummaryCount"], 0)
+                self.assertTrue(snap0["minPtsInMain"])
+                self.assertFalse(snap0["minPtsInStub"])
+                self.assertIn(snap0["ptsJustify"], ("flex-start", "start", "flow-start"))
+                if is_mob and target_dir == "rtl":
+                    self.assertLessEqual(snap0["ptsRightDelta"], 2.0)
+                    self.assertLessEqual(snap0["ptsIconLblRtlGap"], 12.0)
+                    self.assertTrue(snap0["ptsValRtlAligned"])
+                elif is_mob and target_dir == "ltr":
+                    self.assertLessEqual(snap0["ptsLeftDelta"], 2.0)
+                self.assertTrue(snap0["workBelowWeather"])
+                self.assertTrue(snap0["workValBelowHead"])
+                for forbidden_school in (
+                    'בי"ס',
+                    "בית ספר",
+                    "חיסור",
+                    "משרד החינוך",
+                    "קייטנ",
+                    "School Break",
+                    "missed",
+                    "classroom",
+                    "MoE",
+                ):
+                    self.assertNotIn(forbidden_school, snap0["resultsText"])
+                    self.assertNotIn(forbidden_school, snap0["resultsAria"])
+                self.assertNotIn("בוגרים", snap0["workLabel"])
+                self.assertNotIn("בוגרים", snap0["tipTxt"])
+                self.assertIsNone(bogrim_re.search(snap0["bodyTxt"]))
+                self.assertEqual(snap0["tipOpenDisplay"], "flex")
+                self.assertGreaterEqual(snap0["tipLeft"], 0.0)
+                self.assertLessEqual(snap0["tipRight"], snap0["innerW"])
+                if target_dir == "rtl":
+                    self.assertIn("חופשת עבודה", snap0["workLabel"])
+                    self.assertIn("איך חושב:", snap0["tipTxt"])
+                    self.assertIn("משמעות:", snap0["tipTxt"])
+                else:
+                    self.assertIn("Workdays Off", snap0["workLabel"])
+                    self.assertIn("How calculated:", snap0["tipTxt"])
+                    self.assertIn("Meaning:", snap0["tipTxt"])
+
+                base_w, base_h = baseline_0_children[(vp_w, vp_h, target_dir)]
+                self.assertAlmostEqual(snap0["cardW"], base_w, delta=0.5)
+                self.assertLessEqual(snap0["cardH"] - base_h, 24.0 if is_mob else 4.0)
+
+        # Verify `lastSearchProfile` lock: adding a draft child in `#zone-profile` and closing WITHOUT searching,
+        # then toggling locale, keeps `0`-children suppression intact on rendered cards!
+        set_dpr2_vp(1440, 900, False)
+        if browser.eval("document.documentElement.getAttribute('dir')") != "rtl":
+            browser.real_click("#btn-toggle-locale")
+            browser.pump(60)
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(100)
+        browser.real_click("#btn-add-child")
+        browser.pump(60)
+        browser.real_click("#btn-close-profile-sheet")
+        browser.pump(80)
+        browser.real_click("#btn-toggle-locale")
+        browser.pump(60)
+        self.assertEqual(
+            browser.eval("document.querySelectorAll('#zone-results [data-kpi=\"school-fit\"]').length"),
+            0,
+        )
+        browser.real_click("#btn-toggle-locale")
+        browser.pump(60)
+
+        # ------------------------------------------------------------------
+        # PART 2: `>= 1` Child (`children = [{age: 8}]`) — Non-Expanding Card Geometry (1-digit & 2-digit)
+        # ------------------------------------------------------------------
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(100)
+        browser.real_replace_value('[data-child-age="0"]', "8")
+        browser.real_click("#btn-apply-profile-sheet")
+        browser.wait_until(
+            "document.querySelectorAll('#zone-results [data-kpi=\"school-fit\"]').length >= 2",
+            "cards rendered with >= 1 child",
+        )
+        browser.settle()
+
+        for vp_w, vp_h, is_mob in ((1440, 900, False), (390, 844, True), (360, 800, True)):
+            set_dpr2_vp(vp_w, vp_h, is_mob)
+            for target_dir in ("rtl", "ltr"):
+                if browser.eval("document.documentElement.getAttribute('dir')") != target_dir:
+                    browser.real_click("#btn-toggle-locale")
+                    browser.pump(60)
+                snap1 = browser.eval(
+                    """(() => {
+                      window.scrollTo(0, 0);
+                      const docEl = document.documentElement;
+                      const c0 = document.querySelector('.proposal-card');
+                      const cr = c0.getBoundingClientRect();
+                      const wCard = c0.querySelector('.stub-weather-card');
+                      const pairGrid = c0.querySelector('.stub-kpi-grid[data-paired-vacation="true"]');
+                      const wCell = pairGrid ? pairGrid.querySelector('[data-kpi="workdays-cost"]') : null;
+                      const fitCell = pairGrid ? pairGrid.querySelector('[data-kpi="school-fit"]') : null;
+                      const wCardR = wCard.getBoundingClientRect();
+                      const wr = wCell.getBoundingClientRect();
+                      const fr = fitCell.getBoundingClientRect();
+                      c0.scrollIntoView({ behavior: 'instant', block: 'center' });
+                      wCell.click();
+                      const wTip = wCell.querySelector('.kpi-tooltip[role="tooltip"]');
+                      const wtr = wTip.getBoundingClientRect();
+                      const wTipDisplay = getComputedStyle(wTip).display;
+                      const wTipTxt = wTip.textContent.replace(/\\s+/g, ' ').trim();
+                      wCell.click();
+                      window.scrollTo(0, 0);
+                      const hdrRow = c0.querySelector('.bonus-direction-header');
+                      const ptsPill = c0.querySelector('.proposal-pass-main .flight-bonus-points-pill');
+                      const ptsIconR = ptsPill ? ptsPill.querySelector('.flight-points-icon').getBoundingClientRect() : null;
+                      const ptsLblR = ptsPill ? ptsPill.querySelector('.stub-fare-label').getBoundingClientRect() : null;
+                      const ptsValR = ptsPill ? ptsPill.querySelector('.stub-fare-val').getBoundingClientRect() : null;
+                      const hdrRowR = hdrRow.getBoundingClientRect();
+                      const ptsPillR = ptsPill ? ptsPill.getBoundingClientRect() : null;
+                      return {
+                        dir: docEl.getAttribute('dir'),
+                        scrollW: docEl.scrollWidth,
+                        clientW: docEl.clientWidth,
+                        cardW: Math.round(cr.width * 100) / 100,
+                        cardH: Math.round(cr.height * 100) / 100,
+                        paxSummaryCount: c0.querySelectorAll('.stub-pax-summary, .stub-fare-ledger').length,
+                        minPtsInMain: Boolean(c0.querySelector('.proposal-pass-main .min-points-ticket')),
+                        minPtsInStub: Boolean(c0.querySelector('.proposal-pass-stub .min-points-ticket')),
+                        ptsJustify: ptsPill ? getComputedStyle(ptsPill).justifyContent : '',
+                        ptsRightDelta: ptsPillR ? Math.abs(hdrRowR.right - ptsPillR.right) : 999,
+                        ptsLeftDelta: ptsPillR ? Math.abs(ptsPillR.left - hdrRowR.left) : 999,
+                        ptsIconLblRtlGap: (ptsIconR && ptsLblR) ? Math.abs(ptsIconR.left - ptsLblR.right) : 999,
+                        ptsValRtlAligned: (ptsPillR && ptsLblR && ptsValR)
+                          ? (Math.abs(ptsLblR.left - ptsValR.right) <= 12.0 || Math.abs(ptsPillR.right - ptsValR.right) <= 14.0)
+                          : false,
+                        belowClimate: wCardR.bottom <= wr.top + 2.0,
+                        workValBelowHead: wCell.querySelector('.kpi-cell-val').getBoundingClientRect().top >= wCell.querySelector('.kpi-cell-head').getBoundingClientRect().bottom - 1.0,
+                        adjacentToSchoolFit: Math.abs(fr.top - wr.bottom) <= 6.0 && Math.abs(wr.left - fr.left) <= 2.0,
+                        hasFitCell: Boolean(fitCell),
+                        wTipDisplay,
+                        wTipTxt,
+                        wTipLeft: wtr.left,
+                        wTipRight: wtr.right,
+                        wTipWidth: wtr.width,
+                        innerW: window.innerWidth,
+                        workCellTxt: wCell.textContent || '',
+                        cardTxt: c0.textContent || ''
+                      };
+                    })()"""
+                )
+                self.assertEqual(snap1["dir"], target_dir)
+                self.assertLessEqual(snap1["scrollW"], snap1["clientW"])
+                self.assertEqual(snap1["paxSummaryCount"], 0)
+                self.assertTrue(snap1["minPtsInMain"])
+                self.assertFalse(snap1["minPtsInStub"])
+                self.assertIn(snap1["ptsJustify"], ("flex-start", "start", "flow-start"))
+                if is_mob and target_dir == "rtl":
+                    self.assertLessEqual(snap1["ptsRightDelta"], 2.0)
+                    self.assertLessEqual(snap1["ptsIconLblRtlGap"], 12.0)
+                    self.assertTrue(snap1["ptsValRtlAligned"])
+                elif is_mob and target_dir == "ltr":
+                    self.assertLessEqual(snap1["ptsLeftDelta"], 2.0)
+                self.assertTrue(snap1["hasFitCell"])
+                self.assertTrue(snap1["belowClimate"])
+                self.assertTrue(snap1["workValBelowHead"])
+                self.assertTrue(snap1["adjacentToSchoolFit"])
+                self.assertEqual(snap1["wTipDisplay"], "flex")
+                self.assertGreaterEqual(snap1["wTipWidth"], 220.0)
+                self.assertGreaterEqual(snap1["wTipLeft"], 0.0)
+                self.assertLessEqual(snap1["wTipRight"], snap1["innerW"])
+                self.assertNotIn("בוגרים", snap1["workCellTxt"])
+                self.assertNotIn("בוגרים", snap1["wTipTxt"])
+                self.assertIsNone(bogrim_re.search(snap1["cardTxt"]))
+
+                base_w1, base_h1 = baseline_1_child[(vp_w, vp_h, target_dir)]
+                self.assertAlmostEqual(snap1["cardW"], base_w1, delta=0.5)
+                self.assertLessEqual(snap1["cardH"] - base_h1, 24.0 if is_mob else 4.0)
+
+        # Also verify 2-digit decimal workday value (`10.5` days on 19-night FCO 2027-04-20..2027-05-09) stays clean & adjacent to school-fit across 1440/390/360 in he & en!
+        set_dpr2_vp(1440, 900, False)
+        if browser.eval("document.documentElement.getAttribute('dir')") != "rtl":
+            browser.real_click("#btn-toggle-locale")
+            browser.pump(60)
+        browser.eval(
+            """(async () => {
+              document.getElementById('input-dep-date').value = '2027-04-20';
+              document.getElementById('input-ret-date').value = '2027-05-09';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ROM"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+            })()"""
+        )
+        browser.wait_until(
+            "Boolean(document.querySelector('.proposal-card [data-kpi=\"workdays-cost\"][data-workdays=\"10.5\"]'))",
+            "2-digit 10.5-workday FCO card rendered",
+        )
+        browser.settle()
+        for vp_w, vp_h, is_mob in ((1440, 900, False), (390, 844, True), (360, 800, True)):
+            set_dpr2_vp(vp_w, vp_h, is_mob)
+            for target_dir in ("rtl", "ltr"):
+                if browser.eval("document.documentElement.getAttribute('dir')") != target_dir:
+                    browser.real_click("#btn-toggle-locale")
+                    browser.pump(60)
+                two_digit = browser.eval(
+                    """(() => {
+                      const pairGrid = document.querySelector('.proposal-card .stub-kpi-grid[data-paired-vacation="true"]');
+                      const cell = pairGrid.querySelector('[data-kpi="workdays-cost"]');
+                      const fit = pairGrid.querySelector('[data-kpi="school-fit"]');
+                      const headR = cell.querySelector('.kpi-cell-head').getBoundingClientRect();
+                      const valR = cell.querySelector('.kpi-cell-val').getBoundingClientRect();
+                      return {
+                        workdaysAttr: cell.getAttribute('data-workdays'),
+                        adjacent: Math.abs(fit.getBoundingClientRect().top - cell.getBoundingClientRect().bottom) <= 6.0,
+                        valStackedBelowHead: valR.top >= headR.bottom - 1.0,
+                        inlineStartAligned: document.documentElement.getAttribute('dir') === 'rtl'
+                          ? Math.abs(headR.right - valR.right) <= 2.0
+                          : Math.abs(headR.left - valR.left) <= 2.0,
+                        scrollW: document.documentElement.scrollWidth,
+                        clientW: document.documentElement.clientWidth
+                      };
+                    })()"""
+                )
+                self.assertEqual(two_digit["workdaysAttr"], "10.5")
+                self.assertTrue(two_digit["adjacent"])
+                self.assertTrue(two_digit["valStackedBelowHead"])
+                self.assertTrue(two_digit["inlineStartAligned"])
+                self.assertLessEqual(two_digit["scrollW"], two_digit["clientW"])
+
+        # ------------------------------------------------------------------
+        # PART 3: Shared Toggleable Main-Page Popup (`#zone-calendar`) on Desktop & Mobile (`he` & `en`)
+        # ------------------------------------------------------------------
+        for vp_w, vp_h, is_mob, trig_sel in (
+            (1440, 900, False, "#btn-toggle-calendar"),
+            (390, 844, True, "#btn-mobile-dock-calendar"),
+            (360, 800, True, "#btn-mobile-dock-calendar"),
+        ):
+            set_dpr2_vp(vp_w, vp_h, is_mob)
+            for target_dir in ("rtl", "ltr"):
+                if browser.eval("document.documentElement.getAttribute('dir')") != target_dir:
+                    browser.real_click("#btn-toggle-locale")
+                    browser.pump(60)
+                # Scroll down first to prove opening does NOT render an inline section at bottom of page
+                browser.eval("window.scrollTo(0, 260); true;")
+                # 1st REAL mouse click on trigger -> opens popup
+                browser.real_click(trig_sel)
+                browser.pump(80)
+                pop_open = browser.eval(
+                    f"""(() => {{
+                      const cz = document.getElementById('zone-calendar');
+                      const bd = document.getElementById('calendar-modal-backdrop');
+                      const moe = document.getElementById('calendar-col-moe');
+                      const wrk = document.getElementById('calendar-col-workplace');
+                      const trig = document.querySelector('{trig_sel}');
+                      const cr = cz.getBoundingClientRect();
+                      const mr = moe.getBoundingClientRect();
+                      const wr = wrk.getBoundingClientRect();
+                      return {{
+                        hidden: cz.hasAttribute('hidden'),
+                        isOpenCls: cz.classList.contains('is-calendar-open'),
+                        pos: getComputedStyle(cz).position,
+                        role: cz.getAttribute('role'),
+                        ariaModal: cz.getAttribute('aria-modal'),
+                        ariaExpanded: trig.getAttribute('aria-expanded'),
+                        backdropVisible: !bd.hasAttribute('hidden') && getComputedStyle(bd).display !== 'none',
+                        popupTop: cr.top,
+                        popupBottom: cr.bottom,
+                        innerH: window.innerHeight,
+                        moeBox: {{ left: mr.left, right: mr.right, top: mr.top, w: mr.width }},
+                        wrkBox: {{ left: wr.left, right: wr.right, top: wr.top, w: wr.width }},
+                        moeRows: document.querySelectorAll('#moe-calendar-tbody tr').length,
+                        wrkRows: document.querySelectorAll('#workplace-calendar-tbody tr').length,
+                        halfDayRows: document.querySelectorAll('#workplace-calendar-tbody tr[data-workday-rate="0.5"]').length,
+                        zeroDayRows: document.querySelectorAll('#workplace-calendar-tbody tr[data-workday-rate="0"]').length,
+                        popTxt: cz.textContent || '',
+                        scrollW: document.documentElement.scrollWidth,
+                        clientW: document.documentElement.clientWidth
+                      }};
+                    }})()"""
+                )
+                self.assertFalse(pop_open["hidden"])
+                self.assertTrue(pop_open["isOpenCls"])
+                self.assertEqual(pop_open["pos"], "fixed")
+                self.assertEqual(pop_open["role"], "dialog")
+                self.assertEqual(pop_open["ariaModal"], "true")
+                self.assertEqual(pop_open["ariaExpanded"], "true")
+                self.assertTrue(pop_open["backdropVisible"])
+                self.assertGreaterEqual(pop_open["popupTop"], 56.0)
+                self.assertLessEqual(pop_open["popupTop"], 80.0)
+                self.assertLessEqual(pop_open["popupBottom"], pop_open["innerH"])
+                # Side-by-side verification (same row top, non-overlapping columns in RTL & LTR)
+                self.assertLessEqual(abs(pop_open["moeBox"]["top"] - pop_open["wrkBox"]["top"]), 2.0)
+                self.assertGreater(pop_open["moeBox"]["w"], 140.0)
+                self.assertGreater(pop_open["wrkBox"]["w"], 140.0)
+                if target_dir == "rtl":
+                    self.assertGreaterEqual(pop_open["moeBox"]["left"], pop_open["wrkBox"]["right"] - 1.0)
+                    self.assertIn("לוח חופשות משרד החינוך", pop_open["popTxt"])
+                    self.assertIn("לוח חגים ומועדים במשק", pop_open["popTxt"])
+                else:
+                    self.assertLessEqual(pop_open["moeBox"]["right"], pop_open["wrkBox"]["left"] + 1.0)
+                    self.assertIn("School Vacation Calendar", pop_open["popTxt"])
+                    self.assertIn("Public & Workplace Holidays", pop_open["popTxt"])
+                self.assertGreater(pop_open["moeRows"], 3)
+                self.assertEqual(pop_open["wrkRows"], 10)
+                self.assertEqual(pop_open["halfDayRows"], 2)
+                self.assertEqual(pop_open["zeroDayRows"], 8)
+                self.assertNotIn("בוגרים", pop_open["popTxt"])
+                self.assertLessEqual(pop_open["scrollW"], pop_open["clientW"])
+
+                # 2nd REAL mouse click on THE SAME TRIGGER -> genuinely closes & hides the popup!
+                browser.real_click(trig_sel)
+                browser.pump(80)
+                pop_closed = browser.eval(
+                    f"""(() => {{
+                      const cz = document.getElementById('zone-calendar');
+                      const bd = document.getElementById('calendar-modal-backdrop');
+                      const trig = document.querySelector('{trig_sel}');
+                      return {{
+                        hidden: cz.hasAttribute('hidden'),
+                        display: getComputedStyle(cz).display,
+                        isOpenCls: cz.classList.contains('is-calendar-open'),
+                        backdropHidden: bd.hasAttribute('hidden'),
+                        ariaExpanded: trig.getAttribute('aria-expanded')
+                      }};
+                    }})()"""
+                )
+                self.assertTrue(pop_closed["hidden"])
+                self.assertEqual(pop_closed["display"], "none")
+                self.assertFalse(pop_closed["isOpenCls"])
+                self.assertTrue(pop_closed["backdropHidden"])
+                self.assertEqual(pop_closed["ariaExpanded"], "false")
+
+        # Also verify `Escape` key closes the open popup
+        set_dpr2_vp(1440, 900, False)
+        browser.real_click("#btn-toggle-calendar")
+        browser.pump(80)
+        self.assertFalse(browser.eval("document.getElementById('zone-calendar').hasAttribute('hidden')"))
+        browser.real_key("Escape")
+        browser.pump(80)
+        self.assertTrue(browser.eval("document.getElementById('zone-calendar').hasAttribute('hidden')"))
         self.assertEqual(browser.js_errors(), [])
 
 

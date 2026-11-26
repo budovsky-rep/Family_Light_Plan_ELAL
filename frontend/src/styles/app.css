@@ -2697,7 +2697,7 @@ body.is-keyboard-open .profile-sheet-footer {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 5px 8px;
 }
 
@@ -3018,15 +3018,14 @@ body.is-keyboard-open .profile-sheet-footer {
 .stub-kpi-grid > .kpi-cell {
   position: relative;
   display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 2px 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 1px;
   background: var(--surface-boarding);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding-block: 5px;
+  padding-block: 4px;
   padding-inline: 9px;
   cursor: help;
 }
@@ -3178,6 +3177,301 @@ body.is-keyboard-open .profile-sheet-footer {
 .kpi-tooltip-kicker {
   font-weight: 700;
   color: var(--ink-flightdeck);
+}
+
+/* Run 14 R1/R2: Flight-side bonus points pill & paired vacation KPIs directly below climate */
+.bonus-direction-status-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 6px;
+  min-width: 0;
+}
+
+.flight-bonus-points-pill {
+  min-width: 0;
+  max-width: 100%;
+  width: fit-content;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-start;
+  text-align: start;
+  gap: 2px 5px;
+  padding-block: 3px;
+  padding-inline: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--brass-tint);
+  border: 1px solid var(--brass-border);
+  line-height: 1.22;
+}
+
+.flight-points-icon {
+  font-size: 0.72rem;
+  line-height: 1;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.flight-bonus-points-pill .stub-fare-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-flightdeck);
+  line-height: 1.22;
+}
+
+.flight-bonus-points-pill .stub-fare-val {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--brass-matmid);
+  white-space: nowrap;
+}
+
+.stub-kpi-grid:hover,
+.stub-kpi-grid:focus-within,
+.stub-kpi-grid:has(.is-tooltip-open) {
+  z-index: 35;
+}
+
+.stub-kpi-grid > .kpi-cell {
+  border-inline-start: 3px solid var(--pine-bridge);
+}
+
+.stub-kpi-grid[data-paired-vacation="true"] {
+  gap: 0;
+  background: var(--surface-boarding);
+  border: 1px solid var(--border-subtle);
+  border-inline-start: 3px solid var(--pine-bridge);
+  border-radius: var(--radius-sm);
+}
+
+.stub-kpi-grid[data-paired-vacation="true"] > .kpi-cell {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding-block: 4px;
+  padding-inline: 9px;
+}
+
+.stub-kpi-grid[data-paired-vacation="true"] > .kpi-cell + .kpi-cell {
+  border-block-start: 1px dashed var(--border-subtle);
+}
+
+.stub-kpi-grid[data-paired-vacation="true"] > .kpi-cell:hover,
+.stub-kpi-grid[data-paired-vacation="true"] > .kpi-cell:focus-visible,
+.stub-kpi-grid[data-paired-vacation="true"] > .kpi-cell:focus-within,
+.stub-kpi-grid[data-paired-vacation="true"] > .kpi-cell.is-tooltip-open {
+  background: var(--azure-tint);
+}
+
+.kpi-workdays-unit {
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+/* Run 14 R3: Shared toggleable main-page popup for School Vacations & Public/Workplace Holidays */
+.calendar-modal-backdrop {
+  position: fixed;
+  inset-block: 0;
+  inset-inline: 0;
+  z-index: 38;
+  background: rgba(11, 31, 58, 0.48);
+  backdrop-filter: blur(2px);
+}
+
+#zone-calendar {
+  display: none;
+}
+
+#zone-calendar.is-calendar-open {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset-block-start: 64px;
+  inset-block-end: calc(var(--mobile-dock-h) + 8px + env(safe-area-inset-bottom));
+  inset-inline: 6px;
+  margin-inline: auto;
+  max-width: 1408px;
+  z-index: 62;
+  overflow: hidden;
+  padding-block: 10px;
+  padding-inline: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-boarding);
+  box-shadow: 0 16px 40px rgba(11, 31, 58, 0.28);
+}
+
+.calendar-popup-header {
+  flex-shrink: 0;
+  margin-block-end: 8px;
+  padding-block-end: 7px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.calendar-dual-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  overflow-y: auto;
+  padding-block-end: 4px;
+}
+
+.calendar-ledger-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding-block: 7px;
+  padding-inline: 6px;
+}
+
+.calendar-ledger-col-moe {
+  border-block-start: 3px solid var(--azure-elal);
+}
+
+.calendar-ledger-col-work {
+  border-block-start: 3px solid var(--pine-bridge);
+}
+
+.calendar-ledger-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.calendar-ledger-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 800;
+  color: var(--ink-flightdeck);
+  line-height: 1.25;
+}
+
+.calendar-ledger-sub {
+  margin: 0;
+  font-size: var(--fs-tag);
+  color: var(--ink-secondary);
+  line-height: 1.3;
+}
+
+.calendar-dual-grid .calendar-scroll-wrapper {
+  background: var(--surface-boarding);
+  overflow-x: auto;
+}
+
+.calendar-dual-grid .calendar-heatmap-table tbody {
+  gap: 6px;
+  padding: 5px;
+}
+
+.calendar-dual-grid .calendar-heatmap-table tbody tr {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  padding-block: 6px;
+  padding-inline: 6px;
+}
+
+.work-holiday-table {
+  width: 100%;
+  min-width: 0;
+  display: block;
+  border-collapse: collapse;
+  font-size: var(--fs-label);
+}
+
+.work-holiday-table thead {
+  display: none;
+}
+
+.work-holiday-table tbody {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 5px;
+}
+
+.work-holiday-table tbody tr {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  padding-block: 6px;
+  padding-inline: 6px;
+  border: 1px solid var(--border-subtle);
+  border-inline-start: 3px solid var(--pine-bridge);
+  border-radius: var(--radius-md);
+  background-color: var(--surface-boarding);
+}
+
+.work-holiday-table tbody tr[data-workday-rate="0.5"] {
+  border-inline-start-color: var(--brass-matmid);
+}
+
+.work-holiday-table th,
+.work-holiday-table td {
+  padding-block: 2px;
+  padding-inline: 0;
+  text-align: start;
+  min-width: 0;
+}
+
+.work-holiday-table td {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.work-holiday-table td[data-label]::before {
+  content: attr(data-label);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  color: var(--ink-muted);
+  line-height: 1.2;
+  unicode-bidi: plaintext;
+}
+
+.work-holiday-table td.work-col-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 800;
+  color: var(--ink-flightdeck);
+  padding-block-end: 4px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.work-cell-val {
+  display: inline;
+  white-space: normal;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+.work-holiday-table .badge-vacation,
+.work-holiday-table .badge-camp,
+.calendar-ledger-col .pill {
+  display: inline-block;
+  white-space: normal;
+  max-width: 100%;
+  border-radius: 10px;
+  line-height: 1.3;
 }
 
 /* Mobile-First Responsive Breakpoints (`min-width` only, ascending: one cascade from phone to wide desktop) */
@@ -3550,6 +3844,26 @@ body.is-keyboard-open .profile-sheet-footer {
   .calendar-heatmap-table td[dir="ltr"] {
     white-space: nowrap;
   }
+
+  #zone-calendar.is-calendar-open {
+    inset-block-start: 70px;
+    inset-inline: 16px;
+    padding-block: 12px;
+    padding-inline: 14px;
+  }
+
+  .calendar-dual-grid {
+    gap: 12px;
+  }
+
+  .calendar-ledger-col {
+    padding-block: 10px;
+    padding-inline: 10px;
+  }
+
+  .calendar-ledger-title {
+    font-size: 0.94rem;
+  }
 }
 
 @media (min-width: 900px) {
@@ -3646,6 +3960,29 @@ body.is-keyboard-open .profile-sheet-footer {
     padding-block: 6px;
     font-size: var(--fs-tag);
   }
+
+  .bonus-direction-header {
+    justify-content: space-between;
+  }
+
+  .flight-bonus-points-pill {
+    width: auto;
+    display: inline-flex;
+    justify-content: flex-start;
+    gap: 4px;
+    padding-block: 2px;
+    padding-inline: 8px;
+    border-radius: 999px;
+  }
+
+  .flight-bonus-points-pill .stub-fare-label {
+    flex: 0 1 auto;
+    font-size: 0.72rem;
+  }
+
+  .flight-bonus-points-pill .stub-fare-val {
+    font-size: 0.76rem;
+  }
 }
 
 @media (min-width: 1024px) {
@@ -3715,6 +4052,13 @@ body.is-keyboard-open .profile-sheet-footer {
   .hero-scenic-wide {
     display: block;
     height: 90px;
+  }
+
+  #zone-calendar.is-calendar-open {
+    inset-block-start: 72px;
+    inset-block-end: auto;
+    max-height: calc(100dvh - 92px);
+    inset-inline: 20px;
   }
 }
 
@@ -3810,6 +4154,55 @@ body.is-keyboard-open .profile-sheet-footer {
     padding-inline: 34px;
     gap: 12px;
   }
+
+  .work-holiday-table {
+    display: table;
+  }
+
+  .work-holiday-table thead {
+    display: table-header-group;
+  }
+
+  .work-holiday-table tbody {
+    display: table-row-group;
+    padding: 0;
+  }
+
+  .work-holiday-table tbody tr {
+    display: table-row;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  .work-holiday-table th,
+  .work-holiday-table td {
+    display: table-cell;
+    padding-block: 7px;
+    padding-inline: 6px;
+    border-block-end: 1px solid var(--border-subtle);
+  }
+
+  .work-holiday-table td[data-label]::before {
+    content: none;
+  }
+
+  .work-holiday-table thead th {
+    position: sticky;
+    top: 0;
+    background-color: var(--surface-recessed);
+    color: var(--ink-flightdeck);
+    font-weight: 700;
+    z-index: 3;
+  }
+
+  .work-holiday-table td[dir="ltr"] .work-cell-val {
+    white-space: nowrap;
+  }
+
+  .calendar-dual-grid .calendar-heatmap-table td:nth-child(2) {
+    min-width: 78px;
+  }
 }
 
 @media (min-width: 1260px) {
@@ -3867,6 +4260,11 @@ body.is-keyboard-open .profile-sheet-footer {
   .calendar-heatmap-table td {
     padding-inline: 8px;
   }
+
+  .calendar-dual-grid .calendar-heatmap-table th,
+  .calendar-dual-grid .calendar-heatmap-table td {
+    padding-inline: 5px;
+  }
 }
 
 @media (min-width: 1360px) {
@@ -3890,6 +4288,11 @@ body.is-keyboard-open .profile-sheet-footer {
   .calendar-heatmap-table th,
   .calendar-heatmap-table td {
     padding-inline: 10px;
+  }
+
+  .calendar-dual-grid .calendar-heatmap-table th,
+  .calendar-dual-grid .calendar-heatmap-table td {
+    padding-inline: 5px;
   }
 }
 

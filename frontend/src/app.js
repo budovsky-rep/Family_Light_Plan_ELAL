@@ -300,6 +300,151 @@
     return addDaysIso('2025-09-23', targetElapsed - anchorElapsed);
   }
 
+  const WORKPLACE_YEAR_CACHE = {};
+
+  function getWorkplaceHolidaySetsClient(hebYear) {
+    if (WORKPLACE_YEAR_CACHE[hebYear]) {
+      return WORKPLACE_YEAR_CACHE[hebYear];
+    }
+    const rh1 = roshHashanahIso(hebYear);
+    const pes1 = addDaysIso(roshHashanahIso(hebYear + 1), -163);
+    const fifthIyar = addDaysIso(pes1, 20);
+    const wdIyar = utcWeekdayMon0(fifthIyar);
+    let atzmautIso = fifthIyar;
+    if (wdIyar === 4) atzmautIso = addDaysIso(fifthIyar, -1);
+    else if (wdIyar === 5) atzmautIso = addDaysIso(fifthIyar, -2);
+    else if (wdIyar === 0) atzmautIso = addDaysIso(fifthIyar, 1);
+    const shavuotIso = addDaysIso(pes1, 50);
+
+    const officialSet = new Set([
+      rh1,
+      addDaysIso(rh1, 1),
+      addDaysIso(rh1, 9),
+      addDaysIso(rh1, 14),
+      addDaysIso(rh1, 21),
+      pes1,
+      addDaysIso(pes1, 6),
+      atzmautIso,
+      shavuotIso
+    ]);
+    const cholSet = new Set([
+      addDaysIso(rh1, 15),
+      addDaysIso(rh1, 16),
+      addDaysIso(rh1, 17),
+      addDaysIso(rh1, 18),
+      addDaysIso(rh1, 19),
+      addDaysIso(rh1, 20),
+      addDaysIso(pes1, 1),
+      addDaysIso(pes1, 2),
+      addDaysIso(pes1, 3),
+      addDaysIso(pes1, 4),
+      addDaysIso(pes1, 5)
+    ]);
+    const entry = { rh1, pes1, atzmautIso, shavuotIso, officialSet, cholSet };
+    WORKPLACE_YEAR_CACHE[hebYear] = entry;
+    return entry;
+  }
+
+  function classifyWorkdayClient(isoDateStr) {
+    const wd = utcWeekdayMon0(isoDateStr);
+    if (wd === 4 || wd === 5) {
+      return 'WEEKEND';
+    }
+    const gYear = Number(String(isoDateStr).slice(0, 4));
+    const s = getWorkplaceHolidaySetsClient(gYear + 3760);
+    const a = getWorkplaceHolidaySetsClient(gYear + 3761);
+    if (s.officialSet.has(isoDateStr) || a.officialSet.has(isoDateStr)) {
+      return 'OFFICIAL_HOLIDAY';
+    }
+    if (s.cholSet.has(isoDateStr) || a.cholSet.has(isoDateStr)) {
+      return 'CHOL_HAMOED';
+    }
+    return 'REGULAR_WORKDAY';
+  }
+
+  function computeTripWorkdaysClient(depIso, retIso) {
+    if (!depIso || !retIso) {
+      return {
+        workplace_vacation_days_cost: 0,
+        regular_workdays_count: 0,
+        chol_hamoed_workdays_count: 0,
+        official_holiday_workdays_saved_count: 0,
+        weekend_days_count: 0,
+        holiday_or_weekend_days_count: 0
+      };
+    }
+    const span = diffDaysIso(depIso, retIso);
+    if (!Number.isFinite(span) || span < 0) {
+      return {
+        workplace_vacation_days_cost: 0,
+        regular_workdays_count: 0,
+        chol_hamoed_workdays_count: 0,
+        official_holiday_workdays_saved_count: 0,
+        weekend_days_count: 0,
+        holiday_or_weekend_days_count: 0
+      };
+    }
+    let regCnt = 0;
+    let cholCnt = 0;
+    let offCnt = 0;
+    let wkndCnt = 0;
+    for (let i = 0; i <= span; i += 1) {
+      const dIso = addDaysIso(depIso, i);
+      const bucket = classifyWorkdayClient(dIso);
+      if (bucket === 'WEEKEND') wkndCnt += 1;
+      else if (bucket === 'OFFICIAL_HOLIDAY') offCnt += 1;
+      else if (bucket === 'CHOL_HAMOED') cholCnt += 1;
+      else regCnt += 1;
+    }
+    const cost = Math.round((regCnt * 1.0 + cholCnt * 0.5) * 10) / 10;
+    return {
+      workplace_vacation_days_cost: cost,
+      regular_workdays_count: regCnt,
+      chol_hamoed_workdays_count: cholCnt,
+      official_holiday_workdays_saved_count: offCnt,
+      weekend_days_count: wkndCnt,
+      holiday_or_weekend_days_count: offCnt + wkndCnt
+    };
+  }
+
+  function projectWorkplaceHolidaysClient(schoolYearStr) {
+    const parts = String(schoolYearStr || '2026-2027').split('-');
+    const y2 = Number(parts[1]) || 2027;
+    const hebYear = y2 + 3760;
+    const yr = getWorkplaceHolidaySetsClient(hebYear);
+    const specs = [
+      { code: 'ROSH_HASHANAH', he: 'ראש השנה', en: 'Rosh Hashanah', start: yr.rh1, end: addDaysIso(yr.rh1, 1), status: 'OFFICIAL_HOLIDAY' },
+      { code: 'YOM_KIPPUR', he: 'יום הכיפורים', en: 'Yom Kippur', start: addDaysIso(yr.rh1, 9), end: addDaysIso(yr.rh1, 9), status: 'OFFICIAL_HOLIDAY' },
+      { code: 'SUKKOT_I', he: 'חג סוכות א׳', en: 'Sukkot I', start: addDaysIso(yr.rh1, 14), end: addDaysIso(yr.rh1, 14), status: 'OFFICIAL_HOLIDAY' },
+      { code: 'CHOL_HAMOED_SUKKOT', he: 'חול המועד סוכות', en: 'Chol HaMoed Sukkot', start: addDaysIso(yr.rh1, 15), end: addDaysIso(yr.rh1, 20), status: 'CHOL_HAMOED' },
+      { code: 'SIMCHAT_TORAH', he: 'שמיני עצרת / שמחת תורה', en: 'Simchat Torah', start: addDaysIso(yr.rh1, 21), end: addDaysIso(yr.rh1, 21), status: 'OFFICIAL_HOLIDAY' },
+      { code: 'PESACH_I', he: 'חג פסח א׳', en: 'Passover I', start: yr.pes1, end: yr.pes1, status: 'OFFICIAL_HOLIDAY' },
+      { code: 'CHOL_HAMOED_PESACH', he: 'חול המועד פסח', en: 'Chol HaMoed Pesach', start: addDaysIso(yr.pes1, 1), end: addDaysIso(yr.pes1, 5), status: 'CHOL_HAMOED' },
+      { code: 'PESACH_VII', he: 'שביעי של פסח', en: 'Passover VII', start: addDaysIso(yr.pes1, 6), end: addDaysIso(yr.pes1, 6), status: 'OFFICIAL_HOLIDAY' },
+      { code: 'YOM_HAATZMAUT', he: 'יום העצמאות', en: 'Independence Day', start: yr.atzmautIso, end: yr.atzmautIso, status: 'OFFICIAL_HOLIDAY' },
+      { code: 'SHAVUOT', he: 'חג השבועות', en: 'Shavuot', start: yr.shavuotIso, end: yr.shavuotIso, status: 'OFFICIAL_HOLIDAY' }
+    ];
+    return specs.map((sp) => {
+      const isOff = sp.status === 'OFFICIAL_HOLIDAY';
+      const evalCost = computeTripWorkdaysClient(sp.start, sp.end);
+      return {
+        id: `workplace_${hebYear}_${sp.code}`,
+        school_year: schoolYearStr,
+        holiday_code: sp.code,
+        name_he: sp.he,
+        name_en: sp.en,
+        start_date: sp.start,
+        end_date: sp.end,
+        calendar_days: Math.max(1, diffDaysIso(sp.start, sp.end) + 1),
+        workplace_status: sp.status,
+        workday_cost_per_day: isOff ? 0 : 0.5,
+        effective_workdays_cost: evalCost.workplace_vacation_days_cost,
+        status_badge_he: isOff ? 'שבתון · 0 ימי חופש' : 'חול המועד · 0.5 יום',
+        status_badge_en: isOff ? 'Holiday · 0d' : 'Chol HaMoed · 0.5d'
+      };
+    });
+  }
+
   function projectSchoolYearPeriods(schoolYearStr) {
     if (BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr]) {
       return BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr];
@@ -496,6 +641,7 @@
     confirmingDeleteProfile: false,
     profile: createCleanGuestProfile(),
     profileDirty: false,
+    lastSearchProfile: null,
     upcomingHolidays: [],
     userSelectedHoliday: false,
     userEditedMaxNights: false,
@@ -538,26 +684,87 @@
     return 'smooth';
   }
 
-  function setCalendarVisibility(visible, scrollToIt) {
-    state.isCalendarVisible = Boolean(visible);
+  // Selective inert targets when the shared calendar modal popup is open:
+  // `#app-header` and `#mobile-thumb-dock` stay non-inert & uncovered so clicking the calendar trigger a 2nd time closes it!
+  const CALENDAR_MODAL_INERT_SELECTORS = [
+    '#vacation-hero',
+    '.sidebar-column',
+    '#zone-results',
+    '#site-footer'
+  ];
+  let calendarModalOpenerEl = null;
+
+  function setCalendarVisibility(visible, optsOrScroll) {
+    const options =
+      optsOrScroll && typeof optsOrScroll === 'object' ? optsOrScroll : {};
+    const willOpen = Boolean(visible);
+    const wasOpen = Boolean(state.isCalendarVisible);
+
+    if (willOpen && !wasOpen) {
+      if (state.isProfileSheetOpen) {
+        setProfileSheetOpen(false, { restoreFocus: false });
+      }
+      if (state.isAuthPopoverOpen) {
+        setAuthPopoverOpen(false, { restoreFocus: false });
+      }
+      if (state.isDestPickerOpen) {
+        setDestPickerOpen(false);
+      }
+    }
+
+    state.isCalendarVisible = willOpen;
     const calZone = document.getElementById('zone-calendar');
+    const calBackdrop = document.getElementById('calendar-modal-backdrop');
     const isHe = state.locale === 'he';
+
     if (calZone) {
-      if (state.isCalendarVisible) {
+      if (willOpen) {
+        renderCalendarTable();
+        renderWorkplaceCalendarTable();
         calZone.removeAttribute('hidden');
-        calZone.style.display = 'block';
-        if (scrollToIt) {
-          calZone.scrollIntoView({ behavior: getScrollBehavior(), block: 'start' });
-        }
+        calZone.style.display = 'flex';
+        calZone.classList.add('is-calendar-open');
+        calZone.setAttribute('role', 'dialog');
+        calZone.setAttribute('aria-modal', 'true');
       } else {
         calZone.setAttribute('hidden', '');
         calZone.style.display = 'none';
+        calZone.classList.remove('is-calendar-open');
+        calZone.removeAttribute('role');
+        calZone.removeAttribute('aria-modal');
       }
     }
+
+    if (calBackdrop) {
+      if (willOpen) {
+        calBackdrop.removeAttribute('hidden');
+        calBackdrop.style.display = 'block';
+      } else {
+        calBackdrop.setAttribute('hidden', '');
+        calBackdrop.style.display = 'none';
+      }
+    }
+
+    CALENDAR_MODAL_INERT_SELECTORS.forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      if (willOpen) {
+        el.setAttribute('inert', '');
+      } else if (state.profileSheetView !== 'travelers') {
+        el.removeAttribute('inert');
+      }
+    });
+
+    document.body.classList.toggle(
+      'is-sheet-locked',
+      Boolean(willOpen || state.isProfileSheetOpen)
+    );
+
     const btnTop = document.getElementById('btn-toggle-calendar');
     if (btnTop) {
-      btnTop.classList.toggle('active', state.isCalendarVisible);
-      btnTop.textContent = state.isCalendarVisible
+      btnTop.classList.toggle('active', willOpen);
+      btnTop.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      btnTop.textContent = willOpen
         ? isHe
           ? '📅 הסתר לוח'
           : '📅 Hide Calendar'
@@ -567,10 +774,11 @@
     }
     const dockCalBtn = document.getElementById('btn-mobile-dock-calendar');
     if (dockCalBtn) {
-      dockCalBtn.classList.toggle('active', state.isCalendarVisible);
+      dockCalBtn.classList.toggle('active', willOpen);
+      dockCalBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
       const dockLabel = dockCalBtn.querySelector('.mobile-dock-label');
       if (dockLabel) {
-        dockLabel.textContent = state.isCalendarVisible
+        dockLabel.textContent = willOpen
           ? isHe
             ? 'הסתר לוח'
             : 'Hide'
@@ -578,6 +786,44 @@
             ? 'חופשות'
             : 'Calendar';
       }
+    }
+
+    if (willOpen && !wasOpen) {
+      const activeEl = document.activeElement;
+      const fallbackTrigger =
+        typeof window !== 'undefined' && window.innerWidth < 1024 ? dockCalBtn : btnTop;
+      calendarModalOpenerEl =
+        options.opener ||
+        (activeEl && activeEl !== document.body ? activeEl : fallbackTrigger);
+      if (options.focusContent !== false) {
+        const closeBtn = document.getElementById('btn-close-calendar');
+        if (closeBtn) {
+          setTimeout(() => {
+            if (!state.isCalendarVisible) return;
+            closeBtn.focus();
+          }, 40);
+        }
+      }
+    } else if (!willOpen && wasOpen) {
+      if (options.restoreFocus !== false) {
+        const activeEl = document.activeElement;
+        const focusWasInside =
+          !activeEl ||
+          activeEl === document.body ||
+          Boolean(calZone && calZone.contains(activeEl));
+        const fallbackTrigger =
+          typeof window !== 'undefined' && window.innerWidth < 1024 ? dockCalBtn : btnTop;
+        const restoreEl =
+          calendarModalOpenerEl &&
+          document.contains(calendarModalOpenerEl) &&
+          !calendarModalOpenerEl.hasAttribute('hidden')
+            ? calendarModalOpenerEl
+            : fallbackTrigger;
+        if (focusWasInside && restoreEl) {
+          restoreEl.focus();
+        }
+      }
+      calendarModalOpenerEl = null;
     }
   }
 
@@ -619,6 +865,9 @@
     const wasOpen = Boolean(state.isAuthPopoverOpen);
     if (willOpen && state.isProfileSheetOpen) {
       setProfileSheetOpen(false, { restoreFocus: false });
+    }
+    if (willOpen && state.isCalendarVisible) {
+      setCalendarVisibility(false, { restoreFocus: false });
     }
     if (willOpen && state.isDestPickerOpen) {
       setDestPickerOpen(false);
@@ -707,6 +956,7 @@
   // A sheet opened below 1180px must not survive at desktop width, and a desktop modal window must not survive below it
   function closeProfileSheetOnBreakpointCross() {
     if (typeof window === 'undefined') return;
+    if (state.isCalendarVisible && !state.isProfileSheetOpen) return;
     if (!state.isProfileSheetOpen && !document.body.classList.contains('is-sheet-locked')) return;
     const isSheetViewport = window.innerWidth < 1180;
     const openedAsDesktopView = state.profileSheetView !== null;
@@ -720,6 +970,9 @@
     const willOpen = Boolean(open);
     if (willOpen && state.isAuthPopoverOpen) {
       setAuthPopoverOpen(false, { restoreFocus: false });
+    }
+    if (willOpen && state.isCalendarVisible) {
+      setCalendarVisibility(false, { restoreFocus: false });
     }
     const isSheetViewport = typeof window !== 'undefined' && window.innerWidth < 1180;
     const profZone = document.getElementById('zone-profile');
@@ -761,7 +1014,7 @@
           if (el) el.setAttribute('inert', '');
         });
       }
-      document.body.classList.toggle('is-sheet-locked', isModal);
+      document.body.classList.toggle('is-sheet-locked', Boolean(isModal || state.isCalendarVisible));
       heldPageScrollbarPx = isModal ? pageScrollbarPx : 0;
       if (heldPageScrollbarPx > 0) {
         const scrollbarSide =
@@ -824,7 +1077,7 @@
         backdrop.style.display = 'none';
       }
     }
-    document.body.classList.toggle('is-sheet-locked', state.isProfileSheetOpen);
+    document.body.classList.toggle('is-sheet-locked', Boolean(state.isProfileSheetOpen || state.isCalendarVisible));
     if (btnEditTravelers) {
       btnEditTravelers.setAttribute('aria-expanded', state.isProfileSheetOpen ? 'true' : 'false');
     }
@@ -965,6 +1218,9 @@
   }
 
   function setDestPickerOpen(open) {
+    if (open && state.isCalendarVisible) {
+      setCalendarVisibility(false, { restoreFocus: false });
+    }
     state.isDestPickerOpen = Boolean(open);
     const popoverEl = document.getElementById('dest-picker-popover');
     const toggleBtn = document.getElementById('btn-dest-picker-toggle');
@@ -1850,6 +2106,54 @@
       .join('');
   }
 
+  function renderWorkplaceCalendarTable() {
+    const tbody = document.getElementById('workplace-calendar-tbody');
+    if (!tbody) return;
+    const isHe = state.locale === 'he';
+    const currentSy =
+      (state.calendarData && state.calendarData.school_year) ||
+      inferSchoolYearForIso(getReferenceToday());
+    const rows =
+      state.calendarData &&
+      Array.isArray(state.calendarData.workplace_holidays) &&
+      state.calendarData.workplace_holidays.length > 0
+        ? state.calendarData.workplace_holidays
+        : projectWorkplaceHolidaysClient(currentSy);
+
+    const lblHoliday = isHe ? 'חג / מועד' : 'Holiday';
+    const lblDates = isHe ? 'תאריכים' : 'Dates';
+    const lblDays = isHe ? 'ימים' : 'Days';
+    const lblCost = isHe ? 'חופשת עבודה' : 'Workday Cost';
+
+    tbody.innerHTML = rows
+      .map((r) => {
+        const isOfficial = String(r.workplace_status || '') === 'OFFICIAL_HOLIDAY';
+        const rateStr = isOfficial ? '0' : '0.5';
+        const badgeCls = isOfficial ? 'badge-vacation' : 'badge-camp';
+        const badgeTxt = isHe
+          ? (r.status_badge_he || (isOfficial ? 'שבתון · 0 ימי חופש' : 'חול המועד · 0.5 יום'))
+          : (r.status_badge_en || (isOfficial ? 'Holiday · 0d' : 'Chol HaMoed · 0.5d'));
+        const startStr = String(r.start_date || '');
+        const endStr = String(r.end_date || '');
+        const datesHtml =
+          startStr === endStr
+            ? `<span class="work-cell-val"><span class="cal-nowrap">${escapeHtml(startStr)}</span></span>`
+            : `<span class="work-cell-val"><span class="cal-nowrap">${escapeHtml(startStr)}</span> – <span class="cal-nowrap">${escapeHtml(endStr)}</span></span>`;
+        const calDays =
+          r.calendar_days || Math.max(1, diffDaysIso(startStr, endStr) + 1);
+        const titleTxt = isHe ? (r.name_he || r.holiday_code) : (r.name_en || r.name_he || r.holiday_code);
+        return `
+          <tr data-workday-rate="${rateStr}" data-holiday-code="${escapeHtml(r.holiday_code || '')}">
+            <td class="work-col-title" data-label="${escapeHtml(lblHoliday)}">${escapeHtml(titleTxt)}</td>
+            <td dir="ltr" data-label="${escapeHtml(lblDates)}">${datesHtml}</td>
+            <td dir="ltr" data-label="${escapeHtml(lblDays)}"><span class="work-cell-val">${escapeHtml(calDays)}</span></td>
+            <td data-label="${escapeHtml(lblCost)}"><span class="${badgeCls}">${escapeHtml(badgeTxt)}</span></td>
+          </tr>
+        `;
+      })
+      .join('');
+  }
+
   const GOOGLE_FLIGHTS_PLACE_NAMES = {
     TLV: 'Tel Aviv',
     ATH: 'Athens',
@@ -2274,8 +2578,32 @@
     `;
   }
 
-  function buildKpiExplanations(p, it, dirInfo, seatedCount, hasVal, schoolMissed, fbvsVal, isHe) {
+  function buildKpiExplanations(p, it, dirInfo, seatedCount, hasVal, schoolMissed, fbvsVal, wpInfo, isHe) {
     const totalDays = Math.max(1, diffDaysIso(it.departure_date, it.return_date) + 1);
+    const wCost = Number((wpInfo && wpInfo.workplace_vacation_days_cost) ?? 0);
+    const workdaysStr = Number.isInteger(wCost) ? String(wCost) : wCost.toFixed(1);
+    const regWorkCnt = Number((wpInfo && wpInfo.regular_workdays_count) ?? 0);
+    const cholWorkCnt = Number((wpInfo && wpInfo.chol_hamoed_workdays_count) ?? 0);
+    const freeWorkCnt = Number((wpInfo && wpInfo.holiday_or_weekend_days_count) ?? 0);
+
+    const workCalc = isHe
+      ? `מחושב לפי לוח עבודה ישראלי קבוע א׳–ה׳ על פני ${totalDays} ימי טיול: ${regWorkCnt} ימי עבודה רגילים (1.0), ${cholWorkCnt} ימי חול המועד (0.5), ו-${freeWorkCnt} ימי שישי-שבת וחג שבתון (0) ← ${workdaysStr} ימי חופש לנוסע/ת עובד/ת.`
+      : `Computed on the fixed Sun–Thu Israeli workplace calendar across ${totalDays} trip days: ${regWorkCnt} regular workdays (1.0), ${cholWorkCnt} Chol HaMoed half-days (0.5), and ${freeWorkCnt} Fri–Sat/official holiday days (0) → ${workdaysStr} days off per working traveler.`;
+
+    let workMeaning = '';
+    if (wCost === 0) {
+      workMeaning = isHe
+        ? `ניצול מלא של סופ״ש וחגי שבתון במשק — 0 ימי חופשת עבודה לעובד/ת יחיד/ה עבור ${totalDays} ימי טיול.`
+        : `Full weekend and statutory holiday coverage — 0 workplace vacation days needed per working traveler across ${totalDays} trip days.`;
+    } else if (freeWorkCnt > 0 || cholWorkCnt > 0) {
+      workMeaning = isHe
+        ? `ניצול יעיל של סופ״ש ומועדי המשק — נדרשים ${workdaysStr} ימי חופשת עבודה בלבד לעובד/ת יחיד/ה עבור ${totalDays} ימי חופשה (אינו תלוי במספר הטסים).`
+        : `Efficient weekend and holiday bridge — requires ${workdaysStr} workplace vacation day(s) per working traveler for a ${totalDays}-day trip (independent of party size).`;
+    } else {
+      workMeaning = isHe
+        ? `התאריכים נופלים על ימי עבודה רגילים במשק — נדרשים ${workdaysStr} ימי חופשת עבודה לעובד/ת יחיד/ה עבור ${totalDays} ימי טיול.`
+        : `Dates fall on regular Sun–Thu workdays — requires ${workdaysStr} workplace vacation day(s) per working traveler across ${totalDays} trip days.`;
+    }
     const impacts = Array.isArray(p && p.per_child_impact) ? p.per_child_impact : [];
     const fwImpacts = impacts.filter((c) => c && c.framework_type);
     const ccgPct = Math.round(Number((p && p.childcare_coverage_gain) ?? 1) * 100);
@@ -2396,6 +2724,11 @@
         title: isHe ? 'כדאיות בונוס' : 'Award Value',
         calc: bonusCalc,
         meaning: bonusMeaning
+      },
+      workdaysCost: {
+        title: isHe ? 'חופשת עבודה (ימי חופש מהעבודה)' : 'Workdays Off (Per Working Traveler)',
+        calc: workCalc,
+        meaning: workMeaning
       }
     };
   }
@@ -2593,8 +2926,38 @@
                 </div>`;
         }
 
-        const paxInfo = buildHouseholdPassengerSummary(state.profile, it, isHe);
+        const cardProfile = state.lastSearchProfile || state.profile;
+        const hasChildrenInSearch = state.lastSearchProfile
+          ? Array.isArray(state.lastSearchProfile.children) &&
+            state.lastSearchProfile.children.length > 0
+          : Array.isArray(p && p.per_child_impact)
+            ? p.per_child_impact.length > 0
+            : Array.isArray(state.profile && state.profile.children) &&
+              state.profile.children.length > 0;
+        const paxInfo = buildHouseholdPassengerSummary(cardProfile, it, isHe);
         const seatedCount = paxInfo.seatedCount;
+
+        const wpFallback =
+          p &&
+          p.workplace_vacation_days_cost !== undefined &&
+          p.workplace_vacation_days_cost !== null
+            ? {
+                workplace_vacation_days_cost: Number(p.workplace_vacation_days_cost),
+                regular_workdays_count: Number(p.regular_workdays_count ?? 0),
+                chol_hamoed_workdays_count: Number(p.chol_hamoed_workdays_count ?? 0),
+                official_holiday_workdays_saved_count: Number(
+                  p.official_holiday_workdays_saved_count ?? 0
+                ),
+                weekend_days_count: Number(p.weekend_days_count ?? 0),
+                holiday_or_weekend_days_count: Number(
+                  p.holiday_or_weekend_days_count ??
+                    Number(p.official_holiday_workdays_saved_count ?? 0) +
+                      Number(p.weekend_days_count ?? 0)
+                )
+              }
+            : computeTripWorkdaysClient(it.departure_date, it.return_date);
+        const wCost = Number(wpFallback.workplace_vacation_days_cost || 0);
+        const workdaysStr = Number.isInteger(wCost) ? String(wCost) : wCost.toFixed(1);
 
         const tierCode = p.recommendation_tier || (idx === 0 ? 'RECOMMENDED' : idx < 4 ? 'TOP_CHOICE' : 'ALTERNATIVE');
         const fbvsVal = p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0;
@@ -2614,16 +2977,50 @@
           hasVal,
           schoolMissed,
           fbvsVal,
+          wpFallback,
           isHe
         );
-        const tipIdFit = `kpi-tip-fit-${idx}`;
-        const schoolFitTooltipHtml = renderKpiTooltipHtml(
-          tipIdFit,
-          kpiInfo.schoolFit.title,
-          kpiInfo.schoolFit.calc,
-          kpiInfo.schoolFit.meaning,
+        const tipIdWork = `kpi-tip-work-${idx}`;
+        const workdaysTooltipHtml = renderKpiTooltipHtml(
+          tipIdWork,
+          kpiInfo.workdaysCost.title,
+          kpiInfo.workdaysCost.calc,
+          kpiInfo.workdaysCost.meaning,
           isHe
         );
+        const workUnitTxt = isHe
+          ? (wCost === 1 ? 'יום חופש' : 'ימי חופש')
+          : (wCost === 1 ? 'day' : 'days');
+        const workdaysCellHtml = `
+                  <div class="score-pill kpi-cell" data-kpi="workdays-cost" data-workdays="${escapeHtml(workdaysStr)}" tabindex="0" aria-describedby="${tipIdWork}">
+                    <div class="kpi-cell-head">
+                      <span class="kpi-cell-label">💼 ${isHe ? 'חופשת עבודה' : 'Workdays Off'}</span>
+                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
+                    </div>
+                    <strong class="kpi-cell-val"><span class="num" dir="ltr">${escapeHtml(workdaysStr)}</span> <span class="kpi-workdays-unit">${escapeHtml(workUnitTxt)}</span></strong>
+                    ${workdaysTooltipHtml}
+                  </div>`;
+        const pairedVacationAttr = hasChildrenInSearch ? ' data-paired-vacation="true"' : '';
+        let stubKpiGridInnerHtml = workdaysCellHtml;
+        if (hasChildrenInSearch) {
+          const tipIdFit = `kpi-tip-fit-${idx}`;
+          const schoolFitTooltipHtml = renderKpiTooltipHtml(
+            tipIdFit,
+            kpiInfo.schoolFit.title,
+            kpiInfo.schoolFit.calc,
+            kpiInfo.schoolFit.meaning,
+            isHe
+          );
+          stubKpiGridInnerHtml += `
+                  <div class="score-pill kpi-cell" data-kpi="school-fit" data-school-missed="${schoolMissed}" tabindex="0" aria-describedby="${tipIdFit}">
+                    <div class="kpi-cell-head">
+                      <span class="kpi-cell-label">🏫 ${isHe ? 'התאמה לחופשת בי"ס' : 'School Break Fit'}</span>
+                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
+                    </div>
+                    <strong class="kpi-cell-val"><span class="num" dir="ltr">${hasVal}/100</span> <span class="${missedParenCls}">(${escapeHtml(missedParenText)})</span></strong>
+                    ${schoolFitTooltipHtml}
+                  </div>`;
+        }
 
         const strategyCode = String(it.fulfillment_strategy || 'FULL_BONUS_SAME_CABIN');
         const stratBadgeText = resolveCardStrategyBadge(it, dirInfo, isHe);
@@ -2690,10 +3087,11 @@
           : '';
         const minPointsRowHtml = hasMinPts
           ? `
-                  <div class="stub-fare-row min-points-ticket" data-min-points="${minPtsNum}" data-scope="${minPtsScope}">
-                    <span class="stub-fare-label">${escapeHtml(minPtsLabel)}</span>
-                    <span class="stub-fare-val stub-fare-points">${escapeHtml(minPtsValue)}</span>
-                  </div>`
+                    <div class="min-points-ticket flight-bonus-points-pill" data-min-points="${minPtsNum}" data-scope="${minPtsScope}">
+                      <span class="flight-points-icon" aria-hidden="true">🎫</span>
+                      <span class="stub-fare-label">${escapeHtml(minPtsLabel)}</span>
+                      <span class="stub-fare-val stub-fare-points">${escapeHtml(minPtsValue)}</span>
+                    </div>`
           : '';
 
         const elalBookBtnHtml = elalBookUrl
@@ -2743,11 +3141,13 @@
 
                 <div class="bonus-direction-block">
                   <div class="bonus-direction-header">
-                    <span class="${directionBadgeCls}">
-                      <span class="bonus-direction-dot" aria-hidden="true"></span>
-                      <span class="bonus-direction-statement">${escapeHtml(directionStatementText)}</span>
-                    </span>
-                    ${strategyTagHtml}
+                    <div class="bonus-direction-status-group">
+                      <span class="${directionBadgeCls}">
+                        <span class="bonus-direction-dot" aria-hidden="true"></span>
+                        <span class="bonus-direction-statement">${escapeHtml(directionStatementText)}</span>
+                      </span>
+                      ${strategyTagHtml}
+                    </div>${minPointsRowHtml}
                   </div>
                   <div class="bonus-lanes">
                     ${outboundCouponHtml}
@@ -2765,21 +3165,9 @@
                     <span class="stub-ctos-max">/100</span>
                   </div>
                 </div>
-
-                <div class="stub-fare-ledger">
-                  <div class="stub-pax-summary">👥 ${escapeHtml(paxInfo.paxSummaryText)}</div>${minPointsRowHtml}
-                </div>
                 ${stubWeatherHtml}
 
-                <div class="stub-kpi-grid">
-                  <div class="score-pill kpi-cell" data-kpi="school-fit" data-school-missed="${schoolMissed}" tabindex="0" aria-describedby="${tipIdFit}">
-                    <div class="kpi-cell-head">
-                      <span class="kpi-cell-label">🏫 ${isHe ? 'התאמה לחופשת בי"ס' : 'School Break Fit'}</span>
-                      <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
-                    </div>
-                    <strong class="kpi-cell-val"><span class="num" dir="ltr">${hasVal}/100</span> <span class="${missedParenCls}">(${escapeHtml(missedParenText)})</span></strong>
-                    ${schoolFitTooltipHtml}
-                  </div>
+                <div class="stub-kpi-grid"${pairedVacationAttr}>${stubKpiGridInnerHtml}
                 </div>
 
                 ${elalBookBtnHtml ? `<div class="stub-actions-stack">${elalBookBtnHtml}</div>` : ''}
@@ -2915,19 +3303,14 @@
         ? 'פרופיל משפחה, גילאי ילדים ויתרת מתמיד'
         : 'Family Profile, Children & Matmid Balance';
     }
-    const zCalendar = document.getElementById('zone-calendar-title');
-    if (zCalendar) {
-      zCalendar.textContent = isHe
-        ? 'לוח חופשות משרד החינוך וחפיפה רב-גילאית (תצוגה אופציונלית)'
-        : 'MoE Multi-Child Vacation Calendar (Optional View)';
-    }
 
     updateActiveModeBadge();
     syncSearchFiltersSummary();
     renderDestinationMultiSelect();
-    setCalendarVisibility(state.isCalendarVisible, false);
+    setCalendarVisibility(state.isCalendarVisible, { focusContent: false, restoreFocus: false });
     renderProfileControls();
     renderCalendarTable();
+    renderWorkplaceCalendarTable();
     renderProposals();
   }
 
@@ -3056,11 +3439,13 @@
     state.profileDirty = false;
     state.calendarData = null;
     state.proposals = [];
+    state.lastSearchProfile = null;
     state.showAllProposals = false;
 
     await scrubBrowserClientState();
     renderProfileControls();
     renderCalendarTable();
+    renderWorkplaceCalendarTable();
     renderProposals();
     await refreshUpcomingHolidaysFromServer(false);
     await loadCalendarForSchoolYear();
@@ -3078,12 +3463,14 @@
       state.validationErrorHe = null;
       state.validationErrorEn = null;
       state.proposals = [];
+      state.lastSearchProfile = null;
       state.showAllProposals = false;
       state.saveFeedbackHe = '✓ הנתונים השמורים נמחקו מהחשבון.';
       state.saveFeedbackEn = '✓ Saved family data deleted from your account.';
       await scrubBrowserClientState();
       renderProfileControls();
       renderCalendarTable();
+      renderWorkplaceCalendarTable();
       renderProposals();
       await refreshUpcomingHolidaysFromServer(false);
       await loadCalendarForSchoolYear();
@@ -3133,6 +3520,7 @@
       state.calendarData = null;
     }
     renderCalendarTable();
+    renderWorkplaceCalendarTable();
   }
 
   async function loadInitialData() {
@@ -3142,6 +3530,7 @@
     state.validationErrorHe = null;
     state.validationErrorEn = null;
     state.proposals = [];
+    state.lastSearchProfile = null;
     state.showAllProposals = false;
     state.profile = createCleanGuestProfile();
     syncDestStateFromNativeSelect();
@@ -3340,6 +3729,11 @@
       const res = await apiSend('POST', '/api/v1/vacations/search', payload);
       if (mySearchSeq !== latestSearchSeq) return;
       state.lastSearchQuery = res.query || payload || null;
+      state.lastSearchProfile = {
+        adults_count: payload.inline_profile.adults_count,
+        matmid_points_balance: matmidBalanceVal,
+        children: inlineChildren.map((c) => ({ ...c }))
+      };
       state.proposals = res.proposals || [];
       state.showAllProposals = false;
       state.statusMessageHe = res.status_message_he || null;
@@ -3351,6 +3745,7 @@
       const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
       const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
       state.proposals = [];
+      state.lastSearchProfile = null;
       state.showAllProposals = false;
       state.validationErrorHe = `נא לוודא שטווח התאריכים ומספר הלילות בטופס החיפוש תקינים ולנסות שוב.${detailSuffixHe}`;
       state.validationErrorEn = `Verify that the return date is on or after the departure date and the nights range is valid, then try again.${detailSuffixEn}`;
@@ -3506,6 +3901,7 @@
       btnRunSearch.addEventListener('click', async () => {
         setAuthPopoverOpen(false, { restoreFocus: false });
         setProfileSheetOpen(false, { restoreFocus: false });
+        setCalendarVisibility(false, { restoreFocus: false });
         await runVacationSearch();
         if (typeof window !== 'undefined' && window.innerWidth < 1180) {
           state.lastActiveMobileZone = 'zone-results';
@@ -3630,6 +4026,11 @@
           el.classList.remove('is-tooltip-open');
         }
       });
+      document.querySelectorAll('.stub-score-header.has-open-inline-kpi').forEach((hdrEl) => {
+        if (!exceptCell || !hdrEl.contains(exceptCell)) {
+          hdrEl.classList.remove('has-open-inline-kpi');
+        }
+      });
       document.querySelectorAll('.proposal-card.has-open-tooltip').forEach((cardEl) => {
         if (!exceptCell || !cardEl.contains(exceptCell)) {
           cardEl.classList.remove('has-open-tooltip');
@@ -3647,6 +4048,9 @@
         }
         if (state.isProfileSheetOpen) {
           setProfileSheetOpen(false);
+        }
+        if (state.isCalendarVisible) {
+          setCalendarVisibility(false);
         }
         closeAllKpiTooltips(null);
         if (
@@ -3789,6 +4193,7 @@
           const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
           const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
           state.proposals = [];
+          state.lastSearchProfile = null;
           state.showAllProposals = false;
           state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
           state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
@@ -3921,6 +4326,10 @@
         const willOpen = !kpiCellEl.classList.contains('is-tooltip-open');
         closeAllKpiTooltips(willOpen ? kpiCellEl : null);
         kpiCellEl.classList.toggle('is-tooltip-open', willOpen);
+        const parentScoreHdr = kpiCellEl.closest('.stub-score-header');
+        if (parentScoreHdr) {
+          parentScoreHdr.classList.toggle('has-open-inline-kpi', willOpen);
+        }
         const parentCard = kpiCellEl.closest('.proposal-card');
         if (parentCard) {
           parentCard.classList.toggle('has-open-tooltip', willOpen);
@@ -3967,6 +4376,7 @@
           await apiSend('POST', `/api/v1/moe-calendar/sync/${sy}`, { force_remote_check: false });
           state.calendarData = await apiGet(`/api/v1/moe-calendar/${sy}`);
           renderCalendarTable();
+          renderWorkplaceCalendarTable();
         } catch (err) {
           console.error('MoE calendar sync failed:', err);
         }
@@ -3996,7 +4406,14 @@
     const btnCloseCal = document.getElementById('btn-close-calendar');
     if (btnCloseCal) {
       btnCloseCal.addEventListener('click', () => {
-        setCalendarVisibility(false, false);
+        setCalendarVisibility(false);
+      });
+    }
+
+    const calModalBackdrop = document.getElementById('calendar-modal-backdrop');
+    if (calModalBackdrop) {
+      calModalBackdrop.addEventListener('click', () => {
+        setCalendarVisibility(false);
       });
     }
 
@@ -4004,9 +4421,10 @@
       btn.addEventListener('click', () => {
         const zoneId = btn.getAttribute('data-desktop-zone');
         if (zoneId === 'zone-calendar') {
-          setCalendarVisibility(!state.isCalendarVisible, !state.isCalendarVisible);
+          setCalendarVisibility(!state.isCalendarVisible, { opener: btn });
           return;
         }
+        setCalendarVisibility(false, { restoreFocus: false });
         document.querySelectorAll('.desktop-nav-btn').forEach((b) => {
           if (b.getAttribute('data-desktop-zone') !== 'zone-calendar') {
             b.classList.remove('active');
@@ -4022,15 +4440,17 @@
       btn.addEventListener('click', () => {
         const zoneId = btn.getAttribute('data-dock-zone');
         if (zoneId === 'zone-calendar') {
-          setProfileSheetOpen(false);
-          setCalendarVisibility(!state.isCalendarVisible, !state.isCalendarVisible);
+          setProfileSheetOpen(false, { restoreFocus: false });
+          setCalendarVisibility(!state.isCalendarVisible, { opener: btn });
           return;
         }
         if (zoneId === 'zone-profile') {
+          setCalendarVisibility(false, { restoreFocus: false });
           setProfileSheetOpen(!state.isProfileSheetOpen, { focusMatmid: false });
           return;
         }
         state.lastActiveMobileZone = zoneId;
+        setCalendarVisibility(false, { restoreFocus: false });
         setProfileSheetOpen(false);
         document.querySelectorAll('.mobile-dock-btn').forEach((b) => {
           if (b.getAttribute('data-dock-zone') !== 'zone-calendar') {

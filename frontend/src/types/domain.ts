@@ -215,3 +215,43 @@ export interface FlightItinerary {
   points_are_estimated: boolean;
   elal_google_flights_url: string | null;
 }
+
+export interface WorkplaceHolidayPeriod {
+  id: string;
+  school_year: string;
+  school_year_hebrew?: string;
+  holiday_code: string;
+  name_he: string;
+  name_en: string;
+  start_date: string;
+  end_date: string;
+  calendar_days: number;
+  workplace_status: 'OFFICIAL_HOLIDAY' | 'CHOL_HAMOED';
+  workday_cost_per_day: 0 | 0.5;
+  effective_workdays_cost: number;
+  status_badge_he: string;
+  status_badge_en: string;
+}
+
+export interface VacationOptionProposal {
+  id: string;
+  search_query_id: string;
+  itinerary_id: string;
+  associated_holiday_codes: string[];
+  window_set_type: WindowSetType;
+  school_absence_penalty: number;
+  childcare_coverage_gain: number;
+  total_school_days_missed_across_children: number;
+  max_single_child_school_days_missed: number;
+  holiday_alignment_score: number;
+  flight_bonus_value_score: number;
+  weather_suitability_score: number;
+  combined_trip_optimization_score: number;
+  workplace_vacation_days_cost: number;
+  regular_workdays_count: number;
+  chol_hamoed_workdays_count: number;
+  official_holiday_workdays_saved_count: number;
+  weekend_days_count: number;
+  holiday_or_weekend_days_count: number;
+  itinerary: FlightItinerary | null;
+}

@@ -16,6 +16,7 @@ export interface ProposalSummary {
   combined_trip_optimization_score: number;
   school_absence_penalty: number;
   childcare_coverage_gain: number;
+  workplace_vacation_days_cost: number;
   explanation_he: string;
 }
 
