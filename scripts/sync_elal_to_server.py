@@ -1574,6 +1574,143 @@ def run_sync_watchdog_daemon(
         time.sleep(poll_sec)
 
 
+MAC_LAUNCH_AGENT_LABEL = "com.breezyflights.elal-sync"
+
+
+def build_mac_launch_agent_plist(
+    python_exe: str,
+    installed_script_path: str,
+    server_url: str = DEFAULT_SERVER_URL,
+    shards_per_day: int = 2,
+    poll_seconds: int = 60,
+    profile_dir: str = DEFAULT_SYNC_PROFILE_DIR,
+    headless: bool = False,
+    sync_token: str = "",
+) -> dict[str, Any]:
+    """Construct the macOS `launchd` LaunchAgent dictionary for the 2x/day + remote-trigger watchdog."""
+    prof = Path(profile_dir or DEFAULT_SYNC_PROFILE_DIR).expanduser().resolve()
+    log_path = str(prof / "mac_sync_agent.log")
+    prog_args = [
+        str(python_exe),
+        "-u",
+        str(installed_script_path),
+        "--daemon",
+        "--no-local",
+        "--server",
+        str(server_url),
+        "--shards-per-day",
+        str(max(1, min(5, int(shards_per_day or 2)))),
+        "--poll-seconds",
+        str(max(10, int(poll_seconds or 60))),
+        "--profile-dir",
+        str(prof),
+    ]
+    if headless:
+        prog_args.append("--headless")
+
+    env_vars: dict[str, str] = {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    resolved_tok = (sync_token or os.environ.get("ELAL_SYNC_API_TOKEN") or "").strip()
+    if resolved_tok:
+        env_vars["ELAL_SYNC_API_TOKEN"] = resolved_tok
+
+    return {
+        "Label": MAC_LAUNCH_AGENT_LABEL,
+        "ProgramArguments": prog_args,
+        "WorkingDirectory": str(prof),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Background",
+        "StandardOutPath": log_path,
+        "StandardErrorPath": log_path,
+        "EnvironmentVariables": env_vars,
+    }
+
+
+def install_mac_launch_agent(
+    server_url: str = DEFAULT_SERVER_URL,
+    shards_per_day: int = 2,
+    poll_seconds: int = 60,
+    profile_dir: str = DEFAULT_SYNC_PROFILE_DIR,
+    headless: bool = False,
+    sync_token: str = "",
+) -> Path:
+    """Install and immediately start `~/Library/LaunchAgents/com.breezyflights.elal-sync.plist` on macOS."""
+    import plistlib
+
+    if sys.platform != "darwin":
+        raise RuntimeError(
+            "--install-mac-agent must be run on macOS (run this command inside your Mac Terminal)."
+        )
+    prof = Path(profile_dir or DEFAULT_SYNC_PROFILE_DIR).expanduser().resolve()
+    prof.mkdir(parents=True, exist_ok=True)
+    installed_script = prof / "sync_elal_to_server.py"
+    src_script = Path(__file__).resolve()
+    if src_script != installed_script:
+        shutil.copy2(src_script, installed_script)
+    installed_script.chmod(0o755)
+
+    agents_dir = Path.home() / "Library" / "LaunchAgents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    plist_path = agents_dir / f"{MAC_LAUNCH_AGENT_LABEL}.plist"
+    plist_dict = build_mac_launch_agent_plist(
+        python_exe=sys.executable,
+        installed_script_path=str(installed_script),
+        server_url=server_url,
+        shards_per_day=shards_per_day,
+        poll_seconds=poll_seconds,
+        profile_dir=str(prof),
+        headless=headless,
+        sync_token=sync_token,
+    )
+    plist_path.write_bytes(plistlib.dumps(plist_dict))
+
+    uid = os.getuid()
+    subprocess.run(
+        ["/bin/launchctl", "bootout", f"gui/{uid}/{MAC_LAUNCH_AGENT_LABEL}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    subprocess.run(
+        ["/bin/launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+        check=True,
+    )
+    subprocess.run(
+        ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{MAC_LAUNCH_AGENT_LABEL}"],
+        check=False,
+    )
+    log_path = prof / "mac_sync_agent.log"
+    print(f"Installed & started macOS LaunchAgent: {plist_path}")
+    print(
+        f"Schedule: {shards_per_day} shards/day (~every {max(4.0, (24.0 / max(1, shards_per_day)) - 0.5):.1f}h) "
+        f"+ 60s live listener for Admin Panel 'Run Now' button on {server_url}."
+    )
+    print(f"Live log file: tail -f {log_path}")
+    return plist_path
+
+
+def uninstall_mac_launch_agent() -> None:
+    """Stop and remove `~/Library/LaunchAgents/com.breezyflights.elal-sync.plist` on macOS."""
+    if sys.platform != "darwin":
+        raise RuntimeError("--uninstall-mac-agent must be run on macOS.")
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{MAC_LAUNCH_AGENT_LABEL}.plist"
+    uid = os.getuid()
+    subprocess.run(
+        ["/bin/launchctl", "bootout", f"gui/{uid}/{MAC_LAUNCH_AGENT_LABEL}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if plist_path.exists():
+        plist_path.unlink()
+        print(f"Stopped and removed macOS LaunchAgent: {plist_path}")
+    else:
+        print("macOS LaunchAgent was not installed.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Safe sharded El Al Matmid award availability sync (5-day uniform rotation + manual targeted sync)"
@@ -1706,8 +1843,35 @@ def main() -> None:
         default=60,
         help="Seconds between Admin Panel trigger polls in --daemon mode (default: 60)",
     )
+    parser.add_argument(
+        "--install-mac-agent",
+        action="store_true",
+        default=False,
+        help="Install and start persistent macOS LaunchAgent (2 shards/day + Admin Panel remote trigger)",
+    )
+    parser.add_argument(
+        "--uninstall-mac-agent",
+        action="store_true",
+        default=False,
+        help="Stop and remove the macOS LaunchAgent",
+    )
     args = parser.parse_args()
     also_local = bool(args.also_local and not args.no_local)
+
+    if args.uninstall_mac_agent:
+        uninstall_mac_launch_agent()
+        return
+
+    if args.install_mac_agent:
+        install_mac_launch_agent(
+            server_url=args.server,
+            shards_per_day=args.shards_per_day,
+            poll_seconds=args.poll_seconds,
+            profile_dir=args.profile_dir,
+            headless=bool(args.headless),
+            sync_token=args.sync_token,
+        )
+        return
 
     if args.push_local_db:
         push_existing_local_db_to_server(server_url=args.server, local_db_path=args.local_db)

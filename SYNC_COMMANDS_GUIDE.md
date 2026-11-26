@@ -127,8 +127,33 @@ python3 scripts/sync_elal_to_server.py --push-local-db
 
 ---
 
-‏## 3. איך מפעילים, בודקים ועוצרים את סוכן הסנכרון הקבוע בקלאודטופ (`2` חלקים ביום + הפעלה מחלון האדמין)
+‏## 3. איך מתקינים, בודקים ועוצרים את סוכן הסנכרון הקבוע ב־Mac (`2` חלקים ביום + הפעלה מחלון האדמין)
 
+‏### א. התקנה והפעלה על ה־Mac שלך (`macOS LaunchAgent` — מומלץ)
+‏הרץ פעם אחת בטרמינל של ה־**Mac** שלך (מתוך תיקיית הפרויקט אחרי `git pull`, או עם קובץ `sync_elal_to_server.py` יחיד):
+
+- ‏**התקנה והפעלה אוטומטית ברקע (`2` חלקים ביום + האזנה לכפתור "הפעל עכשיו" מחלון האדמין באתר)**:
+```bash
+python3 scripts/sync_elal_to_server.py --install-mac-agent --shards-per-day 2
+```
+‏*(אם הורדת את `sync_elal_to_server.py` ישירות ללא תיקיית הפרויקט, הרץ: `python3 sync_elal_to_server.py --install-mac-agent --shards-per-day 2`)*
+
+- ‏**צפייה בלוג החי של סוכן ה־Mac**:
+```bash
+tail -n 80 -f ~/.local/share/fvp-chrome-sync-profile/mac_sync_agent.log
+```
+
+- ‏**בדיקה שסוכן ה־Mac רץ ב־`launchctl`**:
+```bash
+launchctl print gui/$(id -u)/com.breezyflights.elal-sync | head -n 25
+```
+
+- ‏**עצירה והסרה של סוכן ה־Mac (במידת הצורך)**:
+```bash
+python3 ~/.local/share/fvp-chrome-sync-profile/sync_elal_to_server.py --uninstall-mac-agent
+```
+
+‏### ב. חלופה לקלאודטופ (`Linux systemd`)
 ‏כל הפקודות כאן מיועדות להרצה מתוך **הטרמינל של הקלאודטופ** (`/usr/local/google/home/yonibudovsky/family_vacation_planner`):
 
 - ‏**התקנה והפעלה של סוכן ה־Watchdog הקבוע** (מריץ אוטומטית `2` חלקים ביום — כל `~11.5` שעות עם השלמה אוטומטית אם היה עיכוב, ומאזין כל `60` שניות לכפתור **"▶️ הפעל סנכרון מנה עכשיו"** מחלון האדמין באתר):

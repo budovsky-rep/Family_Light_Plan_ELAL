@@ -1968,12 +1968,12 @@
     const modeNote =
       sync.sync_mode_detected === 'SHARDED_ROTATION'
         ? (isHe
-            ? 'מחזור אוטומטי פעיל (2 חלקים ביום מהקלאודטופ — כל השנה מתרעננת כל 2.5 ימים).'
-            : 'Auto 2-shards/day schedule active (full year refreshes every 2.5 days).')
+            ? 'מחזור אוטומטי פעיל (2 חלקים ביום מסוכן ה־Mac — כל השנה מתרעננת כל 2.5 ימים).'
+            : 'Auto 2-shards/day schedule active on Mac agent (full year refreshes every 2.5 days).')
         : sync.sync_mode_detected === 'FULL_SWEEP_OR_SINGLE_BATCH'
           ? (isHe
-              ? 'כל החלקים עודכנו באותו מועד; סוכן הקלאודטופ ימשיך ב־2 חלקים ביום או בהפעלה ידנית מכאן.'
-              : 'All shards share the same sync date; Cloudtop agent runs 2 shards/day or on demand here.')
+              ? 'כל החלקים עודכנו באותו מועד; סוכן ה־Mac ימשיך ב־2 חלקים ביום או בהפעלה ידנית מכאן.'
+              : 'All shards share the same sync date; Mac agent runs 2 shards/day or on demand here.')
           : (isHe
               ? 'לא נמצאו טיסות בונוס חיות במסד הנתונים.'
               : 'No active bonus flights found in database.');
@@ -2006,13 +2006,13 @@
       if (jobStatus === 'QUEUED') {
         const reqTime = formatAdminIsraelDateTime(job.requested_at_utc, true);
         jobText = isHe
-          ? `⏳ בקשת סנכרון ממתינה לסוכן הקלאודטופ (נשלחה ב־${reqTime}) — תתחיל תוך עד 60 שניות.`
-          : `⏳ Sync request queued (${reqTime}) — Cloudtop agent picks up within 60s.`;
+          ? `⏳ בקשת סנכרון ממתינה לסוכן ה־Mac (נשלחה ב־${reqTime}) — תתחיל תוך עד 60 שניות כשה־Mac פעיל.`
+          : `⏳ Sync request queued (${reqTime}) — Mac agent picks up within 60s when awake.`;
       } else if (jobStatus === 'RUNNING') {
         const stTime = formatAdminIsraelDateTime(job.started_at_utc || job.requested_at_utc, true);
         jobText = isHe
-          ? `🚀 סנכרון רץ כעת מהקלאודטופ (התחיל ב־${stTime}, כ־90 שניות לסיום)...`
-          : `🚀 Sync currently running on Cloudtop (started ${stTime})...`;
+          ? `🚀 סנכרון רץ כעת מה־Mac (התחיל ב־${stTime}, כ־90 שניות לסיום)...`
+          : `🚀 Sync currently running on Mac (started ${stTime})...`;
       } else if (jobStatus === 'COMPLETED') {
         const finTime = formatAdminIsraelDateTime(job.finished_at_utc, true);
         const cntTxt = job.records_synced !== null && job.records_synced !== undefined ? ` (${Number(job.records_synced).toLocaleString('en-US')} ${isHe ? 'טיסות עודכנו' : 'flights'})` : '';
@@ -2022,8 +2022,8 @@
       } else {
         const errMsg = job.message ? ` (${job.message})` : '';
         jobText = isHe
-          ? `⚠️ בקשת הסנכרון לא הושלמה — ודא שסוכן הקלאודטופ פעיל${errMsg}.`
-          : `⚠️ Sync request did not complete — verify Cloudtop agent is active${errMsg}.`;
+          ? `⚠️ בקשת הסנכרון לא הושלמה — ודא שסוכן ה־Mac פעיל${errMsg}.`
+          : `⚠️ Sync request did not complete — verify Mac sync agent is active${errMsg}.`;
       }
       const cancelBtnHtml =
         jobStatus === 'QUEUED'
