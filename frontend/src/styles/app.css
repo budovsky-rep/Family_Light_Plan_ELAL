@@ -3649,65 +3649,6 @@ body.is-keyboard-open .profile-sheet-footer {
   min-width: 0;
 }
 
-.admin-sync-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.btn-admin-sync-trigger {
-  min-height: 28px;
-  padding-block: 3px;
-  padding-inline: 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(52, 211, 153, 0.65);
-  background: rgba(16, 185, 129, 0.24);
-  color: #A7F3D0;
-  font-family: var(--font-body);
-  font-size: 0.72rem;
-  font-weight: 800;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.btn-admin-sync-trigger:hover:not(:disabled) {
-  background: rgba(16, 185, 129, 0.36);
-}
-
-.btn-admin-sync-trigger:disabled {
-  opacity: 0.68;
-  cursor: default;
-}
-
-.admin-sync-job-banner {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 10px;
-  padding-block: 6px;
-  padding-inline: 10px;
-  border-radius: var(--radius-sm);
-  background: rgba(15, 118, 110, 0.24);
-  border: 1px solid rgba(52, 211, 153, 0.4);
-  font-size: 0.73rem;
-  color: #ECFDF5;
-}
-
-.admin-sync-job-banner[data-job-status="QUEUED"] {
-  background: rgba(245, 158, 11, 0.18);
-  border-color: rgba(251, 191, 36, 0.48);
-  color: #FEF3C7;
-}
-
-.admin-sync-job-banner[data-job-status="FAILED"],
-.admin-sync-job-banner[data-job-status="TIMED_OUT"] {
-  background: rgba(239, 68, 68, 0.2);
-  border-color: rgba(248, 113, 113, 0.48);
-  color: #FEE2E2;
-}
-
 .btn-admin-sync-refresh {
   min-height: 28px;
   padding-block: 3px;
