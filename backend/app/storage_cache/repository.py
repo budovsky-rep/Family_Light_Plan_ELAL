@@ -100,6 +100,7 @@ class SQLiteRepository:
         self.db_path: str = resolve_db_path(db_path)
         self._is_memory: bool = self.db_path == ":memory:"
         self._memory_conn: Optional[sqlite3.Connection] = None
+        self._memory_sync_trigger: Optional[dict[str, Any]] = None
         self._lock = threading.RLock()
 
         if not self._is_memory:
@@ -1923,6 +1924,131 @@ class SQLiteRepository:
             "is_legacy_quarantined": bool(int(row["is_legacy_quarantined"] or 0)),
         }
 
+    def _sync_trigger_path(self) -> Optional[Path]:
+        if self._is_memory:
+            return None
+        return Path(f"{self.db_path}.sync_trigger.json")
+
+    def _read_raw_sync_trigger(self) -> Optional[dict[str, Any]]:
+        with self._lock:
+            if self._is_memory:
+                return dict(self._memory_sync_trigger) if self._memory_sync_trigger else None
+            p = self._sync_trigger_path()
+            if p is None or not p.exists():
+                return None
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else None
+            except Exception:
+                return None
+
+    def _write_raw_sync_trigger(self, payload: Optional[dict[str, Any]]) -> None:
+        with self._lock:
+            if self._is_memory:
+                self._memory_sync_trigger = dict(payload) if payload else None
+                return
+            p = self._sync_trigger_path()
+            if p is None:
+                return
+            if payload is None:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp_p = Path(f"{p}.tmp")
+            tmp_p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp_p.replace(p)
+
+    def get_sync_trigger_state(
+        self, now_dt: Optional[datetime] = None
+    ) -> Optional[dict[str, Any]]:
+        """Return the latest remote admin sync trigger job, auto-expiring stale active jobs."""
+        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
+        job = self._read_raw_sync_trigger()
+        if not job:
+            return None
+        st = str(job.get("status") or "").upper()
+        if st in ("QUEUED", "RUNNING"):
+            ts_str = str(job.get("started_at_utc") or job.get("requested_at_utc") or "")
+            ts_dt = _parse_iso_utc(ts_str)
+            if ts_dt is not None and (ref_now - ts_dt).total_seconds() > 2100:
+                job["status"] = "TIMED_OUT"
+                job["finished_at_utc"] = ref_now.isoformat().replace("+00:00", "Z")
+                job["message"] = "Timed out waiting for sync agent."
+                self._write_raw_sync_trigger(job)
+        return job
+
+    def enqueue_sync_trigger(
+        self, mode: str = "NEXT_SHARD", now_dt: Optional[datetime] = None
+    ) -> Optional[dict[str, Any]]:
+        """Queue (or cancel) an admin-triggered bonus sync job."""
+        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
+        now_iso = ref_now.isoformat().replace("+00:00", "Z")
+        norm_mode = str(mode or "NEXT_SHARD").strip().upper()
+        if norm_mode not in ("NEXT_SHARD", "TWO_SHARDS", "CANCEL"):
+            raise ValueError("Invalid sync trigger mode.")
+
+        with self._lock:
+            cur = self.get_sync_trigger_state(ref_now)
+            if norm_mode == "CANCEL":
+                if cur and str(cur.get("status") or "").upper() == "QUEUED":
+                    cur["status"] = "CANCELLED"
+                    cur["finished_at_utc"] = now_iso
+                    self._write_raw_sync_trigger(cur)
+                return self.get_sync_trigger_state(ref_now)
+
+            if cur and str(cur.get("status") or "").upper() in ("QUEUED", "RUNNING"):
+                return cur
+
+            new_job: dict[str, Any] = {
+                "job_id": str(uuid.uuid4()),
+                "mode": norm_mode,
+                "status": "QUEUED",
+                "requested_at_utc": now_iso,
+                "started_at_utc": None,
+                "finished_at_utc": None,
+                "records_synced": None,
+                "message": None,
+            }
+            self._write_raw_sync_trigger(new_job)
+            return new_job
+
+    def ack_sync_trigger(
+        self,
+        job_id: str,
+        status: str,
+        records_synced: Optional[int] = None,
+        message: Optional[str] = None,
+        now_dt: Optional[datetime] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Update status (`RUNNING`, `COMPLETED`, `FAILED`) for an active sync trigger job."""
+        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
+        now_iso = ref_now.isoformat().replace("+00:00", "Z")
+        norm_st = str(status or "").strip().upper()
+        if norm_st not in ("RUNNING", "COMPLETED", "FAILED"):
+            raise ValueError("Invalid ack status.")
+        clean_id = str(job_id or "").strip()
+        if not clean_id:
+            raise ValueError("job_id is required.")
+
+        with self._lock:
+            cur = self.get_sync_trigger_state(ref_now)
+            if not cur or str(cur.get("job_id") or "") != clean_id:
+                return cur
+            cur["status"] = norm_st
+            if norm_st == "RUNNING":
+                cur["started_at_utc"] = cur.get("started_at_utc") or now_iso
+            else:
+                cur["finished_at_utc"] = now_iso
+            if records_synced is not None:
+                cur["records_synced"] = max(0, int(records_synced))
+            if message is not None:
+                cur["message"] = str(message)[:240]
+            self._write_raw_sync_trigger(cur)
+            return cur
+
     def get_bonus_sync_diagnostics(
         self, now_dt: Optional[datetime] = None
     ) -> dict[str, Any]:
@@ -2054,9 +2180,9 @@ class SQLiteRepository:
                 if len(shard_sync_days) >= 2
                 else "FULL_SWEEP_OR_SINGLE_BATCH"
             )
-            if last_age_hours <= 36.0 and fresh_shards_count >= 4:
+            if last_age_hours <= 24.0 and fresh_shards_count >= 4:
                 health_state = "HEALTHY"
-            elif last_age_hours <= 72.0:
+            elif last_age_hours <= 36.0:
                 health_state = "DELAYED"
             else:
                 health_state = "STALE"
@@ -2066,6 +2192,7 @@ class SQLiteRepository:
             "inventory_source": inv_source,
             "health_state": health_state,
             "sync_mode_detected": sync_mode,
+            "target_shards_per_day": 2,
             "total_active_rows": total_rows,
             "active_destinations_count": len(dests_all),
             "min_flight_date": min(flight_dates) if flight_dates else None,
@@ -2076,4 +2203,5 @@ class SQLiteRepository:
             "fresh_shards_count": fresh_shards_count,
             "shard_count": shard_count,
             "shards": shards,
+            "trigger_job": self.get_sync_trigger_state(ref_now),
         }

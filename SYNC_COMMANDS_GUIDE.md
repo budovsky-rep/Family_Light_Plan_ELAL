@@ -127,28 +127,29 @@ python3 scripts/sync_elal_to_server.py --push-local-db
 
 ---
 
-‏## 3. איך מפעילים, בודקים ועוצרים את הסקריפט המתוזמן בקלאודטופ
+‏## 3. איך מפעילים, בודקים ועוצרים את סוכן הסנכרון הקבוע בקלאודטופ (`2` חלקים ביום + הפעלה מחלון האדמין)
 
-‏כל הפקודות כאן מיועדות להרצה מתוך **הטרמינל של הקלאודטופ**:
+‏כל הפקודות כאן מיועדות להרצה מתוך **הטרמינל של הקלאודטופ** (`/usr/local/google/home/yonibudovsky/family_vacation_planner`):
 
-- ‏**התקנה והפעלה ראשונית של הטיימר היומי** (כולל תאריך מינימום `--not-before` להגנה מקירור; בתיקייה `/usr/local/google/home/yonibudovsky/family_vacation_planner`):
+- ‏**התקנה והפעלה של סוכן ה־Watchdog הקבוע** (מריץ אוטומטית `2` חלקים ביום — כל `~11.5` שעות עם השלמה אוטומטית אם היה עיכוב, ומאזין כל `60` שניות לכפתור **"▶️ הפעל סנכרון מנה עכשיו"** מחלון האדמין באתר):
 ```bash
-bash scripts/install_cloudtop_daily_sync.sh 2026-11-23
+bash scripts/install_cloudtop_daily_sync.sh https://breezyflights.com 2
 ```
 
-- ‏**הפעלה מיידית של השירות המתוזמן עכשיו (בדיקת השירות של `systemd`):**
+- ‏**בדיקת סטטוס ולוג חי של סוכן הסנכרון בקלאודטופ**:
 ```bash
-systemctl --user start fvp-elal-sync.service
+systemctl --user status fvp-elal-sync-agent.service --no-pager
+journalctl --user -u fvp-elal-sync-agent.service -n 80 --no-pager
 ```
 
-- ‏**עצירה זמנית או ביטול של הטיימר היומי:**
+- ‏**עצירה זמנית של הסוכן בקלאודטופ**:
 ```bash
-systemctl --user disable --now fvp-elal-sync.timer
+systemctl --user disable --now fvp-elal-sync-agent.service
 ```
 
-- ‏**הפעלה מחדש של הטיימר לאחר עצירה:**
+- ‏**הפעלה מחדש של הסוכן לאחר עצירה או עדכון קוד**:
 ```bash
-systemctl --user enable --now fvp-elal-sync.timer
+systemctl --user restart fvp-elal-sync-agent.service
 ```
 
 - ‏**עדכון שרת הפרודקשן ב-GCP לאחר שינויי קוד** — הרץ מתוך **Google Cloud Shell** כדי ששרת האתר ימשוך מהמאגר וייטען מחדש:

@@ -1423,6 +1423,24 @@ class VacationPlannerAPIRouter:
                     json.dumps(admin_payload, ensure_ascii=False),
                 )
 
+            if method_u == "POST" and path == "/api/v1/admin/bonus-sync-trigger":
+                adm_sess = self.auth_service.require_admin(request_headers)
+                self.auth_service.verify_csrf(adm_sess, request_headers)
+                if json_body is not None and not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                req_mode = str((json_body or {}).get("mode") or "NEXT_SHARD").strip().upper()
+                trig_job = self.repository.enqueue_sync_trigger(mode=req_mode)
+                trig_payload = {
+                    "status": "ok",
+                    "trigger_job": trig_job,
+                    "admin_bonus_sync": self.repository.get_bonus_sync_diagnostics(),
+                }
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(trig_payload, ensure_ascii=False),
+                )
+
             if method_u == "GET" and path == "/api/v1/auth/google/login":
                 return self.auth_service.start_login(
                     request_headers=request_headers, query_params=q_params
@@ -1747,6 +1765,69 @@ class VacationPlannerAPIRouter:
                     private_json_headers,
                     json.dumps(wp_payload, ensure_ascii=False),
                 )
+
+            # 6a. Sync Agent Trigger Poll & Ack Endpoints (/api/v1/elal-bonus/sync-trigger-*)
+            if path in ("/api/v1/elal-bonus/sync-trigger-poll", "/api/v1/elal-bonus/sync-trigger-ack"):
+                required_token = os.environ.get("ELAL_SYNC_API_TOKEN", "").strip()
+                if required_token:
+                    hdrs = {
+                        str(k).lower(): str(v)
+                        for k, v in (request_headers or {}).items()
+                    }
+                    auth_val = hdrs.get("authorization", "").strip()
+                    provided_token = ""
+                    if auth_val.lower().startswith("bearer "):
+                        provided_token = auth_val[7:].strip()
+                    elif isinstance(json_body, dict) and isinstance(
+                        json_body.get("sync_token"), str
+                    ):
+                        provided_token = json_body["sync_token"].strip()
+                    if not provided_token or not hmac.compare_digest(
+                        provided_token.encode("utf-8"), required_token.encode("utf-8")
+                    ):
+                        return (
+                            401,
+                            private_json_headers,
+                            json.dumps({"error": "Unauthorized sync token"}),
+                        )
+
+                if method_u == "GET" and path == "/api/v1/elal-bonus/sync-trigger-poll":
+                    diag = self.repository.get_bonus_sync_diagnostics()
+                    poll_payload = {
+                        "status": "ok",
+                        "trigger_job": diag.get("trigger_job"),
+                        "last_synced_at_utc": diag.get("last_synced_at_utc"),
+                        "last_sync_age_hours": diag.get("last_sync_age_hours"),
+                        "target_shards_per_day": diag.get("target_shards_per_day", 2),
+                    }
+                    return (
+                        200,
+                        private_json_headers,
+                        json.dumps(poll_payload, ensure_ascii=False),
+                    )
+
+                if method_u == "POST" and path == "/api/v1/elal-bonus/sync-trigger-ack":
+                    if not isinstance(json_body, dict):
+                        raise ValueError("Request body must be a JSON object")
+                    ack_job = self.repository.ack_sync_trigger(
+                        job_id=str(json_body.get("job_id") or ""),
+                        status=str(json_body.get("status") or ""),
+                        records_synced=(
+                            int(json_body["records_synced"])
+                            if json_body.get("records_synced") is not None
+                            else None
+                        ),
+                        message=(
+                            redact_pii(str(json_body["message"]))
+                            if json_body.get("message") is not None
+                            else None
+                        ),
+                    )
+                    return (
+                        200,
+                        private_json_headers,
+                        json.dumps({"status": "ok", "trigger_job": ack_job}, ensure_ascii=False),
+                    )
 
             # 6. POST /api/v1/elal-bonus/sync
             if method_u == "POST" and path == "/api/v1/elal-bonus/sync":

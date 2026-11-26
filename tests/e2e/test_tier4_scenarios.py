@@ -6354,13 +6354,22 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertIn("ריצה אחרונה:", admin_closed["txt"])
         self.assertTrue(admin_closed["scrollOk"])
 
-        # Expand 5-shard drawer & click Live Sync Check
+        # Expand 5-shard drawer & click Live Sync Check + Remote Trigger + Cancel
         browser.real_click("#admin-bonus-sync-panel > summary")
         browser.pump(80)
         self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
         browser.real_click("#btn-refresh-admin-sync")
         browser.settle()
         self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
+        browser.real_click("#btn-trigger-admin-sync")
+        browser.settle()
+        self.assertEqual(
+            browser.eval("document.getElementById('admin-sync-job-banner').getAttribute('data-job-status')"),
+            "QUEUED",
+        )
+        browser.real_click("#btn-cancel-admin-sync")
+        browser.settle()
+        self.assertFalse(browser.eval("Boolean(document.getElementById('admin-sync-job-banner'))"))
 
         # Mobile 390x844 + English locale check -> zero horizontal overflow
         browser.call("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True})

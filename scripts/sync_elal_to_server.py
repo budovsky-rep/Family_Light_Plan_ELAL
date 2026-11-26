@@ -1394,6 +1394,186 @@ def run_sync_with_system_chrome(
     return result_counts
 
 
+def poll_server_sync_trigger(
+    server_url: str,
+    sync_token: str = "",
+    timeout_seconds: float = 15.0,
+) -> dict[str, Any]:
+    """Poll `{server_url}/api/v1/elal-bonus/sync-trigger-poll` (zero traffic to elal.com)."""
+    endpoint = f"{server_url.rstrip('/')}/api/v1/elal-bonus/sync-trigger-poll"
+    resolved_token = (sync_token or os.environ.get("ELAL_SYNC_API_TOKEN") or "").strip()
+    ssl_ctx = _build_https_ssl_context() if endpoint.lower().startswith("https://") else None
+    headers = {"Accept": "application/json"}
+    if resolved_token:
+        headers["Authorization"] = f"Bearer {resolved_token}"
+    req = urllib.request.Request(endpoint, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout_seconds, context=ssl_ctx) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+
+
+def ack_server_sync_trigger(
+    server_url: str,
+    job_id: str,
+    status: str,
+    records_synced: Optional[int] = None,
+    message: Optional[str] = None,
+    sync_token: str = "",
+    timeout_seconds: float = 15.0,
+) -> None:
+    """Report RUNNING / COMPLETED / FAILED back to `{server_url}/api/v1/elal-bonus/sync-trigger-ack`."""
+    endpoint = f"{server_url.rstrip('/')}/api/v1/elal-bonus/sync-trigger-ack"
+    resolved_token = (sync_token or os.environ.get("ELAL_SYNC_API_TOKEN") or "").strip()
+    ssl_ctx = _build_https_ssl_context() if endpoint.lower().startswith("https://") else None
+    body: dict[str, Any] = {"job_id": job_id, "status": status}
+    if records_synced is not None:
+        body["records_synced"] = int(records_synced)
+    if message is not None:
+        body["message"] = str(message)[:240]
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if resolved_token:
+        headers["Authorization"] = f"Bearer {resolved_token}"
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_seconds, context=ssl_ctx) as resp:
+        resp.read()
+
+
+def run_sync_watchdog_daemon(
+    server_url: str,
+    destinations: list[str],
+    days_ahead: int = 350,
+    local_db_path: str = DEFAULT_LOCAL_DB_PATH,
+    also_local: bool = False,
+    shard_count: int = 5,
+    shards_per_day: int = 2,
+    poll_seconds: int = 60,
+    profile_dir: str = DEFAULT_SYNC_PROFILE_DIR,
+    headed: Optional[bool] = None,
+    sync_token: str = "",
+    max_loops: Optional[int] = None,
+) -> None:
+    """Always-on lightweight watchdog daemon:
+    1. Listens every `poll_seconds` for 1-click manual sync triggers from the Admin Panel (`QUEUED`).
+    2. Automatically runs `shards_per_day` polite shards per day (~every `11.5h` when `shards_per_day == 2`),
+       immediately catching up if the server's `last_sync_age_hours` exceeds the interval.
+    3. Enforces a strict 4-hour safety cooldown after any failed auto-run so rate limits never escalate.
+    """
+    eff_per_day = max(1, min(5, int(shards_per_day or 2)))
+    auto_interval_hours = max(4.0, (24.0 / eff_per_day) - 0.5)
+    poll_sec = max(10, int(poll_seconds or 60))
+    last_failure_epoch = 0.0
+    last_auto_run_epoch = 0.0
+    loops_done = 0
+
+    print(
+        f"Started BreezyFlights Sync Watchdog targeting {server_url} "
+        f"(auto schedule: {eff_per_day} shard(s)/day -> every {auto_interval_hours:.1f}h, "
+        f"admin trigger poll: every {poll_sec}s)."
+    )
+
+    while True:
+        loops_done += 1
+        try:
+            poll_data = poll_server_sync_trigger(server_url=server_url, sync_token=sync_token)
+            job = poll_data.get("trigger_job") if isinstance(poll_data.get("trigger_job"), dict) else None
+            age_h_raw = poll_data.get("last_sync_age_hours")
+            age_hours: Optional[float] = (
+                float(age_h_raw) if isinstance(age_h_raw, (int, float)) else None
+            )
+
+            if job and str(job.get("status") or "").upper() == "QUEUED":
+                job_id = str(job.get("job_id") or "")
+                mode = str(job.get("mode") or "NEXT_SHARD").upper()
+                runs_to_do = 2 if mode == "TWO_SHARDS" else 1
+                print(f"[Trigger] Picked up Admin Panel sync job {job_id} (mode={mode}).")
+                ack_server_sync_trigger(
+                    server_url=server_url,
+                    job_id=job_id,
+                    status="RUNNING",
+                    sync_token=sync_token,
+                )
+                try:
+                    total_remote = 0
+                    for r_idx in range(runs_to_do):
+                        if r_idx > 0:
+                            time.sleep(180.0)
+                        counts = run_sync_with_system_chrome(
+                            server_url=server_url,
+                            destinations=destinations,
+                            days_ahead=days_ahead,
+                            local_db_path=local_db_path,
+                            also_local=also_local,
+                            skip_remote=False,
+                            shard_count=shard_count,
+                            shard_index=None,
+                            profile_dir=profile_dir,
+                            headed=headed,
+                            sync_token=sync_token,
+                        )
+                        total_remote += int(counts.get("remote_synced", 0))
+                    last_auto_run_epoch = time.time()
+                    ack_server_sync_trigger(
+                        server_url=server_url,
+                        job_id=job_id,
+                        status="COMPLETED",
+                        records_synced=total_remote,
+                        message="OK",
+                        sync_token=sync_token,
+                    )
+                except Exception as run_exc:
+                    last_failure_epoch = time.time()
+                    ack_server_sync_trigger(
+                        server_url=server_url,
+                        job_id=job_id,
+                        status="FAILED",
+                        message=str(run_exc)[:200],
+                        sync_token=sync_token,
+                    )
+                    print(f"[Trigger] Job {job_id} failed safely: {run_exc}", file=sys.stderr)
+            else:
+                now_ep = time.time()
+                cooldown_ok = (now_ep - last_failure_epoch) >= (4.0 * 3600.0)
+                local_gap_ok = (now_ep - last_auto_run_epoch) >= (auto_interval_hours * 3600.0 * 0.8)
+                needs_auto_sync = age_hours is None or age_hours >= auto_interval_hours
+                if needs_auto_sync and cooldown_ok and local_gap_ok:
+                    print(
+                        f"[AutoWatchdog] Server last_sync_age_hours={age_hours} >= {auto_interval_hours:.1f}h; "
+                        f"starting scheduled polite shard..."
+                    )
+                    try:
+                        run_sync_with_system_chrome(
+                            server_url=server_url,
+                            destinations=destinations,
+                            days_ahead=days_ahead,
+                            local_db_path=local_db_path,
+                            also_local=also_local,
+                            skip_remote=False,
+                            shard_count=shard_count,
+                            shard_index=None,
+                            profile_dir=profile_dir,
+                            headed=headed,
+                            sync_token=sync_token,
+                        )
+                        last_auto_run_epoch = time.time()
+                    except Exception as auto_exc:
+                        last_failure_epoch = time.time()
+                        print(
+                            f"[AutoWatchdog] Polite shard aborted safely (4h cooldown active): {auto_exc}",
+                            file=sys.stderr,
+                        )
+        except Exception as poll_exc:
+            print(f"[Watchdog] Poll warning: {poll_exc}", file=sys.stderr)
+
+        if max_loops is not None and loops_done >= max_loops:
+            break
+        time.sleep(poll_sec)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Safe sharded El Al Matmid award availability sync (5-day uniform rotation + manual targeted sync)"
@@ -1508,6 +1688,24 @@ def main() -> None:
         default=os.environ.get("ELAL_SYNC_API_TOKEN", ""),
         help="Optional Bearer token for POST /api/v1/elal-bonus/sync",
     )
+    parser.add_argument(
+        "--daemon",
+        action="store_true",
+        default=False,
+        help="Run always-on watchdog daemon (2 shards/day + 60s polling for Admin Panel manual triggers)",
+    )
+    parser.add_argument(
+        "--shards-per-day",
+        type=int,
+        default=2,
+        help="Target automatic shards per day in --daemon mode (default: 2 -> every ~11.5h)",
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=int,
+        default=60,
+        help="Seconds between Admin Panel trigger polls in --daemon mode (default: 60)",
+    )
     args = parser.parse_args()
     also_local = bool(args.also_local and not args.no_local)
 
@@ -1544,6 +1742,21 @@ def main() -> None:
     )
 
     dests = [d.strip().upper() for d in args.destinations.split(",") if d.strip()]
+    if args.daemon:
+        run_sync_watchdog_daemon(
+            server_url=args.server,
+            destinations=dests,
+            days_ahead=args.days,
+            local_db_path=args.local_db,
+            also_local=also_local,
+            shard_count=eff_shard_count,
+            shards_per_day=args.shards_per_day,
+            poll_seconds=args.poll_seconds,
+            profile_dir=args.profile_dir,
+            headed=headed_opt,
+            sync_token=args.sync_token,
+        )
+        return
     run_sync_with_system_chrome(
         server_url=args.server,
         destinations=dests,

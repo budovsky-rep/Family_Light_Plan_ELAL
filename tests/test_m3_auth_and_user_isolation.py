@@ -2290,6 +2290,51 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 self.assertEqual(a_adm.headers.get("Cache-Control"), "no-store, private")
                 self.assertEqual(len(a_adm.json()["admin_bonus_sync"]["shards"]), 5)
 
+                # 3b. Remote trigger queue: Guest -> 401, Regular user -> 403, Admin without CSRF -> 403, Admin with CSRF -> QUEUED -> RUNNING -> COMPLETED
+                self.assertEqual(
+                    guest_client.post("/api/v1/admin/bonus-sync-trigger", json={"mode": "NEXT_SHARD"}).status_code,
+                    401,
+                )
+                self.assertEqual(
+                    regular_client.post(
+                        "/api/v1/admin/bonus-sync-trigger",
+                        json={"mode": "NEXT_SHARD"},
+                        headers={"X-CSRF-Token": r_sess["csrf_token"]},
+                    ).status_code,
+                    403,
+                )
+                self.assertEqual(
+                    admin_client.post("/api/v1/admin/bonus-sync-trigger", json={"mode": "NEXT_SHARD"}).status_code,
+                    403,
+                )
+                trig_resp = admin_client.post(
+                    "/api/v1/admin/bonus-sync-trigger",
+                    json={"mode": "NEXT_SHARD"},
+                    headers={"X-CSRF-Token": a_sess["csrf_token"]},
+                )
+                self.assertEqual(trig_resp.status_code, 200)
+                job_id = trig_resp.json()["trigger_job"]["job_id"]
+                self.assertEqual(trig_resp.json()["trigger_job"]["status"], "QUEUED")
+
+                poll_resp = guest_client.get("/api/v1/elal-bonus/sync-trigger-poll")
+                self.assertEqual(poll_resp.status_code, 200)
+                self.assertEqual(poll_resp.json()["trigger_job"]["job_id"], job_id)
+
+                ack_run = guest_client.post(
+                    "/api/v1/elal-bonus/sync-trigger-ack",
+                    json={"job_id": job_id, "status": "RUNNING"},
+                )
+                self.assertEqual(ack_run.status_code, 200)
+                self.assertEqual(ack_run.json()["trigger_job"]["status"], "RUNNING")
+
+                ack_done = guest_client.post(
+                    "/api/v1/elal-bonus/sync-trigger-ack",
+                    json={"job_id": job_id, "status": "COMPLETED", "records_synced": 612},
+                )
+                self.assertEqual(ack_done.status_code, 200)
+                self.assertEqual(ack_done.json()["trigger_job"]["status"], "COMPLETED")
+                self.assertEqual(ack_done.json()["trigger_job"]["records_synced"], 612)
+
             # 4. Also verify default built-in admin SHA-256 matches yoni.budovsky@gmail.com without env var
             with _EnvContext(
                 {

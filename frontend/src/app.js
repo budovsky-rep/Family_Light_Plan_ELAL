@@ -635,6 +635,7 @@
     adminBonusSync: null,
     isAdminSyncExpanded: false,
     isAdminSyncRefreshing: false,
+    isAdminSyncTriggering: false,
     notificationsOptIn: false,
     authNoticeHe: null,
     authNoticeEn: null,
@@ -1849,6 +1850,31 @@
     return s;
   }
 
+  let adminSyncPollTimer = null;
+
+  function clearAdminSyncAutoPoll() {
+    if (adminSyncPollTimer !== null) {
+      clearTimeout(adminSyncPollTimer);
+      adminSyncPollTimer = null;
+    }
+  }
+
+  function syncAdminAutoPollSchedule() {
+    clearAdminSyncAutoPoll();
+    const isAdmin = Boolean(
+      state.auth && state.auth.authenticated && state.auth.isAdmin && state.adminBonusSync
+    );
+    if (!isAdmin) return;
+    const job = state.adminBonusSync.trigger_job;
+    const jStatus = job ? String(job.status || '').toUpperCase() : '';
+    if (jStatus === 'QUEUED' || jStatus === 'RUNNING') {
+      adminSyncPollTimer = setTimeout(() => {
+        adminSyncPollTimer = null;
+        refreshAdminBonusSync();
+      }, 5000);
+    }
+  }
+
   async function refreshAdminBonusSync() {
     if (!state.auth || !state.auth.authenticated || !state.auth.isAdmin) return;
     state.isAdminSyncRefreshing = true;
@@ -1869,6 +1895,29 @@
     }
   }
 
+  async function triggerAdminBonusSync(mode) {
+    if (!state.auth || !state.auth.authenticated || !state.auth.isAdmin) return;
+    state.isAdminSyncTriggering = true;
+    state.isAdminSyncExpanded = true;
+    renderAdminBonusSync();
+    try {
+      const res = await apiSend('POST', '/api/v1/admin/bonus-sync-trigger', {
+        mode: mode || 'NEXT_SHARD'
+      });
+      if (res && res.admin_bonus_sync) {
+        state.adminBonusSync = res.admin_bonus_sync;
+      }
+    } catch (err) {
+      if (err && (err.status === 401 || err.status === 403)) {
+        state.auth.isAdmin = false;
+        state.adminBonusSync = null;
+      }
+    } finally {
+      state.isAdminSyncTriggering = false;
+      renderAdminBonusSync();
+    }
+  }
+
   function renderAdminBonusSync() {
     const slot = document.getElementById('admin-bonus-sync-slot');
     const mini = document.getElementById('auth-admin-sync-mini');
@@ -1878,6 +1927,7 @@
     );
 
     if (!isAdmin) {
+      clearAdminSyncAutoPoll();
       if (slot) {
         slot.innerHTML = '';
         slot.setAttribute('hidden', '');
@@ -1895,11 +1945,11 @@
     const healthState = String(sync.health_state || 'EMPTY');
     const healthLabel =
       healthState === 'HEALTHY'
-        ? (isHe ? 'סנכרון תקין' : 'Sync Healthy')
+        ? (isHe ? 'סנכרון תקין (פעמיים ביום)' : 'Sync Healthy (2x/day)')
         : healthState === 'DELAYED'
-          ? (isHe ? 'ממתין לריצה יומית' : 'Daily Sync Due')
+          ? (isHe ? 'ממתין לסנכרון החצי־יומי' : 'Half-Day Sync Due')
           : healthState === 'STALE'
-            ? (isHe ? 'נדרשת בדיקת סקריפט' : 'Script Check Needed')
+            ? (isHe ? 'עיכוב מעל 36 שעות — נדרשת הרצה' : 'Over 36h — Run Needed')
             : (isHe ? 'מאגר ריק' : 'Empty DB');
 
     const lastDtTxt = sync.last_synced_at_utc
@@ -1911,16 +1961,19 @@
     const freshShards = Number(sync.fresh_shards_count || 0);
     const shardTotal = Number(sync.shard_count || 5);
     const shards = Array.isArray(sync.shards) ? sync.shards : [];
+    const job = sync.trigger_job || null;
+    const jobStatus = job ? String(job.status || '').toUpperCase() : '';
+    const isJobActive = jobStatus === 'QUEUED' || jobStatus === 'RUNNING';
 
     const modeNote =
       sync.sync_mode_detected === 'SHARDED_ROTATION'
         ? (isHe
-            ? 'מחזור משיכה ב־5 חלקים פעיל — כל חלק מרענן חמישית מהשנה (70 ימים).'
-            : '5-shard rotation active — each daily run refreshes one-fifth of the year (70 days).')
+            ? 'מחזור אוטומטי פעיל (2 חלקים ביום מהקלאודטופ — כל השנה מתרעננת כל 2.5 ימים).'
+            : 'Auto 2-shards/day schedule active (full year refreshes every 2.5 days).')
         : sync.sync_mode_detected === 'FULL_SWEEP_OR_SINGLE_BATCH'
           ? (isHe
-              ? 'כל החלקים עודכנו באותו יום סנכרון (ריצה מלאה של כל השנה).'
-              : 'All 5 shards share the same sync date (full-year sweep).')
+              ? 'כל החלקים עודכנו באותו מועד; סוכן הקלאודטופ ימשיך ב־2 חלקים ביום או בהפעלה ידנית מכאן.'
+              : 'All shards share the same sync date; Cloudtop agent runs 2 shards/day or on demand here.')
           : (isHe
               ? 'לא נמצאו טיסות בונוס חיות במסד הנתונים.'
               : 'No active bonus flights found in database.');
@@ -1939,6 +1992,49 @@
           `<span class="admin-shard-pip" data-status="${escapeHtml(sh.status || 'STALE')}" title="${escapeHtml(`${isHe ? 'חלק' : 'Shard'} ${sh.shard_number}/${sh.shard_count}`)}"></span>`
       )
       .join('');
+
+    const quickTriggerSummaryBtn =
+      healthState !== 'HEALTHY' && !isJobActive
+        ? `<button type="button" class="btn-admin-sync-trigger" id="btn-quick-trigger-admin-sync">${isHe ? '▶️ הפעל עכשיו' : '▶️ Run Now'}</button>`
+        : isJobActive
+          ? `<span class="admin-sync-crest">${jobStatus === 'RUNNING' ? (isHe ? '🚀 מסנכרן...' : '🚀 Running...') : (isHe ? '⏳ בתור...' : '⏳ Queued...')}</span>`
+          : '';
+
+    let jobBannerHtml = '';
+    if (job && jobStatus && jobStatus !== 'CANCELLED') {
+      let jobText = '';
+      if (jobStatus === 'QUEUED') {
+        const reqTime = formatAdminIsraelDateTime(job.requested_at_utc, true);
+        jobText = isHe
+          ? `⏳ בקשת סנכרון ממתינה לסוכן הקלאודטופ (נשלחה ב־${reqTime}) — תתחיל תוך עד 60 שניות.`
+          : `⏳ Sync request queued (${reqTime}) — Cloudtop agent picks up within 60s.`;
+      } else if (jobStatus === 'RUNNING') {
+        const stTime = formatAdminIsraelDateTime(job.started_at_utc || job.requested_at_utc, true);
+        jobText = isHe
+          ? `🚀 סנכרון רץ כעת מהקלאודטופ (התחיל ב־${stTime}, כ־90 שניות לסיום)...`
+          : `🚀 Sync currently running on Cloudtop (started ${stTime})...`;
+      } else if (jobStatus === 'COMPLETED') {
+        const finTime = formatAdminIsraelDateTime(job.finished_at_utc, true);
+        const cntTxt = job.records_synced !== null && job.records_synced !== undefined ? ` (${Number(job.records_synced).toLocaleString('en-US')} ${isHe ? 'טיסות עודכנו' : 'flights'})` : '';
+        jobText = isHe
+          ? `✅ הסנכרון הידני האחרון הושלם בהצלחה ב־${finTime}${cntTxt}.`
+          : `✅ Last triggered sync completed at ${finTime}${cntTxt}.`;
+      } else {
+        const errMsg = job.message ? ` (${job.message})` : '';
+        jobText = isHe
+          ? `⚠️ בקשת הסנכרון לא הושלמה — ודא שסוכן הקלאודטופ פעיל${errMsg}.`
+          : `⚠️ Sync request did not complete — verify Cloudtop agent is active${errMsg}.`;
+      }
+      const cancelBtnHtml =
+        jobStatus === 'QUEUED'
+          ? `<button type="button" class="btn-admin-sync-refresh" id="btn-cancel-admin-sync">${isHe ? 'ביטול' : 'Cancel'}</button>`
+          : '';
+      jobBannerHtml = `
+        <div class="admin-sync-job-banner" id="admin-sync-job-banner" data-job-status="${escapeHtml(jobStatus)}">
+          <span>${escapeHtml(jobText)}</span>
+          ${cancelBtnHtml}
+        </div>`;
+    }
 
     const shardsHtml = shards
       .map((sh) => {
@@ -1965,6 +2061,12 @@
       })
       .join('');
 
+    const triggerBtnLabel = state.isAdminSyncTriggering
+      ? (isHe ? '⏳ שולח פקודה...' : '⏳ Sending...')
+      : isJobActive
+        ? (jobStatus === 'RUNNING' ? (isHe ? '🚀 סנכרון בביצוע...' : '🚀 Sync Running...') : (isHe ? '⏳ ממתין בתור...' : '⏳ Queued...'))
+        : (isHe ? '▶️ הפעל סנכרון מנה עכשיו' : '▶️ Trigger Next Shard Now');
+
     slot.innerHTML = `
       <details class="admin-sync-telemetry" id="admin-bonus-sync-panel" data-health="${escapeHtml(healthState)}"${state.isAdminSyncExpanded ? ' open' : ''}>
         <summary class="admin-sync-summary">
@@ -1983,6 +2085,7 @@
             </span>
           </div>
           <div class="admin-sync-summary-end">
+            ${quickTriggerSummaryBtn}
             <span class="admin-shard-pip-bar" aria-hidden="true">${pipsHtml}</span>
             <span class="admin-sync-chevron" aria-hidden="true">▾</span>
           </div>
@@ -1990,8 +2093,12 @@
         <div class="admin-sync-drawer">
           <div class="admin-sync-toolbar">
             <span class="admin-sync-mode-note">${escapeHtml(modeNote)}</span>
-            <button type="button" class="btn-admin-sync-refresh" id="btn-refresh-admin-sync">${state.isAdminSyncRefreshing ? (isHe ? '⏳ מרענן...' : '⏳ Refreshing...') : (isHe ? '↻ בדיקת סנכרון חיה' : '↻ Live Sync Check')}</button>
+            <div class="admin-sync-actions">
+              <button type="button" class="btn-admin-sync-trigger" id="btn-trigger-admin-sync"${isJobActive || state.isAdminSyncTriggering ? ' disabled' : ''}>${escapeHtml(triggerBtnLabel)}</button>
+              <button type="button" class="btn-admin-sync-refresh" id="btn-refresh-admin-sync">${state.isAdminSyncRefreshing ? (isHe ? '⏳ מרענן...' : '⏳ Refreshing...') : (isHe ? '↻ בדיקת סנכרון חיה' : '↻ Live Sync Check')}</button>
+            </div>
           </div>
+          ${jobBannerHtml}
           <div class="admin-shards-grid">${shardsHtml}</div>
         </div>
       </details>
@@ -2013,6 +2120,31 @@
         refreshAdminBonusSync();
       });
     }
+    const trigBtn = document.getElementById('btn-trigger-admin-sync');
+    if (trigBtn) {
+      trigBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        triggerAdminBonusSync('NEXT_SHARD');
+      });
+    }
+    const quickTrigBtn = document.getElementById('btn-quick-trigger-admin-sync');
+    if (quickTrigBtn) {
+      quickTrigBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        triggerAdminBonusSync('NEXT_SHARD');
+      });
+    }
+    const cancelBtn = document.getElementById('btn-cancel-admin-sync');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        triggerAdminBonusSync('CANCEL');
+      });
+    }
+    syncAdminAutoPollSchedule();
   }
 
   function renderAuthControls() {
