@@ -5271,8 +5271,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertTrue(win["visible"])
         self.assertGreater(win["w"], 416)
         self.assertGreater(win["w"], st["rects"]["rail"]["w"])
-        self.assertGreaterEqual(win["w"], 720)
-        self.assertLessEqual(win["w"], 880)
+        self.assertGreaterEqual(win["w"], 520)
+        self.assertLessEqual(win["w"], 580)
         self.assertAlmostEqual(win["x"] + win["w"] / 2, st["innerWidth"] / 2, delta=2.0)
         self.assertGreaterEqual(win["y"], st["rects"]["header"]["bottom"])
         self.assertLessEqual(win["bottom"], st["innerHeight"])
@@ -5534,7 +5534,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         browser.pump(160)
         win_1180 = browser.eval(_RUN13_STATE_JS)
         self._run13_assert_passenger_window_open(win_1180, signed_in=False)
-        self.assertAlmostEqual(win_1180["prof"]["rect"]["w"], 720, delta=1.0)
+        self.assertAlmostEqual(win_1180["prof"]["rect"]["w"], 520, delta=1.0)
         browser.set_viewport(1179, 900)
         browser.wait_until(
             "!document.getElementById('zone-profile').classList.contains('is-sheet-open')",

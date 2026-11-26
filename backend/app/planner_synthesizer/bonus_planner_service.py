@@ -84,28 +84,35 @@ if not hasattr(ChildTripImpact, "camp_days_overlapped"):
         lambda self: self.nitzanim_days_overlapped
     )
 
-# Compatible regional Open-Jaw airport clusters (never pair across distant zones like FCO and JFK)
-OPEN_JAW_CLUSTERS: list[set[str]] = [
-    {"FCO", "MXP", "VCE", "VRN", "NAP"},
-    {"LHR", "LTN"},
-    {"BER", "MUC", "FRA", "SZG", "BSL"},
-    {"VIE", "BUD", "PRG", "SZG"},
-    {"MAD", "BCN"},
-    {"LIS", "OPO"},
-    {"CDG", "AMS"},
-    {"GVA", "ZRH", "BSL", "LYS", "NCE"},
-    {"ATH", "RHO", "HER", "SKG", "JMK", "JTR"},
-    {"CFU", "EFL", "PVK"},
-    {"LCA", "PFO"},
-    {"TBS", "BUS"},
-    {"TIV", "BEG", "DBV", "TIA"},
-    {"LJU", "ZAG", "DBV"},
-    {"OTP", "SOF", "RMO"},
-    {"WAW", "KRK"},
-    {"BKK", "HKT"},
-    {"JFK", "EWR", "BOS"},
-    {"MIA", "FLL"},
+# Same-metro or immediate twin-airport Open-Jaw clusters (valid for any trip duration >= 1 night)
+SAME_CITY_OPEN_JAW_CLUSTERS: list[set[str]] = [
+    {"LHR", "LTN"},  # London (Heathrow / Luton)
+    {"JFK", "EWR"},  # New York City (JFK / Newark)
+    {"MIA", "FLL"},  # Miami / Fort Lauderdale (~35 min)
+    {"LCA", "PFO"},  # Cyprus: Larnaca / Paphos (~1h15m highway)
+    {"ZRH", "BSL"},  # Zurich / Basel (~1h direct rail)
 ]
+
+# Close overland rail/highway Open-Jaw pairs worth the transfer on longer trips (>= 6 nights; zero island/sea crossings)
+CLOSE_OVERLAND_OPEN_JAW_CLUSTERS: list[set[str]] = [
+    {"FCO", "MXP"},
+    {"MXP", "VCE"},
+    {"MXP", "VRN"},
+    {"VCE", "VRN"},
+    {"FCO", "NAP"},
+    {"VIE", "BUD"},
+    {"VIE", "SZG"},
+    {"MUC", "SZG"},
+    {"GVA", "LYS"},
+    {"TIV", "DBV"},
+    {"LJU", "ZAG"},
+]
+
+MIN_NIGHTS_FOR_REGIONAL_OPEN_JAW: int = 6
+
+OPEN_JAW_CLUSTERS: list[set[str]] = (
+    SAME_CITY_OPEN_JAW_CLUSTERS + CLOSE_OVERLAND_OPEN_JAW_CLUSTERS
+)
 
 TRANSFERABLE_CC_PROGRAMS: set[str] = {
     "AMEX_MR_ISRAEL",
@@ -140,12 +147,34 @@ def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _are_open_jaw_compatible(iata_a: str, iata_b: str) -> bool:
+def _is_same_city_open_jaw(iata_a: str, iata_b: str) -> bool:
     a_up = str(iata_a).upper().strip()
     b_up = str(iata_b).upper().strip()
     if not a_up or not b_up or a_up == b_up:
         return False
-    return any(a_up in cluster and b_up in cluster for cluster in OPEN_JAW_CLUSTERS)
+    return any(
+        a_up in cluster and b_up in cluster
+        for cluster in SAME_CITY_OPEN_JAW_CLUSTERS
+    )
+
+
+def _are_open_jaw_compatible(
+    iata_a: str, iata_b: str, trip_nights: Optional[int] = None
+) -> bool:
+    a_up = str(iata_a).upper().strip()
+    b_up = str(iata_b).upper().strip()
+    if not a_up or not b_up or a_up == b_up:
+        return False
+    if _is_same_city_open_jaw(a_up, b_up):
+        return True
+    if any(
+        a_up in cluster and b_up in cluster
+        for cluster in CLOSE_OVERLAND_OPEN_JAW_CLUSTERS
+    ):
+        if trip_nights is None:
+            return True
+        return int(trip_nights) >= MIN_NIGHTS_FOR_REGIONAL_OPEN_JAW
+    return False
 
 
 @dataclass
@@ -1249,6 +1278,10 @@ class MultiClubWalletAllocationEngine:
             )
             if is_open_jaw:
                 assert outbound_award is not None and inbound_award is not None
+                if not _are_open_jaw_compatible(
+                    dest_iata, return_origin_iata, trip_nights=trip_nights
+                ):
+                    return None
                 bookable_out: list[tuple[str, int, bool, str, int]] = []
                 bookable_in: list[tuple[str, int, bool, str, int]] = []
                 for cab in ("ECONOMY", "PREMIUM", "BUSINESS"):
@@ -1945,6 +1978,9 @@ class BonusVacationPlannerService:
                         has_oj_dest = any(
                             w.start_date in out_by_dest[d_out]
                             and w.end_date in in_by_dest[d_in]
+                            and _are_open_jaw_compatible(
+                                d_out, d_in, trip_nights=(w.end_date - w.start_date).days
+                            )
                             for d_out, d_in in oj_pairs
                         )
                         if has_oj_dest:
@@ -2069,6 +2105,9 @@ class BonusVacationPlannerService:
                         has_oj_dest = any(
                             w.start_date in out_by_dest[d_out]
                             and w.end_date in in_by_dest[d_in]
+                            and _are_open_jaw_compatible(
+                                d_out, d_in, trip_nights=(w.end_date - w.start_date).days
+                            )
                             for d_out, d_in in oj_pairs
                         )
                         if has_oj_dest:
@@ -2563,7 +2602,18 @@ class BonusVacationPlannerService:
 
             # Synthesize Open-Jaw Bonus pairings across compatible regional clusters (e.g. MXP <-> FCO)
             if active_oj_pairs:
+                w_nights = max(1, (window.end_date - window.start_date).days)
                 for d_out, d_in in active_oj_pairs:
+                    if not _are_open_jaw_compatible(
+                        d_out, d_in, trip_nights=w_nights
+                    ):
+                        continue
+                    if is_anywhere_query and not _is_same_city_open_jaw(d_out, d_in):
+                        if (
+                            d_out in window_inbound_by_dest
+                            or d_in in window_outbound_by_dest
+                        ):
+                            continue
                     out_aw = window_outbound_by_dest.get(d_out)
                     in_aw = window_inbound_by_dest.get(d_in)
                     if out_aw is None or in_aw is None:

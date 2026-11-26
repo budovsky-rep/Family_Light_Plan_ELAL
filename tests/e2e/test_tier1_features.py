@@ -4945,7 +4945,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         desktop_block = blocks_by_width[1180]
         self.assertRegex(
             desktop_block,
-            r'#zone-profile\[data-sheet-view="travelers"\]\s*\{[^}]*width:\s*clamp\(720px,\s*54vw,\s*880px\);',
+            r'#zone-profile\[data-sheet-view="travelers"\]\s*\{[^}]*width:\s*clamp\(520px,\s*40vw,\s*580px\);',
         )
         self.assertIsNone(
             _re.search(r"#zone-profile,\s*#zone-profile\.is-sheet-open\s*\{[^}]*(display|position)\s*:", desktop_block)

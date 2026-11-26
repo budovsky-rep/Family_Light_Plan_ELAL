@@ -3778,7 +3778,7 @@ body.is-keyboard-open .profile-sheet-footer {
   }
 
   .compact-num-duo {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(115px, 140px) minmax(0, 1fr);
   }
 
   .pass-kpi-grid {
@@ -4362,27 +4362,29 @@ body.is-keyboard-open .profile-sheet-footer {
     box-shadow: var(--shadow-card);
   }
 
-  /* Passenger window: "edit" opens the profile panel as a centred modal dialog, wider than the control rail */
+  /* Passenger window: "edit" opens the profile panel as a compact centred modal dialog */
   #zone-profile[data-sheet-view="travelers"] {
     inset-block-start: 84px;
     inset-block-end: auto;
     margin-inline: auto;
-    width: clamp(720px, 54vw, 880px);
+    width: clamp(520px, 40vw, 580px);
     max-height: calc(100dvh - 112px);
-    padding-block-start: 14px;
-    padding-inline: 18px;
+    padding-block: 12px 10px;
+    padding-inline: 16px;
     box-shadow: 0 12px 32px rgba(11, 31, 58, 0.24);
   }
 
   #zone-profile[data-sheet-view="travelers"] .profile-sheet-footer {
     display: flex;
-    justify-content: flex-end;
+    justify-content: stretch;
+    padding-block: 8px 4px;
+    margin-block-start: 8px;
   }
 
   #zone-profile[data-sheet-view="travelers"] .profile-sheet-footer .btn-primary {
-    width: auto;
-    flex: 0 1 auto;
-    min-width: 300px;
+    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .desktop-nav-btn {

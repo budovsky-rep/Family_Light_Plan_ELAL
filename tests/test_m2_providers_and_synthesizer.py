@@ -4031,6 +4031,111 @@ class TestRun14WorkplaceHolidayCalendarAndCost(unittest.TestCase):
                 )
                 self.assertEqual(bad_search.status_code, 422, legacy_key)
 
+    def test_open_jaw_restricted_to_same_city_or_worthwhile_close_overland_pairs(self) -> None:
+        """Verify island/distant open-jaws (ATH/JTR, BKK/HKT, CDG/AMS) are blocked, short (<6n) cross-city open-jaws are blocked,
+        while same-city metro pairs (LHR/LTN, JFK/EWR, LCA/PFO) and >=6-night close overland pairs (MXP/FCO) remain allowed.
+        """
+        from backend.app.planner_synthesizer.bonus_planner_service import (
+            _are_open_jaw_compatible,
+        )
+        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile
+
+        # 1. Island / sea / distant pairs are strictly disallowed regardless of trip nights
+        for bad_a, bad_b in (
+            ("ATH", "JTR"),
+            ("ATH", "HER"),
+            ("ATH", "RHO"),
+            ("ATH", "JMK"),
+            ("ATH", "SKG"),
+            ("JTR", "JMK"),
+            ("CFU", "EFL"),
+            ("BKK", "HKT"),
+            ("CDG", "AMS"),
+            ("MAD", "BCN"),
+            ("BER", "BSL"),
+            ("OTP", "SOF"),
+            ("TBS", "BUS"),
+        ):
+            self.assertFalse(_are_open_jaw_compatible(bad_a, bad_b, trip_nights=10), (bad_a, bad_b))
+            self.assertFalse(_are_open_jaw_compatible(bad_b, bad_a, trip_nights=4), (bad_b, bad_a))
+
+        # 2. Same-city / twin-airport pairs work even on short 3-night trips
+        for metro_a, metro_b in (
+            ("LHR", "LTN"),
+            ("JFK", "EWR"),
+            ("MIA", "FLL"),
+            ("LCA", "PFO"),
+            ("ZRH", "BSL"),
+        ):
+            self.assertTrue(_are_open_jaw_compatible(metro_a, metro_b, trip_nights=3), (metro_a, metro_b))
+
+        # 3. Close overland pairs require >= 6 nights (rejected on 4 nights, accepted on 7 nights)
+        for reg_a, reg_b in (("FCO", "MXP"), ("VIE", "BUD"), ("MUC", "SZG")):
+            self.assertFalse(_are_open_jaw_compatible(reg_a, reg_b, trip_nights=4), (reg_a, reg_b))
+            self.assertTrue(_are_open_jaw_compatible(reg_a, reg_b, trip_nights=6), (reg_a, reg_b))
+
+        # 4. End-to-end search proof: seeding TLV->ATH (2027-08-18) + JTR->TLV (2027-08-24) produces ZERO ATH/JTR open-jaw cards!
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "oj_guard.db"
+            repo = SQLiteRepository(db_path=db_path, auto_seed=True)
+            repo.upsert_elal_bonus(
+                [
+                    ElAlBonusAvailability(
+                        id="LY543_2027-08-18",
+                        flight_number="LY543",
+                        origin_iata="TLV",
+                        destination_iata="ATH",
+                        direction="OUTBOUND",
+                        flight_date=date(2027, 8, 18),
+                        departure_time_local="19:30",
+                        arrival_time_local="21:40",
+                        economy_award_seats=2,
+                        economy_seats_is_two_plus=True,
+                        economy_points_per_pax=8500,
+                        taxes_usd_per_pax=42.0,
+                        source_url="https://www.elal.com/rbddataclients/#live",
+                        expires_at="2099-12-31T23:59:59Z",
+                    ),
+                    ElAlBonusAvailability(
+                        id="LY5052_2027-08-24",
+                        flight_number="LY5052",
+                        origin_iata="JTR",
+                        destination_iata="TLV",
+                        direction="INBOUND",
+                        flight_date=date(2027, 8, 24),
+                        departure_time_local="17:40",
+                        arrival_time_local="19:30",
+                        economy_award_seats=2,
+                        economy_seats_is_two_plus=True,
+                        economy_points_per_pax=8500,
+                        taxes_usd_per_pax=42.0,
+                        source_url="https://www.elal.com/rbddataclients/#live",
+                        expires_at="2099-12-31T23:59:59Z",
+                    ),
+                ]
+            )
+            planner = BonusVacationPlannerService(repository=repo)
+            test_prof = FamilyProfile(adults_count=2, matmid_points_balance=120000, children=[])
+            for dest_filter in (["ANYWHERE"], ["ATH", "JTR"]):
+                res = planner.search_vacations(
+                    {
+                        "date_selection_mode": "SPECIFIC_DATES",
+                        "airline_selection_mode": "EL_AL_ONLY",
+                        "destination_iatas": dest_filter,
+                        "specific_departure_date": "2027-08-18",
+                        "specific_return_date": "2027-08-24",
+                        "flex_days_plus_minus": 0,
+                    },
+                    profile=test_prof,
+                )
+                ath_jtr = [
+                    p
+                    for p in res
+                    if {p.itinerary.destination_iata, p.itinerary.return_origin_iata}
+                    == {"ATH", "JTR"}
+                ]
+                self.assertEqual(len(ath_jtr), 0, f"Unexpected ATH/JTR open-jaw in {dest_filter}")
+
 
 if __name__ == "__main__":
     unittest.main()
