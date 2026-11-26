@@ -4774,6 +4774,189 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         media_bp = [int(m) for m in _re.findall(r"@media\s*\(\s*min-width:\s*(\d+)px\s*\)", css)]
         self.assertEqual(media_bp, sorted(media_bp))
 
+    def test_f31_8_run13_desktop_access_strip_passenger_window_and_account_area_static_contract(
+        self,
+    ) -> None:
+        """Run 13 (`M13` unified): top-bar-only sign-in/sign-out/account popover + above-search travelers bar & passenger editor."""
+        import re as _re
+        from html.parser import HTMLParser
+
+        html = self.get_client().get("/").text
+        app_js = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+        css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+
+        void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+        class _Outline(HTMLParser):
+            """Records every element with its attributes, parent and element children."""
+
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self.nodes: list[dict[str, Any]] = []
+                self.stack: list[int] = []
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+                node = {"tag": tag, "attrs": dict(attrs), "parent": self.stack[-1] if self.stack else None, "children": []}
+                self.nodes.append(node)
+                idx = len(self.nodes) - 1
+                if node["parent"] is not None:
+                    self.nodes[node["parent"]]["children"].append(idx)
+                if tag not in void_tags:
+                    self.stack.append(idx)
+
+            def handle_startendtag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+                self.handle_starttag(tag, attrs)
+                if tag not in void_tags:
+                    self.stack.pop()
+
+            def handle_endtag(self, tag: str) -> None:
+                for pos in range(len(self.stack) - 1, -1, -1):
+                    if self.nodes[self.stack[pos]]["tag"] == tag:
+                        del self.stack[pos:]
+                        break
+
+        outline = _Outline()
+        outline.feed(html)
+        nodes = outline.nodes
+        by_id = {n["attrs"]["id"]: n for n in nodes if n["attrs"].get("id")}
+
+        def inside(node: dict[str, Any], ancestor_id: str) -> bool:
+            cur = node
+            while cur["parent"] is not None:
+                cur = nodes[cur["parent"]]
+                if cur["attrs"].get("id") == ancestor_id:
+                    return True
+            return False
+
+        # 1. Control rail: ONLY `#household-summary-bar` sits above `#zone-search` (both mobile and desktop)
+        rails = [n for n in nodes if n["attrs"].get("class") == "sidebar-column"]
+        self.assertEqual(len(rails), 1)
+        rail_child_ids = [nodes[i]["attrs"].get("id") for i in rails[0]["children"]]
+        self.assertEqual(
+            rail_child_ids, ["household-summary-bar", "zone-search", "zone-profile"]
+        )
+        for removed_dup_id in (
+            "btn-header-household",
+            "header-household-compact",
+            "header-family-pill",
+            "header-points-pill",
+            "rail-access-strip",
+            "btn-rail-account",
+            "btn-rail-edit-travelers",
+            "rail-household-text",
+            "rail-account-email",
+            "rail-account-label",
+        ):
+            self.assertNotIn(removed_dup_id, by_id, f"{removed_dup_id} must not exist")
+
+        # 2. Required elements and single-ID uniqueness
+        for req_id in (
+            "header-auth-wrap",
+            "btn-header-auth",
+            "header-auth-label",
+            "btn-header-account",
+            "header-account-email",
+            "header-account-short",
+            "btn-header-signout",
+            "header-auth-popover",
+            "profile-auth-card",
+            "btn-google-signin",
+            "profile-signin-disclaimer",
+            "profile-user-disclaimer",
+            "auth-notif-label-short",
+            "household-summary-bar",
+            "household-summary-text",
+            "btn-open-profile-sheet",
+            "profile-save-error",
+            "profile-save-feedback",
+            "btn-save-profile",
+            "btn-close-profile-sheet",
+            "btn-apply-profile-sheet",
+            "profile-sheet-backdrop",
+            "mobile-thumb-dock",
+        ):
+            self.assertIn(req_id, by_id, f"Missing #{req_id}")
+            self.assertEqual(html.count(f'id="{req_id}"'), 1)
+
+        # 3. Auth lives EXCLUSIVELY inside `#app-header` -> `#header-auth-wrap` (never inside `#zone-profile` or `.sidebar-column`)
+        for auth_child in (
+            "btn-header-auth",
+            "btn-header-account",
+            "btn-header-signout",
+            "header-auth-popover",
+            "profile-auth-card",
+            "btn-google-signin",
+            "profile-signin-disclaimer",
+            "profile-user-disclaimer",
+        ):
+            self.assertTrue(inside(by_id[auth_child], "app-header"), auth_child)
+            self.assertTrue(inside(by_id[auth_child], "header-auth-wrap"), auth_child)
+            self.assertFalse(inside(by_id[auth_child], "zone-profile"), auth_child)
+
+        # 4. Above-search travelers edit button contract
+        edit_btn = by_id["btn-open-profile-sheet"]
+        self.assertTrue(inside(edit_btn, "household-summary-bar"))
+        self.assertEqual(edit_btn["tag"], "button")
+        self.assertEqual(edit_btn["attrs"].get("type"), "button")
+        self.assertEqual(edit_btn["attrs"].get("aria-haspopup"), "dialog")
+        self.assertEqual(edit_btn["attrs"].get("aria-expanded"), "false")
+        self.assertEqual(edit_btn["attrs"].get("aria-controls"), "zone-profile")
+        self.assertEqual(edit_btn["attrs"].get("data-he"), "עריכה")
+        self.assertEqual(edit_btn["attrs"].get("data-en"), "Edit")
+        self.assertEqual(edit_btn["attrs"].get("data-aria-he"), "עריכת הרכב הנוסעים")
+        self.assertEqual(edit_btn["attrs"].get("data-aria-en"), "Edit travelers")
+        self.assertEqual(edit_btn["attrs"].get("aria-label"), edit_btn["attrs"].get("data-aria-he"))
+
+        # 5. Travelers editor (`#zone-profile`) keeps save button & save error/feedback inside `#zone-profile`
+        for prof_child in ("btn-save-profile", "profile-save-error", "profile-save-feedback"):
+            self.assertTrue(inside(by_id[prof_child], "zone-profile"), prof_child)
+            self.assertFalse(inside(by_id[prof_child], "profile-auth-card"), prof_child)
+        self.assertEqual(by_id["profile-save-error"]["attrs"].get("role"), "alert")
+        self.assertIn("hidden", by_id["profile-save-error"]["attrs"])
+
+        # 6. Every `[data-he][data-en]` element has both languages and is a leaf node
+        for node in nodes:
+            attrs = node["attrs"]
+            self.assertEqual("data-he" in attrs, "data-en" in attrs, attrs)
+            self.assertEqual("data-aria-he" in attrs, "data-aria-en" in attrs, attrs)
+            if "data-he" in attrs:
+                self.assertTrue(attrs["data-he"] and attrs["data-en"], attrs)
+                self.assertEqual(node["children"], [], attrs)
+
+        # 7. CSS: `#household-summary-bar` is visible across all viewports (never hidden at 1180px), and `#zone-profile`
+        #    is closed by default (`display: none`) and opens as a wide modal (`clamp(720px, 54vw, 880px)`) at `>=1180px`
+        base_css, media_tail = css.split("@media (min-width: 560px)", 1)
+        self.assertRegex(base_css, r"\.household-summary-bar\s*\{[^}]*display:\s*flex;")
+        self.assertRegex(base_css, r"#zone-profile\s*\{\s*display:\s*none;\s*\}")
+        self.assertNotIn("household-summary-bar", media_tail)
+        media_blocks = _re.split(r"@media\s*\(\s*min-width:\s*(\d+)px\s*\)", "@media (min-width: 560px)" + media_tail)
+        blocks_by_width: dict[int, str] = {}
+        for width_txt, block_txt in zip(media_blocks[1::2], media_blocks[2::2]):
+            blocks_by_width[int(width_txt)] = blocks_by_width.get(int(width_txt), "") + block_txt
+        self.assertIn(1180, blocks_by_width)
+        desktop_block = blocks_by_width[1180]
+        self.assertRegex(
+            desktop_block,
+            r'#zone-profile\[data-sheet-view="travelers"\]\s*\{[^}]*width:\s*clamp\(720px,\s*54vw,\s*880px\);',
+        )
+        self.assertIsNone(
+            _re.search(r"#zone-profile,\s*#zone-profile\.is-sheet-open\s*\{[^}]*(display|position)\s*:", desktop_block)
+        )
+
+        # 8. JS state & handlers
+        for req_js in (
+            "isAuthPopoverOpen",
+            "setAuthPopoverOpen",
+            "profileSheetView",
+            "data-sheet-view",
+            "window.innerWidth < 1180",
+            "closeProfileSheetOnBreakpointCross",
+            "window.location.assign(loginUrl);",
+            "profile-save-error",
+        ):
+            self.assertIn(req_js, app_js)
+        self.assertEqual(app_js.count("window.location.assign(loginUrl);"), 1)
+
 
 # ============================================================================
 # Feature F32: Installable PWA & Preservation of 7 Specification Docs (5 tests)

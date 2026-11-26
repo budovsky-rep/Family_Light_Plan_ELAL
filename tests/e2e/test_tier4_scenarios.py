@@ -9,17 +9,23 @@ Strategies, REST API, CLI companion, and Mobile/Desktop BiDi/RTL Web UI & PWA.
 
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 import os
+import re
+import shutil
+import signal
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -48,8 +54,572 @@ from tests.e2e.test_tier1_features import (
 )
 
 
+_RUN13_BRIDGE_PREAMBLE = r"""<script>
+(function() {
+  window.__FVP_REFERENCE_DATE__ = __REF_DATE__;
+  window.__fvpJsErrors = [];
+  window.__fvpLastAssignedUrl = null;
+  window.addEventListener('error', function(e) { window.__fvpJsErrors.push(String(e.message || e)); });
+  window.addEventListener('unhandledrejection', function(e) { window.__fvpJsErrors.push(String(e.reason || e)); });
+  const _ss = Object.assign({}, __SS_JSON__);
+  const _ls = Object.assign({}, __LS_JSON__);
+  function _mkStore(backing) {
+    return {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(backing, k) ? backing[k] : null; },
+      setItem(k, v) { backing[String(k)] = String(v); },
+      removeItem(k) { delete backing[String(k)]; },
+      clear() { Object.keys(backing).forEach((k) => delete backing[k]); },
+      get length() { return Object.keys(backing).length; },
+      _dump() { return Object.assign({}, backing); }
+    };
+  }
+  Object.defineProperty(window, 'sessionStorage', { value: _mkStore(_ss), configurable: true });
+  Object.defineProperty(window, 'localStorage', { value: _mkStore(_ls), configurable: true });
+  let _reqSeq = 0;
+  const _pending = new Map();
+  window.__fvpResolveFetch = function(id, status, headersObj, bodyText) {
+    const p = _pending.get(id);
+    if (!p) return;
+    _pending.delete(id);
+    p.resolve(new Response(bodyText, { status: status, headers: headersObj || {} }));
+  };
+  window.fetch = function(input, init) {
+    const urlStr = typeof input === 'string' ? input : input.url;
+    if (urlStr.endsWith('/sw.js')) {
+      return Promise.resolve(new Response('', { status: 200, headers: { 'Content-Type': 'application/javascript' } }));
+    }
+    const opts = init || {};
+    const id = ++_reqSeq;
+    return new Promise((resolve, reject) => {
+      _pending.set(id, { resolve, reject });
+      window.__fvpHostFetch(JSON.stringify({ id: id, method: opts.method || 'GET', url: urlStr, headers: opts.headers || {}, body: opts.body || null }));
+    });
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register = function() { return Promise.resolve({}); };
+  }
+})();
+</script>"""
+
+# In-page helpers for the run-13 scenarios. `vis` is "a user can see it": connected, not display:none /
+# visibility:hidden / opacity:0 on it or any ancestor, and a box larger than 1x1 CSS px.
+_RUN13_PAGE_LIB_JS = r"""
+(() => {
+  const R = {
+    vis(target) {
+      const el = typeof target === 'string' ? document.querySelector(target) : target;
+      if (!el || !el.isConnected) return false;
+      if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 1 && r.height > 1;
+    },
+    rect(sel) {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left, y: r.top, w: r.width, h: r.height, right: r.right, bottom: r.bottom, visible: R.vis(el) };
+    },
+    describe(el) {
+      if (!el) return 'nothing';
+      return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).join('.') : '');
+    },
+    // Where a user would click `sel`: fails when the element has no box or is not the top-most element at its centre
+    clickPoint(sel) {
+      const el = document.querySelector(sel);
+      if (!el) return { err: 'no element matches ' + sel };
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' });
+      if (!R.vis(el)) return { err: sel + ' is not visible (display:none, hidden ancestor or no box)' };
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !(hit === el || el.contains(hit))) {
+        return { err: sel + ' is covered at its centre by ' + R.describe(hit) };
+      }
+      return { x, y };
+    },
+    // Top-most element at the centre of `sel`, wherever that is (used to prove that something is covered)
+    topAtCentreOf(sel) {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit ? { id: hit.id || '', inside: hit === el || el.contains(hit), desc: R.describe(hit) } : null;
+    }
+  };
+  window.__r13 = R;
+  return true;
+})()
+"""
+
+# One snapshot of everything the run-13 scenarios assert on (visibility, geometry, ARIA, focus, values).
+_RUN13_STATE_JS = r"""
+(() => {
+  const R = window.__r13;
+  const q = (s) => document.querySelector(s);
+  const prof = q('#zone-profile');
+  const cs = getComputedStyle(prof);
+  const txt = (s) => { const el = q(s); return el ? el.textContent.replace(/\s+/g, ' ').trim() : ''; };
+  const attr = (s, a) => { const el = q(s); return el ? el.getAttribute(a) : null; };
+  const active = document.activeElement;
+  return {
+    dir: document.documentElement.getAttribute('dir'),
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    prof: {
+      display: cs.display,
+      position: cs.position,
+      sheetOpen: prof.classList.contains('is-sheet-open'),
+      view: prof.getAttribute('data-sheet-view'),
+      role: prof.getAttribute('role'),
+      ariaModal: prof.getAttribute('aria-modal'),
+      labelledBy: prof.getAttribute('aria-labelledby'),
+      prevSiblingId: prof.previousElementSibling ? prof.previousElementSibling.id : '',
+      rect: R.rect('#zone-profile')
+    },
+    rects: {
+      hhBar: R.rect('#household-summary-bar'),
+      edit: R.rect('#btn-open-profile-sheet'),
+      headerAuth: R.rect('#btn-header-auth'),
+      headerAccount: R.rect('#btn-header-account'),
+      headerSignout: R.rect('#btn-header-signout'),
+      authPopover: R.rect('#header-auth-popover'),
+      search: R.rect('#zone-search'),
+      rail: R.rect('.sidebar-column'),
+      header: R.rect('#app-header'),
+      backdrop: R.rect('#profile-sheet-backdrop'),
+      dock: R.rect('#mobile-thumb-dock')
+    },
+    vis: {
+      hhBar: R.vis('#household-summary-bar'),
+      hhSummary: R.vis('#household-summary-text'),
+      editBtn: R.vis('#btn-open-profile-sheet'),
+      headerAuthBtn: R.vis('#btn-header-auth'),
+      headerAccountBtn: R.vis('#btn-header-account'),
+      headerAccountEmail: R.vis('#header-account-email'),
+      headerAccountShort: R.vis('#header-account-short'),
+      headerSignoutBtn: R.vis('#btn-header-signout'),
+      authPopover: R.vis('#header-auth-popover'),
+      headerPill: R.vis('#btn-header-household'),
+      railAccountBtn: R.vis('#btn-rail-account'),
+      windowTitle: R.vis('#zone-profile-title'),
+      adults: R.vis('#prof-adults-count'),
+      matmid: R.vis('#prof-matmid-points'),
+      childrenList: R.vis('#children-list-container'),
+      addChild: R.vis('#btn-add-child'),
+      closeBtn: R.vis('#btn-close-profile-sheet'),
+      applyBtn: R.vis('#btn-apply-profile-sheet'),
+      saveBtn: R.vis('#btn-save-profile'),
+      saveError: R.vis('#profile-save-error'),
+      profileSaveFeedback: R.vis('#profile-save-feedback'),
+      saveFeedback: R.vis('#auth-save-feedback'),
+      authCard: R.vis('#profile-auth-card'),
+      googleBtn: R.vis('#btn-google-signin'),
+      guestDisc: R.vis('#profile-signin-disclaimer'),
+      userDisc: R.vis('#profile-user-disclaimer'),
+      signoutBtn: R.vis('#btn-signout'),
+      deleteBtn: R.vis('#btn-delete-profile'),
+      deleteConfirmBar: R.vis('#auth-delete-confirm-bar'),
+      notifInput: R.vis('#input-notifications-opt-in'),
+      notifShort: R.vis('#auth-notif-label-short'),
+      verifiedBadge: R.vis('#auth-verified-badge'),
+      userEmail: R.vis('#auth-user-email'),
+      backdrop: R.vis('#profile-sheet-backdrop')
+    },
+    text: {
+      hhSummary: txt('#household-summary-text'),
+      editBtn: txt('#btn-open-profile-sheet'),
+      editAria: attr('#btn-open-profile-sheet', 'aria-label'),
+      headerAuth: txt('#header-auth-label'),
+      headerAccountEmail: txt('#header-account-email'),
+      headerAccountShort: txt('#header-account-short'),
+      headerSignout: txt('#btn-header-signout'),
+      guestDisc: txt('#profile-signin-disclaimer'),
+      userDisc: txt('#profile-user-disclaimer'),
+      notifShort: txt('#auth-notif-label-short'),
+      saveFeedback: txt('#auth-save-feedback'),
+      profileSaveFeedback: txt('#profile-save-feedback'),
+      saveError: txt('#profile-save-error')
+    },
+    aria: {
+      edit: attr('#btn-open-profile-sheet', 'aria-expanded'),
+      headerAuth: attr('#btn-header-auth', 'aria-expanded'),
+      headerAccount: attr('#btn-header-account', 'aria-expanded')
+    },
+    bodyLocked: document.body.classList.contains('is-sheet-locked'),
+    bodyOverflow: getComputedStyle(document.body).overflow,
+    inertIds: Array.from(document.querySelectorAll('[inert]')).map((el) => el.id || el.className),
+    activeId: active ? active.id : '',
+    values: {
+      adults: q('#prof-adults-count').value,
+      matmid: q('#prof-matmid-points').value,
+      ages: Array.from(document.querySelectorAll('[data-child-age]')).map((el) => el.value)
+    },
+    jsErrors: window.__fvpJsErrors
+  };
+})()
+"""
+
+
+def _run13_real_click(cdp_call: Any, cdp_eval: Any, selector: str) -> None:
+    """Real mouse click for the older scenarios that keep their own inline CDP plumbing (22, 23).
+
+    Same rule as `_Run13ChromeSession.real_click`: the element must be visible and top-most at its centre.
+    """
+    cdp_eval(_RUN13_PAGE_LIB_JS)
+    pt = cdp_eval(f"window.__r13.clickPoint({json.dumps(selector)})")
+    if "err" in pt:
+        raise AssertionError(f"a user could not click this: {pt['err']}")
+    for ev_type in ("mouseMoved", "mousePressed", "mouseReleased"):
+        params: dict[str, Any] = {"type": ev_type, "x": pt["x"], "y": pt["y"]}
+        if ev_type != "mouseMoved":
+            params.update({"button": "left", "clickCount": 1})
+        cdp_call("Input.dispatchMouseEvent", params)
+    cdp_eval("new Promise((r) => setTimeout(() => r(true), 220))")
+
+
+class _Run13ChromeSession:
+    """Real headless-Chrome session with REAL user input, for the run-13 desktop scenarios (26, 27).
+
+    The page is mounted the same way the older browser scenarios mount it (CSS + JS inlined, Google-Fonts /
+    manifest links stripped, `fetch` bridged over a CDP binding to an in-process client). What is new:
+    `real_click()` refuses to click anything a user could not click (no box, or covered at its centre) and
+    then sends a real mouse press / release through `Input.dispatchMouseEvent`; typing goes through
+    `Input.insertText` and Escape / Tab / Ctrl+A through `Input.dispatchKeyEvent`. A JS `.click()` or
+    `.value = ...` keeps working on hidden elements and therefore proves nothing about what is reachable.
+    """
+
+    CHROME_BIN = Path("/usr/bin/google-chrome")
+    _KEYS = {"Escape": ("Escape", 27), "Tab": ("Tab", 9), "Enter": ("Enter", 13), "a": ("KeyA", 65)}
+    MOD_CTRL = 2
+    MOD_SHIFT = 8
+
+    def __init__(self, test: unittest.TestCase, bridge_client: Any, reference_date: str = "2026-11-25") -> None:
+        self.test = test
+        self.bridge_client = bridge_client
+        self.reference_date = reference_date
+        self.fetch_log: list[dict[str, Any]] = []
+        self._msg_id = 0
+        self._last_bridge_ts = time.time()
+        test.assertTrue(self.CHROME_BIN.exists(), "run-13 desktop scenarios need /usr/bin/google-chrome")
+        chrome_tmp = tempfile.TemporaryDirectory(prefix="tier4_r13_chrome_", ignore_cleanup_errors=True)
+        test.addCleanup(lambda: shutil.rmtree(chrome_tmp.name, ignore_errors=True))
+        test.addCleanup(chrome_tmp.cleanup)
+        self._proc = subprocess.Popen(
+            [
+                str(self.CHROME_BIN),
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--remote-debugging-port=0",
+                f"--user-data-dir={chrome_tmp.name}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        test.addCleanup(self._kill_chrome)
+        port_file = Path(chrome_tmp.name) / "DevToolsActivePort"
+        deadline = time.time() + 15.0
+        while time.time() < deadline and not (port_file.exists() and port_file.read_text("utf-8").splitlines()):
+            time.sleep(0.05)
+        test.assertTrue(port_file.exists(), "Headless Chrome DevToolsActivePort did not appear")
+        cdp_port = int(port_file.read_text("utf-8").splitlines()[0].strip())
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{cdp_port}/json/list", timeout=5.0) as r_list:
+            targets = json.loads(r_list.read().decode("utf-8"))
+        page_target = next(t for t in targets if t.get("type") == "page")
+        ws_path = urllib.parse.urlsplit(page_target["webSocketDebuggerUrl"]).path
+        self._sock = socket.create_connection(("127.0.0.1", cdp_port), timeout=30.0)
+        test.addCleanup(self._sock.close)
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        self._sock.sendall(
+            (
+                f"GET {ws_path} HTTP/1.1\r\nHost: 127.0.0.1:{cdp_port}\r\nUpgrade: websocket\r\n"
+                f"Connection: Upgrade\r\nSec-WebSocket-Key: {ws_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ).encode("ascii")
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        self._leftover = bytearray(buf[buf.index(b"\r\n\r\n") + 4 :])
+        self.call("Page.enable")
+        self.call("Runtime.enable")
+        self.call("Runtime.addBinding", {"name": "__fvpHostFetch"})
+        self._frame_id = self.call("Page.getFrameTree")["result"]["frameTree"]["frame"]["id"]
+
+    # ---- transport -------------------------------------------------------------------------------
+    def _kill_chrome(self) -> None:
+        try:
+            os.killpg(self._proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            self._proc.wait(timeout=3.0)
+        except Exception:
+            pass
+
+    def _ws_send(self, obj: dict[str, Any]) -> None:
+        raw_b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        mask = os.urandom(4)
+        ln = len(raw_b)
+        if ln < 126:
+            hdr = bytes([0x81, 0x80 | ln]) + mask
+        elif ln < 65536:
+            hdr = bytes([0x81, 0x80 | 126]) + struct.pack("!H", ln) + mask
+        else:
+            hdr = bytes([0x81, 0x80 | 127]) + struct.pack("!Q", ln) + mask
+        self._sock.sendall(hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(raw_b)))
+
+    def _ws_recv_exact(self, n: int) -> bytes:
+        while len(self._leftover) < n:
+            more = self._sock.recv(65536)
+            if not more:
+                raise EOFError("CDP WebSocket closed unexpectedly")
+            self._leftover.extend(more)
+        out_b = bytes(self._leftover[:n])
+        del self._leftover[:n]
+        return out_b
+
+    def _ws_recv_msg(self) -> dict[str, Any]:
+        fragments: list[bytes] = []
+        while True:
+            b0, b1 = self._ws_recv_exact(2)
+            fin = bool(b0 & 0x80)
+            opcode = b0 & 0x0F
+            masked_flag = bool(b1 & 0x80)
+            ln = b1 & 0x7F
+            if ln == 126:
+                ln = struct.unpack("!H", self._ws_recv_exact(2))[0]
+            elif ln == 127:
+                ln = struct.unpack("!Q", self._ws_recv_exact(8))[0]
+            mkey = self._ws_recv_exact(4) if masked_flag else b""
+            payload_b = self._ws_recv_exact(ln)
+            if masked_flag:
+                payload_b = bytes(b ^ mkey[i % 4] for i, b in enumerate(payload_b))
+            if opcode == 0x9:  # PING -> PONG
+                mask_p = os.urandom(4)
+                self._sock.sendall(
+                    bytes([0x8A, 0x80 | len(payload_b)])
+                    + mask_p
+                    + bytes(b ^ mask_p[i % 4] for i, b in enumerate(payload_b))
+                )
+                continue
+            fragments.append(payload_b)
+            if fin:
+                return json.loads(b"".join(fragments).decode("utf-8"))
+
+    def _handle_event(self, ev_msg: dict[str, Any]) -> None:
+        if not (
+            ev_msg.get("method") == "Runtime.bindingCalled"
+            and ev_msg.get("params", {}).get("name") == "__fvpHostFetch"
+        ):
+            return
+        req_info = json.loads(ev_msg["params"]["payload"])
+        parsed_u = urllib.parse.urlsplit(req_info["url"])
+        self.test.assertNotIn("elal.com", parsed_u.netloc, "the page must never call elal.com")
+        path_qs = parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")
+        j_body = json.loads(req_info["body"]) if req_info.get("body") else None
+        resp_obj = self.bridge_client.request(
+            req_info["method"], path_qs, json_body=j_body, headers=req_info.get("headers") or {}
+        )
+        self.fetch_log.append(
+            {
+                "method": str(req_info.get("method") or "GET").upper(),
+                "path": path_qs,
+                "status": int(resp_obj.status_code),
+                "body": j_body,
+            }
+        )
+        self._last_bridge_ts = time.time()
+        self._msg_id += 1
+        expr = (
+            f"window.__fvpResolveFetch({int(req_info['id'])}, {int(resp_obj.status_code)}, "
+            f"{json.dumps(dict(resp_obj.headers))}, {json.dumps(resp_obj.text)});"
+        )
+        self._ws_send({"id": self._msg_id, "method": "Runtime.evaluate", "params": {"expression": expr}})
+
+    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._msg_id += 1
+        target_id = self._msg_id
+        self._ws_send({"id": target_id, "method": method, "params": params or {}})
+        while True:
+            incoming = self._ws_recv_msg()
+            if "method" in incoming:
+                self._handle_event(incoming)
+                continue
+            if incoming.get("id") == target_id:
+                if "error" in incoming:
+                    raise AssertionError(f"CDP error for {method}: {incoming['error']}")
+                return incoming
+
+    def eval(self, js_expr: str) -> Any:
+        res = self.call(
+            "Runtime.evaluate", {"expression": js_expr, "awaitPromise": True, "returnByValue": True}
+        )
+        inner = res.get("result", {})
+        if "exceptionDetails" in inner:
+            raise AssertionError(f"CDP JS exception: {inner['exceptionDetails']}")
+        return inner.get("result", {}).get("value")
+
+    # ---- waiting (never time.sleep: the fetch bridge is only serviced while a CDP call is in flight) ----
+    def pump(self, ms: int) -> None:
+        self.eval(f"new Promise((r) => setTimeout(() => r(true), {int(ms)}))")
+
+    def settle(self, quiet_ms: int = 300, max_ms: int = 20000) -> None:
+        """Wait until the page has made no bridged API call for `quiet_ms`."""
+        start = time.time()
+        self.pump(60)
+        while (time.time() - self._last_bridge_ts) * 1000.0 < quiet_ms and (time.time() - start) * 1000.0 < max_ms:
+            self.pump(60)
+
+    def wait_until(self, js_bool_expr: str, what: str, timeout_ms: int = 8000) -> None:
+        deadline = time.time() + timeout_ms / 1000.0
+        while True:
+            if self.eval(f"new Promise((r) => setTimeout(() => r(Boolean({js_bool_expr})), 40))"):
+                return
+            if time.time() > deadline:
+                self.test.fail(f"timed out waiting for: {what}")
+
+    # ---- page lifecycle ----------------------------------------------------------------------------
+    def set_viewport(self, width: int, height: int) -> None:
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
+        )
+
+    def mount(self, session_storage: dict[str, str] | None = None, local_storage: dict[str, str] | None = None) -> None:
+        """(Re)load the app as a fresh document and wait for its first search to render."""
+        frontend = PROJECT_ROOT / "frontend"
+        html_text = (frontend / "index.html").read_text("utf-8")
+        css_text = (frontend / "src" / "styles" / "app.css").read_text("utf-8")
+        js_text = (frontend / "src" / "app.js").read_text("utf-8")
+        inlined = re.sub(
+            r"<link[^>]+(?:fonts\.googleapis\.com|fonts\.gstatic\.com|manifest\.webmanifest)[^>]*>", "", html_text
+        )
+        inlined = re.sub(r"<noscript>.*?</noscript>", "", inlined, flags=re.S)
+        css_link = '<link rel="stylesheet" href="/src/styles/app.css" />'
+        self.test.assertIn(css_link, inlined)
+        inlined = inlined.replace(css_link, f"<style>{css_text}</style>")
+        inlined, n_js = re.subn(r'<script[^>]+src="/src/app\.js"[^>]*></script>', "", inlined)
+        self.test.assertEqual(n_js, 1)
+        # Same neutralisation scenario 21 applies: a click on the Gmail button records the login URL instead of navigating away
+        login_stmt = "window.location.assign(loginUrl);"
+        self.test.assertEqual(js_text.count(login_stmt), 1)
+        js_text = js_text.replace(login_stmt, "window.__fvpLastAssignedUrl = String(loginUrl);")
+        preamble = (
+            _RUN13_BRIDGE_PREAMBLE.replace("__REF_DATE__", json.dumps(self.reference_date))
+            .replace("__SS_JSON__", json.dumps(session_storage or {}))
+            .replace("__LS_JSON__", json.dumps(local_storage or {}))
+        )
+        doc = inlined.replace("<head>", "<head>" + preamble, 1).replace(
+            "</body>", f"<script>{js_text}</script></body>", 1
+        )
+        self.call("Page.setDocumentContent", {"frameId": self._frame_id, "html": doc})
+        self.wait_until(
+            "document.querySelector('.proposal-card, .awaiting-flights-showcase')",
+            "first search results after boot",
+            timeout_ms=15000,
+        )
+        self.settle()
+        self.eval(_RUN13_PAGE_LIB_JS)
+
+    # ---- real user input ---------------------------------------------------------------------------
+    def _mouse_click_at(self, x: float, y: float) -> None:
+        for ev_type in ("mouseMoved", "mousePressed", "mouseReleased"):
+            params: dict[str, Any] = {"type": ev_type, "x": x, "y": y}
+            if ev_type != "mouseMoved":
+                params.update({"button": "left", "clickCount": 1})
+            self.call("Input.dispatchMouseEvent", params)
+
+    def real_click(self, selector: str, after_ms: int = 220) -> None:
+        pt = self.eval(f"window.__r13.clickPoint({json.dumps(selector)})")
+        self.test.assertNotIn("err", pt, f"a user could not click this: {pt.get('err')}")
+        self._mouse_click_at(pt["x"], pt["y"])
+        self.pump(after_ms)
+
+    def real_click_at(self, x: float, y: float, expect_top_id: str, after_ms: int = 220) -> None:
+        """Real click at viewport coordinates, after checking which element is on top there."""
+        top_id = self.eval(f"(() => {{ const el = document.elementFromPoint({x}, {y}); return el ? el.id : ''; }})()")
+        self.test.assertEqual(top_id, expect_top_id, f"expected #{expect_top_id} on top at ({x}, {y})")
+        self._mouse_click_at(x, y)
+        self.pump(after_ms)
+
+    def real_key(self, key: str, modifiers: int = 0, commands: list[str] | None = None, after_ms: int = 160) -> None:
+        code, vk = self._KEYS[key]
+        base = {
+            "key": key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+            "modifiers": modifiers,
+        }
+        down = dict(base, type="rawKeyDown")
+        if commands:
+            down["commands"] = commands
+        self.call("Input.dispatchKeyEvent", down)
+        self.call("Input.dispatchKeyEvent", dict(base, type="keyUp"))
+        self.pump(after_ms)
+
+    def real_type(self, text: str, after_ms: int = 160) -> None:
+        self.call("Input.insertText", {"text": text})
+        self.pump(after_ms)
+
+    def real_replace_value(self, selector: str, text: str) -> None:
+        """Click into a field, select what is there with Ctrl+A and type over it — all real input."""
+        self.real_click(selector, after_ms=120)
+        focused = self.eval(
+            f"(() => {{ const el = document.querySelector({json.dumps(selector)}); return Boolean(el && document.activeElement === el); }})()"
+        )
+        self.test.assertTrue(focused, f"{selector} did not take focus from a real click")
+        self.real_key("a", modifiers=self.MOD_CTRL, commands=["selectAll"], after_ms=60)
+        self.real_type(text)
+
+    # ---- read-only helpers ----------------------------------------------------------------------------
+    def vis(self, selector: str) -> bool:
+        return bool(self.eval(f"window.__r13.vis({json.dumps(selector)})"))
+
+    def rect(self, selector: str) -> dict[str, Any]:
+        rect = self.eval(f"window.__r13.rect({json.dumps(selector)})")
+        self.test.assertIsNotNone(rect, f"no element matches {selector}")
+        return rect
+
+    def text(self, selector: str) -> str:
+        return str(
+            self.eval(
+                f"(() => {{ const el = document.querySelector({json.dumps(selector)}); return el ? el.textContent.replace(/\\s+/g, ' ').trim() : ''; }})()"
+            )
+        )
+
+    def active_id(self) -> str:
+        return str(self.eval("document.activeElement ? document.activeElement.id : ''"))
+
+    def js_errors(self) -> list[str]:
+        return list(self.eval("window.__fvpJsErrors") or [])
+
+    def requests(self, method: str, path_prefix: str) -> list[dict[str, Any]]:
+        return [r for r in self.fetch_log if r["method"] == method and r["path"].startswith(path_prefix)]
+
+
 class Tier4ScenariosTestBase(Tier1BaseTestCase):
     """Hermetic base harness for Tier 4 end-to-end real-world scenarios."""
+
+    def open_run13_browser(self, bridge_client: Any, viewport: tuple[int, int] = (1440, 900)) -> _Run13ChromeSession:
+        """Launch headless Chrome for a run-13 scenario (real mouse / keyboard input); cleaned up with the test."""
+        session = _Run13ChromeSession(self, bridge_client)
+        session.set_viewport(*viewport)
+        return session
 
     def create_isolated_client_env(self) -> tuple[Path, Any, Any]:
         tmpdir = tempfile.TemporaryDirectory(prefix="tier4_scen_")
@@ -1732,15 +2302,15 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 """(() => ({
                   ages: Array.from(document.querySelectorAll('[data-child-age]')).map((el) => Number(el.value)),
                   matmid: document.getElementById('prof-matmid-points').value,
-                  familyPill: document.getElementById('header-family-pill').textContent.trim(),
-                  pointsPill: document.getElementById('header-points-pill').textContent.trim(),
+                  hhSummary: document.getElementById('household-summary-text').textContent.trim(),
                   jsErrors: window.__fvpJsErrors
                 }))()"""
             )
             self.assertEqual(reload_state["jsErrors"], [])
             self.assertEqual(reload_state["ages"], [2, 8])
             self.assertEqual(reload_state["matmid"], "150000")
-            self.assertIn("150k Matmid", reload_state["pointsPill"])
+            self.assertIn("150,000", reload_state["hhSummary"])
+            self.assertIn("2 ילדים", reload_state["hhSummary"])
 
             # Step D2: Returning-user (`is_persisted === true`) non-overwrite guard against conflicting `fvp_pending_oauth_draft`
             conflicting_draft = {
@@ -2194,6 +2764,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   const dock = document.getElementById('mobile-thumb-dock');
                   const dockR = dock.getBoundingClientRect();
                   const hhBar = document.getElementById('household-summary-bar');
+                  const searchZone = document.getElementById('zone-search');
                   const profZone = document.getElementById('zone-profile');
                   const drawer = document.getElementById('search-secondary-drawer');
                   const firstCard = document.querySelector('.proposal-card');
@@ -2204,6 +2775,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     dockDisplay: getComputedStyle(dock).display,
                     dockHeight: dockR.height,
                     hhBarDisplay: getComputedStyle(hhBar).display,
+                    hhBarAboveSearch: hhBar.getBoundingClientRect().bottom <= searchZone.getBoundingClientRect().top + 1,
                     profDisplayCollapsed: getComputedStyle(profZone).display,
                     drawerDisplayCollapsed: getComputedStyle(drawer).display,
                     firstCardY: firstCard ? firstCard.getBoundingClientRect().top : 9999,
@@ -2217,6 +2789,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertNotEqual(mob["dockDisplay"], "none")
             self.assertGreaterEqual(mob["dockHeight"], 56)
             self.assertNotEqual(mob["hhBarDisplay"], "none")
+            self.assertTrue(mob["hhBarAboveSearch"])
             self.assertEqual(mob["profDisplayCollapsed"], "none")
             self.assertEqual(mob["drawerDisplayCollapsed"], "none")
             self.assertLess(mob["firstCardY"], 900)
@@ -2359,7 +2932,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 bodyLockedAfter: document.body.classList.contains('is-sheet-locked'),
                 sheetOpenAfter: document.getElementById('zone-profile').classList.contains('is-sheet-open'),
                 dockProfActiveAfter: document.querySelector('[data-dock-zone="zone-profile"]').classList.contains('active'),
-                hhAriaExpandedAfter: document.getElementById('btn-header-household').getAttribute('aria-expanded'),
+                hhAriaExpandedAfter: document.getElementById('btn-open-profile-sheet').getAttribute('aria-expanded'),
                 bodyOverflowAfter: getComputedStyle(document.body).overflow
               };
             })()"""
@@ -2392,7 +2965,20 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                     clientWidth: docEl.clientWidth,
                     dockDisplay: getComputedStyle(dock).display,
                     deskNavDisplay: getComputedStyle(deskNav).display,
-                    profPosition: getComputedStyle(prof).position,
+                    profDisplay: getComputedStyle(prof).display,
+                    profSheetOpen: prof.classList.contains('is-sheet-open'),
+                    railStripVisible: (() => {
+                      const strip = document.getElementById('household-summary-bar');
+                      const r = strip.getBoundingClientRect();
+                      return getComputedStyle(strip).display !== 'none' && r.width > 0 && r.height > 0;
+                    })(),
+                    railEditVisible: (() => {
+                      const editBtn = document.getElementById('btn-open-profile-sheet');
+                      const r = editBtn.getBoundingClientRect();
+                      return editBtn.checkVisibility() && r.width > 0 && r.height > 0;
+                    })(),
+                    railEditText: document.getElementById('btn-open-profile-sheet').textContent.trim(),
+                    adultsFieldVisible: document.getElementById('prof-adults-count').getBoundingClientRect().height > 0,
                     bookHeight: bookBtn ? bookBtn.getBoundingClientRect().height : 0,
                     tblDisplay: getComputedStyle(tbl).display,
                     calBtnActiveWhenOpen,
@@ -2406,7 +2992,14 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertLessEqual(desk["scrollWidth"], desk["clientWidth"])
             self.assertEqual(desk["dockDisplay"], "none")
             self.assertEqual(desk["deskNavDisplay"], "flex")
-            self.assertEqual(desk["profPosition"], "static")
+            # Run 13: at desktop width the profile panel is closed (not a static block in the rail) and the
+            # access strip with its edit control is what is visible, in Hebrew and in English
+            self.assertEqual(desk["profDisplay"], "none")
+            self.assertFalse(desk["profSheetOpen"])
+            self.assertFalse(desk["adultsFieldVisible"])
+            self.assertTrue(desk["railStripVisible"])
+            self.assertTrue(desk["railEditVisible"])
+            self.assertEqual(desk["railEditText"], "עריכה" if target_dir == "rtl" else "Edit")
             self.assertGreater(desk["bookHeight"], 0)
             self.assertLessEqual(desk["bookHeight"], 42)
             self.assertEqual(desk["tblDisplay"], "table")
@@ -2828,8 +3421,37 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(desk_audit["authCardBg"], "rgb(234, 241, 251)")
         self.assertTrue(desk_audit["footerDiscVisible"])
         self.assertIn("אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על", desk_audit["footerDiscTxt"])
-        self.assertTrue(desk_audit["guestDiscVisible"])
+        # Run 13: the Gmail sign-in area is closed on boot, so neither sign-in disclaimer has a box yet
+        self.assertFalse(desk_audit["guestDiscVisible"])
         self.assertTrue(desk_audit["userDiscHidden"])
+
+        # Run 13: a real mouse click on the top-left header auth button opens the popover and shows the guest disclaimer
+        disc_js = """(() => {
+          const guestDisc = document.getElementById('profile-signin-disclaimer');
+          const userDisc = document.getElementById('profile-user-disclaimer');
+          const isAuthed = !document.getElementById('btn-header-signout').hasAttribute('hidden');
+          const trigger = document.getElementById(isAuthed ? 'btn-header-account' : 'btn-header-auth');
+          return {
+            guestDiscH: guestDisc.getBoundingClientRect().height,
+            userDiscH: userDisc.getBoundingClientRect().height,
+            guestDiscShown: guestDisc.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+            userDiscShown: userDisc.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+            guestDiscTxt: guestDisc.textContent.trim(),
+            userDiscTxt: userDisc.textContent.trim(),
+            accountExpanded: trigger.getAttribute('aria-expanded')
+          };
+        })()"""
+        _run13_real_click(_cdp_call, _cdp_eval, "#btn-header-auth")
+        guest_disc_open = _cdp_eval(disc_js)
+        self.assertEqual(guest_disc_open["accountExpanded"], "true")
+        self.assertGreater(guest_disc_open["guestDiscH"], 0)
+        self.assertTrue(guest_disc_open["guestDiscShown"])
+        self.assertEqual(guest_disc_open["userDiscH"], 0)
+        self.assertIn("אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על", guest_disc_open["guestDiscTxt"])
+        _run13_real_click(_cdp_call, _cdp_eval, "#btn-header-auth")
+        guest_disc_closed = _cdp_eval(disc_js)
+        self.assertEqual(guest_disc_closed["accountExpanded"], "false")
+        self.assertEqual(guest_disc_closed["guestDiscH"], 0)
 
         # R2 UI Multi-Select: Select ROM + ATH + BKK, verify request & strictly filtered results, then reset to ANYWHERE
         ms_flow = _cdp_eval(
@@ -2886,7 +3508,29 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertIn("not affiliated with", en_check["footerDiscEn"])
         self.assertIn("not affiliated with", en_check["guestDiscEn"])
 
-        # 2. Signed-in 360x800 mobile header non-overlap + signed-in profile sheet disclaimer
+        # Run 13: signed-in counterpart at 1440x900 — `#profile-user-disclaimer` is closed on boot and becomes
+        # visible once the top-left header account popover is opened with a real mouse click
+        active_browser_client = authed_client
+        _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
+        for _ in range(80):
+            if _cdp_eval(
+                "new Promise((r) => setTimeout(() => r(!document.getElementById('btn-header-signout').hasAttribute('hidden') && document.querySelectorAll('.proposal-card').length >= 1), 30))"
+            ):
+                break
+        user_disc_boot = _cdp_eval(disc_js)
+        self.assertEqual(_cdp_eval("window.innerWidth"), 1440)
+        self.assertEqual(user_disc_boot["userDiscH"], 0)
+        self.assertEqual(user_disc_boot["guestDiscH"], 0)
+        _run13_real_click(_cdp_call, _cdp_eval, "#btn-header-account")
+        user_disc_open = _cdp_eval(disc_js)
+        self.assertEqual(user_disc_open["accountExpanded"], "true")
+        self.assertGreater(user_disc_open["userDiscH"], 0)
+        self.assertTrue(user_disc_open["userDiscShown"])
+        self.assertEqual(user_disc_open["guestDiscH"], 0)
+        self.assertIn("אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על", user_disc_open["userDiscTxt"])
+        active_browser_client = guest_client
+
+        # 2. Signed-in 360x800 mobile header non-overlap + signed-in header account popover disclaimer
         active_browser_client = authed_client
         _cdp_call(
             "Emulation.setDeviceMetricsOverride",
@@ -2905,12 +3549,13 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               const brand = document.getElementById('header-brand').getBoundingClientRect();
               const pills = document.querySelector('.header-summary-pills').getBoundingClientRect();
               const overlap = !(brand.right <= pills.left + 1 || pills.right <= brand.left + 1);
-              document.getElementById('btn-header-household').click();
+              document.getElementById('btn-header-account').click();
               const userDisc = document.getElementById('profile-user-disclaimer');
               const userDiscH = userDisc ? userDisc.getBoundingClientRect().height : 0;
-              document.getElementById('btn-close-profile-sheet').click();
+              const scrollWOpen = doc.scrollWidth;
+              document.getElementById('btn-header-account').click();
               return {
-                scrollW: doc.scrollWidth,
+                scrollW: Math.max(doc.scrollWidth, scrollWOpen),
                 clientW: doc.clientWidth,
                 headerH: hdr.height,
                 overlap,
@@ -4518,6 +5163,573 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 if dest_opt == "ATH":
                     self.assertNotIn("כיוון אחד בבונוס", c_txt)
                     self.assertNotIn("One way on bonus", c_txt)
+
+    # ------------------------------------------------------------------------------------------------------
+    # Run 13 (M13 unified): Sign-in / Sign-out / Account ONLY in the top-left header (`#app-header`) and
+    # Travelers summary + `"עריכה"` ONLY above `#zone-search`, on BOTH Desktop (`>=1180px`) and Mobile (`<1180px`).
+    # Scenarios 26 and 27 drive the page with REAL mouse and keyboard input (see `_Run13ChromeSession`).
+    # ------------------------------------------------------------------------------------------------------
+    _RUN13_PASSENGER_FIELD_KEYS = ("windowTitle", "adults", "matmid", "childrenList", "addChild", "closeBtn", "applyBtn")
+    _RUN13_SIGNIN_KEYS = (
+        "authPopover",
+        "authCard",
+        "googleBtn",
+        "guestDisc",
+        "userDisc",
+        "signoutBtn",
+        "deleteBtn",
+        "notifInput",
+    )
+
+    def _run13_assert_closed(self, st: dict[str, Any], signed_in: bool = False) -> None:
+        """Closed state (desktop or mobile): neither the travelers editor nor the header auth popover is open."""
+        self.assertEqual(st["jsErrors"], [])
+        self.assertEqual(st["prof"]["display"], "none")
+        self.assertFalse(st["prof"]["sheetOpen"])
+        self.assertIsNone(st["prof"]["view"])
+        self.assertIsNone(st["prof"]["role"])
+        self.assertIsNone(st["prof"]["ariaModal"])
+        self.assertEqual(st["prof"]["labelledBy"], "zone-profile-title")
+        self.assertEqual(st["prof"]["prevSiblingId"], "zone-search")
+        for key in (
+            self._RUN13_PASSENGER_FIELD_KEYS
+            + self._RUN13_SIGNIN_KEYS
+            + ("saveBtn", "saveError", "profileSaveFeedback", "backdrop", "headerPill", "railAccountBtn")
+        ):
+            self.assertFalse(st["vis"][key], f"{key} must not be visible while closed")
+        for key in ("hhBar", "hhSummary", "editBtn"):
+            self.assertTrue(st["vis"][key], f"{key} must be visible above search while closed")
+        if signed_in:
+            self.assertFalse(st["vis"]["headerAuthBtn"])
+            self.assertTrue(st["vis"]["headerAccountBtn"])
+            self.assertTrue(st["vis"]["headerSignoutBtn"])
+        else:
+            self.assertTrue(st["vis"]["headerAuthBtn"])
+            self.assertFalse(st["vis"]["headerAccountBtn"])
+            self.assertFalse(st["vis"]["headerSignoutBtn"])
+        self.assertFalse(st["bodyLocked"])
+        self.assertNotEqual(st["bodyOverflow"], "hidden")
+        self.assertEqual(st["inertIds"], [])
+        self.assertEqual(st["aria"], {"edit": "false", "headerAuth": "false", "headerAccount": "false"})
+        self.assertLessEqual(st["scrollWidth"], st["clientWidth"])
+
+    def _run13_assert_travelers_bar_above_search(self, st: dict[str, Any]) -> None:
+        """Above `#zone-search` sits ONLY the travelers summary + edit bar, on both desktop and mobile."""
+        search_top = st["rects"]["search"]["y"]
+        for key in ("hhBar", "edit"):
+            self.assertTrue(st["rects"][key]["visible"], key)
+            self.assertLessEqual(st["rects"][key]["bottom"], search_top, f"{key} must end above #zone-search")
+        self.assertAlmostEqual(st["rects"]["hhBar"]["x"], st["rects"]["rail"]["x"], delta=1.0)
+        self.assertAlmostEqual(st["rects"]["hhBar"]["w"], st["rects"]["rail"]["w"], delta=1.0)
+        self.assertLess(st["rects"]["hhBar"]["y"], search_top)
+
+    def _run13_assert_passenger_window_open(self, st: dict[str, Any], signed_in: bool) -> None:
+        """Desktop (>=1180px): passenger details open as a centred modal window wider than the control rail."""
+        self.assertEqual(st["jsErrors"], [])
+        prof = st["prof"]
+        self.assertTrue(prof["sheetOpen"])
+        self.assertEqual(prof["view"], "travelers")
+        self.assertEqual(prof["role"], "dialog")
+        self.assertEqual(prof["ariaModal"], "true")
+        self.assertEqual(prof["labelledBy"], "zone-profile-title")
+        self.assertEqual(prof["position"], "fixed")
+        win = prof["rect"]
+        self.assertTrue(win["visible"])
+        self.assertGreater(win["w"], 416)
+        self.assertGreater(win["w"], st["rects"]["rail"]["w"])
+        self.assertGreaterEqual(win["w"], 720)
+        self.assertLessEqual(win["w"], 880)
+        self.assertAlmostEqual(win["x"] + win["w"] / 2, st["innerWidth"] / 2, delta=2.0)
+        self.assertGreaterEqual(win["y"], st["rects"]["header"]["bottom"])
+        self.assertLessEqual(win["bottom"], st["innerHeight"])
+        for key in self._RUN13_PASSENGER_FIELD_KEYS + ("backdrop",):
+            self.assertTrue(st["vis"][key], f"{key} must be visible in the passenger window")
+        for key in self._RUN13_SIGNIN_KEYS:
+            self.assertFalse(st["vis"][key], f"{key} belongs to the top-bar auth popover, not the passenger window")
+        self.assertEqual(st["vis"]["saveBtn"], signed_in)
+        self.assertTrue(st["bodyLocked"])
+        self.assertEqual(st["bodyOverflow"], "hidden")
+        self.assertTrue(
+            {"app-header", "vacation-hero", "household-summary-bar", "zone-search", "content-column", "site-footer"}
+            <= set(st["inertIds"])
+        )
+        self.assertEqual(st["aria"], {"edit": "true", "headerAuth": "false", "headerAccount": "false"})
+        self.assertAlmostEqual(st["rects"]["backdrop"]["w"], st["innerWidth"], delta=1.0)
+        self.assertAlmostEqual(st["rects"]["backdrop"]["h"], st["innerHeight"], delta=1.0)
+
+    def _run13_assert_mobile_passenger_sheet_open(self, st: dict[str, Any], signed_in: bool) -> None:
+        """Mobile (<1180px): passenger details open as bottom sheet above the dock, with ZERO Gmail/auth elements inside."""
+        self.assertEqual(st["jsErrors"], [])
+        prof = st["prof"]
+        self.assertTrue(prof["sheetOpen"])
+        self.assertIsNone(prof["view"])
+        self.assertIsNone(prof["role"])
+        self.assertEqual(prof["position"], "fixed")
+        self.assertTrue(prof["rect"]["visible"])
+        self.assertGreaterEqual(prof["rect"]["w"], st["clientWidth"] - 1.0)
+        for key in self._RUN13_PASSENGER_FIELD_KEYS + ("backdrop",):
+            self.assertTrue(st["vis"][key], f"{key} must be visible in the mobile passenger sheet")
+        for key in self._RUN13_SIGNIN_KEYS:
+            self.assertFalse(st["vis"][key], f"{key} belongs to the top-bar auth popover, not the mobile travelers sheet")
+        self.assertEqual(st["vis"]["saveBtn"], signed_in)
+        self.assertTrue(st["bodyLocked"])
+        self.assertEqual(st["inertIds"], [])
+        self.assertEqual(st["aria"], {"edit": "true", "headerAuth": "false", "headerAccount": "false"})
+
+    def _run13_assert_header_popover_open(self, st: dict[str, Any], signed_in: bool) -> None:
+        """Top-bar auth popover open (both desktop and mobile): anchored under `#app-header` within viewport bounds."""
+        self.assertEqual(st["jsErrors"], [])
+        self.assertFalse(st["prof"]["sheetOpen"])
+        self.assertEqual(st["prof"]["display"], "none")
+        pop = st["rects"]["authPopover"]
+        self.assertTrue(pop["visible"])
+        self.assertGreaterEqual(pop["x"], 0.0)
+        self.assertLessEqual(pop["right"], st["innerWidth"])
+        self.assertGreaterEqual(pop["y"], st["rects"]["header"]["bottom"] - 10.0)
+        self.assertLessEqual(st["scrollWidth"], st["clientWidth"])
+        self.assertTrue(st["vis"]["authPopover"])
+        self.assertTrue(st["vis"]["authCard"])
+        for key in self._RUN13_PASSENGER_FIELD_KEYS + ("saveBtn", "saveError", "profileSaveFeedback", "backdrop"):
+            self.assertFalse(st["vis"][key], f"{key} must not be visible when only the header auth popover is open")
+        shown = ("verifiedBadge", "userEmail", "signoutBtn", "deleteBtn", "notifInput", "notifShort", "userDisc") if signed_in else ("googleBtn", "guestDisc")
+        hidden = ("googleBtn", "guestDisc") if signed_in else ("verifiedBadge", "userEmail", "signoutBtn", "deleteBtn", "notifInput", "notifShort", "userDisc")
+        for key in shown:
+            self.assertTrue(st["vis"][key], f"{key} must be visible in the header auth popover")
+        for key in hidden:
+            self.assertFalse(st["vis"][key], f"{key} must not be visible in this auth state")
+        self.assertFalse(st["bodyLocked"])
+        self.assertEqual(st["inertIds"], [])
+        expected_aria = (
+            {"edit": "false", "headerAuth": "false", "headerAccount": "true"}
+            if signed_in
+            else {"edit": "false", "headerAuth": "true", "headerAccount": "false"}
+        )
+        self.assertEqual(st["aria"], expected_aria)
+        self._run13_assert_travelers_bar_above_search(st)
+
+    def test_scenario_26_run13_desktop_access_strip_passenger_window_and_closed_signin_real_input_e2e(
+        self,
+    ) -> None:
+        """Scenario 26 (Run 13 unified): on BOTH Desktop (1440x900, 1180x900) and Mobile (390x844, 1179x900),
+        sign-in lives ONLY in the top-left header bar and travelers summary + 'Edit' sits ONLY above `#zone-search`.
+        Every open, close, edit and button press uses real CDP mouse / keyboard input."""
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        guest_client = self.get_client(db_path)
+
+        for auth_var in ("VACATION_PLANNER_AUTH_TEST_MODE", "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"):
+            prev_value = os.environ.pop(auth_var, None)
+            if prev_value is not None:
+                self.addCleanup(os.environ.__setitem__, auth_var, prev_value)
+        guest_session = guest_client.get("/api/v1/auth/session").json()
+        self.assertFalse(guest_session["authenticated"])
+        self.assertFalse(guest_session["oauth_configured"])
+        self.assertFalse(guest_session["test_mode"])
+
+        browser = self.open_run13_browser(guest_client, viewport=(1440, 900))
+
+        expected = {
+            "rtl": {
+                "edit": "עריכה",
+                "edit_aria": "עריכת הרכב הנוסעים",
+                "header_auth": "כניסה",
+                "summary_boot": ("2 מבוגרים", "0 ילדים", "0 מתמיד"),
+                "summary_edited": "3 מבוגרים · 1 ילדים · 💳 50,000 מתמיד",
+                "disclaimer": "אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על",
+            },
+            "ltr": {
+                "edit": "Edit",
+                "edit_aria": "Edit travelers",
+                "header_auth": "Sign in",
+                "summary_boot": ("2 Adults", "0 Kids", "0 Matmid"),
+                "summary_edited": "3 Adults · 1 Kids · 💳 50,000 Matmid",
+                "disclaimer": "not affiliated with",
+            },
+        }
+        edited_values = {"adults": "3", "matmid": "50000", "ages": ["11"]}
+
+        for target_dir in ("rtl", "ltr"):
+            exp = expected[target_dir]
+            browser.mount()
+            if target_dir == "ltr":
+                browser.real_click("#btn-toggle-locale")
+                browser.settle()
+
+            # 1. Boot at 1440x900: closed; travelers bar above search; sign-in ONLY in top-left header
+            boot = browser.eval(_RUN13_STATE_JS)
+            self.assertEqual(boot["dir"], target_dir)
+            self.assertEqual(boot["innerWidth"], 1440)
+            self._run13_assert_closed(boot, signed_in=False)
+            self._run13_assert_travelers_bar_above_search(boot)
+            self.assertGreaterEqual(boot["rects"]["hhBar"]["y"], boot["rects"]["header"]["bottom"])
+            self.assertEqual(boot["text"]["editBtn"], exp["edit"])
+            self.assertEqual(boot["text"]["editAria"], exp["edit_aria"])
+            self.assertEqual(boot["text"]["headerAuth"], exp["header_auth"])
+            for summary_part in exp["summary_boot"]:
+                self.assertIn(summary_part, boot["text"]["hhSummary"])
+            self.assertEqual(boot["values"], {"adults": "2", "matmid": "0", "ages": []})
+
+            # 1b. Zero-balance CTA opens the passenger window with Matmid focused
+            self.assertTrue(browser.vis('[data-focus-matmid="true"]'))
+            browser.real_click('[data-focus-matmid="true"]')
+            browser.pump(160)
+            via_cta = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_passenger_window_open(via_cta, signed_in=False)
+            self.assertEqual(via_cta["activeId"], "prof-matmid-points")
+            browser.real_key("Escape")
+            self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+
+            # 2. Real click on `#btn-open-profile-sheet` ("עריכה" / "Edit") opens the wide passenger modal
+            browser.real_click("#btn-open-profile-sheet")
+            browser.pump(160)
+            opened = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_passenger_window_open(opened, signed_in=False)
+            self.assertEqual(opened["activeId"], "prof-adults-count")
+            self.assertAlmostEqual(opened["rects"]["hhBar"]["x"], boot["rects"]["hhBar"]["x"], delta=0.5)
+            self.assertAlmostEqual(opened["rects"]["search"]["x"], boot["rects"]["search"]["x"], delta=0.5)
+            behind = browser.eval("window.__r13.topAtCentreOf('#btn-run-search')")
+            self.assertFalse(behind["inside"])
+            self.assertEqual(behind["id"], "profile-sheet-backdrop")
+
+            # 3. Edit adults, Matmid and a child with real typing
+            browser.real_replace_value("#prof-adults-count", "3")
+            browser.real_replace_value("#prof-matmid-points", "50000")
+            browser.real_click("#btn-add-child")
+            self.assertTrue(browser.vis('[data-child-age="0"]'))
+            browser.real_replace_value('[data-child-age="0"]', "11")
+            browser.real_key("Tab")
+            edited = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_passenger_window_open(edited, signed_in=False)
+            self.assertEqual(edited["values"], edited_values)
+
+            # 4. Close via `#btn-close-profile-sheet`: values kept and summary bar updated
+            browser.real_click("#btn-close-profile-sheet")
+            closed = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_closed(closed, signed_in=False)
+            self._run13_assert_travelers_bar_above_search(closed)
+            self.assertIn(exp["summary_edited"], closed["text"]["hhSummary"])
+            self.assertEqual(closed["values"], edited_values)
+            self.assertEqual(closed["activeId"], "btn-open-profile-sheet")
+
+            # 5. Reopen -> backdrop click closes and restores focus
+            browser.real_click("#btn-open-profile-sheet")
+            browser.pump(160)
+            self._run13_assert_passenger_window_open(browser.eval(_RUN13_STATE_JS), signed_in=False)
+            browser.real_click_at(40, 620, "profile-sheet-backdrop")
+            after_backdrop = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_closed(after_backdrop, signed_in=False)
+            self.assertEqual(after_backdrop["activeId"], "btn-open-profile-sheet")
+
+            # 6. Apply button closes window and runs search with edited household
+            browser.real_click("#btn-open-profile-sheet")
+            browser.pump(160)
+            browser.fetch_log.clear()
+            browser.real_click("#btn-apply-profile-sheet")
+            browser.settle()
+            self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+            apply_searches = browser.requests("POST", "/api/v1/vacations/search")
+            self.assertGreaterEqual(len(apply_searches), 1)
+            applied_profile = apply_searches[-1]["body"]["inline_profile"]
+            self.assertEqual(applied_profile["adults_count"], 3)
+            self.assertEqual(applied_profile["matmid_points_balance"], 50000)
+            self.assertEqual([c["child_age_years"] for c in applied_profile["children"]], [11])
+
+            # 7. Top-left header auth button toggles `#header-auth-popover`, Escape closes, click-outside closes
+            browser.real_click("#btn-header-auth")
+            browser.pump(120)
+            pop_open = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_header_popover_open(pop_open, signed_in=False)
+            self.assertIn(exp["disclaimer"], pop_open["text"]["guestDisc"])
+            self.assertEqual(pop_open["activeId"], "btn-google-signin")
+            browser.real_key("Escape")
+            pop_escaped = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_closed(pop_escaped, signed_in=False)
+            self.assertEqual(pop_escaped["activeId"], "btn-header-auth")
+
+            # 8. Opening "Edit" while header auth popover is open closes the auth popover cleanly
+            browser.real_click("#btn-header-auth")
+            browser.pump(120)
+            self._run13_assert_header_popover_open(browser.eval(_RUN13_STATE_JS), signed_in=False)
+            browser.real_click("#btn-open-profile-sheet")
+            browser.pump(160)
+            self._run13_assert_passenger_window_open(browser.eval(_RUN13_STATE_JS), signed_in=False)
+            browser.real_key("Escape")
+            self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+
+            # 9. Clicking `#btn-google-signin` on a server without OAuth shows `#auth-status-note` inside the popover
+            browser.real_click("#btn-header-auth")
+            browser.pump(120)
+            browser.real_click("#btn-google-signin")
+            browser.pump(100)
+            no_oauth = browser.eval(_RUN13_STATE_JS)
+            self._run13_assert_header_popover_open(no_oauth, signed_in=False)
+            self.assertTrue(browser.vis("#auth-status-note"))
+            self.assertIn("GOOGLE_OAUTH_CLIENT_ID", browser.text("#auth-status-note"))
+            self.assertIsNone(browser.eval("window.__fvpLastAssignedUrl"))
+            browser.real_click("#btn-run-search")
+            browser.settle()
+            self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+
+        # 10. Mobile 390x844 & Breakpoint 1179px <-> 1180px: identical separation on mobile too!
+        browser.set_viewport(390, 844)
+        browser.mount()
+        mob_boot = browser.eval(_RUN13_STATE_JS)
+        self.assertEqual(mob_boot["innerWidth"], 390)
+        self._run13_assert_closed(mob_boot, signed_in=False)
+        self._run13_assert_travelers_bar_above_search(mob_boot)
+        # Top-bar sign-in popover on 390x844 mobile
+        browser.real_click("#btn-header-auth")
+        browser.pump(120)
+        self._run13_assert_header_popover_open(browser.eval(_RUN13_STATE_JS), signed_in=False)
+        # Opening travelers sheet on mobile closes auth popover and shows ONLY travelers (no Gmail card in sheet!)
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(160)
+        mob_sheet = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_mobile_passenger_sheet_open(mob_sheet, signed_in=False)
+        self.assertLessEqual(mob_sheet["prof"]["rect"]["bottom"], mob_sheet["rects"]["dock"]["y"] + 2.0)
+
+        # Crossing 390 -> 1180 closes the mobile sheet cleanly; opening at 1180 -> 1179 closes the modal cleanly
+        browser.set_viewport(1180, 900)
+        browser.wait_until(
+            "!document.getElementById('zone-profile').classList.contains('is-sheet-open')",
+            "mobile sheet to close when viewport reaches 1180px",
+        )
+        at_1180 = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_closed(at_1180, signed_in=False)
+        self._run13_assert_travelers_bar_above_search(at_1180)
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(160)
+        win_1180 = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_passenger_window_open(win_1180, signed_in=False)
+        self.assertAlmostEqual(win_1180["prof"]["rect"]["w"], 720, delta=1.0)
+        browser.set_viewport(1179, 900)
+        browser.wait_until(
+            "!document.getElementById('zone-profile').classList.contains('is-sheet-open')",
+            "desktop passenger modal to close when viewport drops below 1180px",
+        )
+        self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+        self.assertEqual(browser.eval("document.body.getAttribute('style') || ''"), "")
+        self.assertEqual(browser.js_errors(), [])
+        self.assertEqual([r for r in browser.fetch_log if r["status"] >= 500], [])
+
+    def test_scenario_27_run13_desktop_signin_save_signout_delete_through_new_ui_real_input_e2e(
+        self,
+    ) -> None:
+        """Scenario 27 (Run 13 unified): Gmail sign-in, auto-save of guest draft, explicit save + 422 error inside
+        passenger modal, notifications opt-in, top-bar 1-click sign-out AND popover sign-out, delete-profile, and
+        390x844 mobile signed-in top-bar flow — all driven by real mouse & keyboard input."""
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        browser_client = self.get_client(db_path)
+
+        env_prev_test = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
+        env_prev_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+
+        def _restore_env() -> None:
+            for var_name, prev in (
+                ("VACATION_PLANNER_AUTH_TEST_MODE", env_prev_test),
+                ("ELAL_LIVE_FETCH_ENABLED", env_prev_live),
+            ):
+                if prev is None:
+                    os.environ.pop(var_name, None)
+                else:
+                    os.environ[var_name] = prev
+
+        self.addCleanup(_restore_env)
+
+        browser = self.open_run13_browser(browser_client, viewport=(1440, 900))
+        test_email = "desk.family@gmail.com"
+        he_disclaimer = "אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על"
+
+        def complete_oauth_host_side(assigned_url: str) -> None:
+            self.assertTrue(str(assigned_url).startswith("/api/v1/auth/google/login"))
+            r_login = browser_client.get(f"{assigned_url}&mock_oauth=1&test_email={test_email}")
+            self.assertEqual(r_login.status_code, 302)
+            r_authorize = browser_client.get(r_login.headers["Location"])
+            self.assertEqual(r_authorize.status_code, 302)
+            r_callback = browser_client.get(r_authorize.headers["Location"])
+            self.assertEqual(r_callback.status_code, 302)
+            self.assertEqual(r_callback.headers["Location"], "/")
+
+        def api_profile() -> dict[str, Any]:
+            resp = browser_client.get("/api/v1/profile")
+            self.assertEqual(resp.status_code, 200)
+            return resp.json()
+
+        # A. Guest at 1440x900: edit household in the passenger window, then close it
+        browser.mount()
+        self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(160)
+        self._run13_assert_passenger_window_open(browser.eval(_RUN13_STATE_JS), signed_in=False)
+        browser.real_replace_value("#prof-matmid-points", "150000")
+        browser.real_click("#btn-add-child")
+        browser.real_replace_value('[data-child-age="0"]', "9")
+        browser.real_key("Tab")
+        browser.real_click("#btn-close-profile-sheet")
+        guest_edited = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_closed(guest_edited, signed_in=False)
+        self.assertIn("1 ילדים", guest_edited["text"]["hhSummary"])
+        self.assertIn("150,000", guest_edited["text"]["hhSummary"])
+
+        # B. Open top-left header sign-in popover and click `#btn-google-signin`
+        browser.real_click("#btn-header-auth")
+        browser.pump(120)
+        guest_pop = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_header_popover_open(guest_pop, signed_in=False)
+        self.assertIn(he_disclaimer, guest_pop["text"]["guestDisc"])
+        browser.real_click("#btn-google-signin")
+        signin_click = browser.eval(
+            "({ assignedUrl: window.__fvpLastAssignedUrl, ssDump: window.sessionStorage._dump() })"
+        )
+        self.assertIn("fvp_pending_oauth_draft", signin_click["ssDump"])
+        complete_oauth_host_side(signin_click["assignedUrl"])
+
+        # C. Back on `/` signed in: guest draft auto-saved; top-left bar shows email + 1-click sign-out button
+        browser.fetch_log.clear()
+        browser.mount(session_storage=signin_click["ssDump"])
+        signed_boot = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_closed(signed_boot, signed_in=True)
+        self._run13_assert_travelers_bar_above_search(signed_boot)
+        self.assertTrue(signed_boot["vis"]["headerAccountEmail"])
+        self.assertFalse(signed_boot["vis"]["headerAccountShort"])
+        self.assertEqual(signed_boot["text"]["headerAccountEmail"], test_email)
+        self.assertEqual(signed_boot["text"]["headerSignout"], "התנתקות")
+        draft_puts = browser.requests("PUT", "/api/v1/profile")
+        self.assertEqual([r["status"] for r in draft_puts], [200])
+        self.assertEqual(draft_puts[0]["body"]["matmid_points_balance"], 150000)
+        saved_draft = api_profile()
+        self.assertTrue(saved_draft["is_persisted"])
+        self.assertEqual(saved_draft["matmid_points_balance"], 150000)
+        self.assertEqual([c["child_age_years"] for c in saved_draft["children"]], [9])
+        self.assertIn("150,000", signed_boot["text"]["hhSummary"])
+
+        # D. Open top-left account popover: verify email, save confirmation, and disclaimer
+        browser.real_click("#btn-header-account")
+        browser.pump(120)
+        user_pop = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_header_popover_open(user_pop, signed_in=True)
+        self.assertEqual(user_pop["activeId"], "btn-signout")
+        self.assertIn(he_disclaimer, user_pop["text"]["userDisc"])
+        self.assertTrue(user_pop["vis"]["saveFeedback"])
+        self.assertIn("נשמר", user_pop["text"]["saveFeedback"])
+        browser.real_click("#btn-header-account")
+        self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=True)
+
+        # E. Explicit save inside passenger window + failed save (HTTP 422) reported inside window + recovery
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(160)
+        user_window = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_passenger_window_open(user_window, signed_in=True)
+        self.assertEqual(user_window["values"], {"adults": "2", "matmid": "150000", "ages": ["9"]})
+        self.assertTrue(user_window["vis"]["profileSaveFeedback"])
+        browser.real_replace_value("#prof-adults-count", "4")
+        browser.fetch_log.clear()
+        browser.real_click("#btn-save-profile")
+        browser.settle()
+        self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/profile")], [200])
+        self.assertEqual(api_profile()["adults_count"], 4)
+        after_save = browser.eval(_RUN13_STATE_JS)
+        self.assertTrue(after_save["vis"]["profileSaveFeedback"])
+        self.assertFalse(after_save["vis"]["saveError"])
+
+        browser.real_replace_value("#prof-adults-count", "99")
+        browser.fetch_log.clear()
+        browser.real_click("#btn-save-profile")
+        browser.settle()
+        self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/profile")], [422])
+        failed_save = browser.eval(_RUN13_STATE_JS)
+        self.assertTrue(failed_save["vis"]["saveError"])
+        self.assertIn("לא ניתן לשמור את פרופיל המשפחה", failed_save["text"]["saveError"])
+        self.assertFalse(failed_save["vis"]["profileSaveFeedback"])
+        self.assertTrue(browser.eval("window.__r13.topAtCentreOf('#profile-save-error')")["inside"])
+
+        browser.real_replace_value("#prof-adults-count", "2")
+        browser.fetch_log.clear()
+        browser.real_click("#btn-save-profile")
+        browser.settle()
+        self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/profile")], [200])
+        recovered = browser.eval(_RUN13_STATE_JS)
+        self.assertFalse(recovered["vis"]["saveError"])
+        self.assertTrue(recovered["vis"]["profileSaveFeedback"])
+        browser.real_key("Escape")
+        self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=True)
+
+        # F. Notifications opt-in in top-left popover, then 1-click sign-out via top-bar `#btn-header-signout`!
+        browser.real_click("#btn-header-account")
+        browser.pump(120)
+        self._run13_assert_header_popover_open(browser.eval(_RUN13_STATE_JS), signed_in=True)
+        browser.fetch_log.clear()
+        browser.real_click("#input-notifications-opt-in")
+        browser.settle()
+        self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/auth/notifications")], [200])
+        self.assertTrue(browser_client.get("/api/v1/auth/session").json()["user"]["notifications_enabled"])
+
+        browser.fetch_log.clear()
+        browser.real_click("#btn-header-signout")
+        browser.wait_until(
+            "!document.getElementById('btn-header-auth').hasAttribute('hidden')",
+            "guest state after top-bar sign-out",
+        )
+        browser.settle()
+        self.assertEqual([r["status"] for r in browser.requests("POST", "/api/v1/auth/logout")], [200])
+        self.assertFalse(browser_client.get("/api/v1/auth/session").json()["authenticated"])
+        signed_out = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_closed(signed_out, signed_in=False)
+        self.assertEqual(signed_out["values"], {"adults": "2", "matmid": "0", "ages": []})
+
+        # G. Sign back in on 390x844 MOBILE via top-left header, verify compact `חשבון ▾` + `התנתקות`, delete profile, and sign out via popover
+        browser.set_viewport(390, 844)
+        browser.mount()
+        self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=False)
+        browser.eval("window.__fvpLastAssignedUrl = null; true")
+        browser.real_click("#btn-header-auth")
+        browser.pump(120)
+        self._run13_assert_header_popover_open(browser.eval(_RUN13_STATE_JS), signed_in=False)
+        browser.real_click("#btn-google-signin")
+        complete_oauth_host_side(browser.eval("window.__fvpLastAssignedUrl"))
+        browser.fetch_log.clear()
+        browser.mount(session_storage=browser.eval("window.sessionStorage._dump()"))
+        mob_signed = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_closed(mob_signed, signed_in=True)
+        self._run13_assert_travelers_bar_above_search(mob_signed)
+        self.assertFalse(mob_signed["vis"]["headerAccountEmail"])
+        self.assertTrue(mob_signed["vis"]["headerAccountShort"])
+        self.assertEqual(mob_signed["text"]["headerAccountShort"], "חשבון")
+        self.assertEqual(mob_signed["values"], {"adults": "2", "matmid": "150000", "ages": ["9"]})
+
+        # Delete saved profile on mobile via top-left account popover (cancel first, then confirm)
+        browser.real_click("#btn-header-account")
+        browser.pump(120)
+        self._run13_assert_header_popover_open(browser.eval(_RUN13_STATE_JS), signed_in=True)
+        browser.real_click("#btn-delete-profile")
+        self.assertTrue(browser.vis("#auth-delete-confirm-bar"))
+        browser.real_click("#btn-cancel-delete-profile")
+        self.assertFalse(browser.vis("#auth-delete-confirm-bar"))
+        self.assertTrue(api_profile()["is_persisted"])
+        browser.real_click("#btn-delete-profile")
+        browser.fetch_log.clear()
+        browser.real_click("#btn-confirm-delete-profile")
+        browser.wait_until(
+            "document.getElementById('auth-save-feedback').textContent.includes('נמחקו')",
+            "delete confirmation message",
+        )
+        browser.settle()
+        self.assertEqual([r["status"] for r in browser.requests("DELETE", "/api/v1/profile")], [200])
+        deleted = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_header_popover_open(deleted, signed_in=True)
+        self.assertFalse(api_profile()["is_persisted"])
+        self.assertEqual(deleted["values"], {"adults": "2", "matmid": "0", "ages": []})
+
+        # Sign out via `#btn-signout` inside the popover
+        browser.real_click("#btn-signout")
+        browser.wait_until(
+            "!document.getElementById('btn-header-auth').hasAttribute('hidden')",
+            "guest state after popover sign-out",
+        )
+        browser.settle()
+        self.assertFalse(browser_client.get("/api/v1/auth/session").json()["authenticated"])
+        self.assertEqual(browser.js_errors(), [])
 
 
 if __name__ == "__main__":

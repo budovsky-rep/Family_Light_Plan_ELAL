@@ -472,6 +472,8 @@
     isCalendarVisible: false,
     isSearchFiltersOpen: false,
     isProfileSheetOpen: false,
+    profileSheetView: null,
+    isAuthPopoverOpen: false,
     lastActiveMobileZone: 'zone-search',
     isDestPickerOpen: false,
     destFilterQuery: '',
@@ -489,6 +491,8 @@
     authNoticeEn: null,
     saveFeedbackHe: null,
     saveFeedbackEn: null,
+    profileSaveErrorHe: null,
+    profileSaveErrorEn: null,
     confirmingDeleteProfile: false,
     profile: createCleanGuestProfile(),
     profileDirty: false,
@@ -577,42 +581,237 @@
     }
   }
 
+  // Desktop (>=1180px) only: while the passenger window is open, everything else on the page is inert
+  const DESKTOP_MODAL_INERT_SELECTORS = [
+    '#app-header',
+    '#vacation-hero',
+    '#household-summary-bar',
+    '#zone-search',
+    '.content-column',
+    '#site-footer'
+  ];
+  let profileSheetOpenerEl = null;
+  let authPopoverOpenerEl = null;
+  // Width of the classic page scrollbar that the open passenger window is standing in for (0 = none / overlay scrollbars)
+  let heldPageScrollbarPx = 0;
+
+  function renderProfileSaveError() {
+    const errEl = document.getElementById('profile-save-error');
+    if (!errEl) return;
+    const msg = state.locale === 'he' ? state.profileSaveErrorHe : state.profileSaveErrorEn;
+    if (msg) {
+      errEl.textContent = `⚠️ ${msg}`;
+      errEl.removeAttribute('hidden');
+    } else {
+      errEl.textContent = '';
+      errEl.setAttribute('hidden', '');
+    }
+  }
+
+  function getActiveHeaderAuthTrigger() {
+    const isAuthed = Boolean(state.auth && state.auth.authenticated && state.auth.user);
+    return document.getElementById(isAuthed ? 'btn-header-account' : 'btn-header-auth');
+  }
+
+  function setAuthPopoverOpen(open, opts) {
+    const options = opts || {};
+    const willOpen = Boolean(open);
+    const wasOpen = Boolean(state.isAuthPopoverOpen);
+    if (willOpen && state.isProfileSheetOpen) {
+      setProfileSheetOpen(false, { restoreFocus: false });
+    }
+    if (willOpen && state.isDestPickerOpen) {
+      setDestPickerOpen(false);
+    }
+    state.isAuthPopoverOpen = willOpen;
+    if (!willOpen && state.confirmingDeleteProfile) {
+      state.confirmingDeleteProfile = false;
+      renderAuthControls();
+    }
+    const popover = document.getElementById('header-auth-popover');
+    if (popover) {
+      if (willOpen) {
+        popover.removeAttribute('hidden');
+        popover.style.display = 'block';
+      } else {
+        popover.setAttribute('hidden', '');
+        popover.style.display = 'none';
+      }
+    }
+    const btnAuth = document.getElementById('btn-header-auth');
+    const btnAccount = document.getElementById('btn-header-account');
+    const isAuthed = Boolean(state.auth && state.auth.authenticated && state.auth.user);
+    if (btnAuth) btnAuth.setAttribute('aria-expanded', willOpen && !isAuthed ? 'true' : 'false');
+    if (btnAccount) btnAccount.setAttribute('aria-expanded', willOpen && isAuthed ? 'true' : 'false');
+
+    if (willOpen) {
+      if (!wasOpen) {
+        const activeEl = document.activeElement;
+        authPopoverOpenerEl =
+          options.opener || (activeEl && activeEl !== document.body ? activeEl : getActiveHeaderAuthTrigger());
+      }
+      if (options.focusContent !== false) {
+        const focusTarget = document.getElementById(isAuthed ? 'btn-signout' : 'btn-google-signin');
+        if (focusTarget) {
+          setTimeout(() => {
+            if (!state.isAuthPopoverOpen) return;
+            focusTarget.focus();
+          }, 50);
+        }
+      }
+    } else if (wasOpen) {
+      if (options.restoreFocus !== false) {
+        const activeEl = document.activeElement;
+        const focusWasInside =
+          !activeEl || activeEl === document.body || Boolean(popover && popover.contains(activeEl));
+        const fallbackTrigger = getActiveHeaderAuthTrigger();
+        const restoreEl =
+          authPopoverOpenerEl && document.contains(authPopoverOpenerEl) && !authPopoverOpenerEl.hasAttribute('hidden')
+            ? authPopoverOpenerEl
+            : fallbackTrigger;
+        if (focusWasInside && restoreEl) {
+          restoreEl.focus();
+        }
+      }
+      authPopoverOpenerEl = null;
+    }
+  }
+
+  // Removes everything the desktop modal window adds (none of it is ever set below 1180px)
+  function clearDesktopProfileViewState() {
+    const profZone = document.getElementById('zone-profile');
+    if (profZone) {
+      profZone.removeAttribute('data-sheet-view');
+      profZone.removeAttribute('role');
+      profZone.removeAttribute('aria-modal');
+      if (profZone.getAttribute('aria-labelledby') !== 'zone-profile-title') {
+        profZone.setAttribute('aria-labelledby', 'zone-profile-title');
+      }
+    }
+    DESKTOP_MODAL_INERT_SELECTORS.forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.removeAttribute('inert');
+    });
+    const editBtn = document.getElementById('btn-open-profile-sheet');
+    if (editBtn) editBtn.setAttribute('aria-expanded', 'false');
+    document.body.style.removeProperty('padding-inline-start');
+    document.body.style.removeProperty('padding-inline-end');
+    state.profileSheetView = null;
+    if (state.profileSaveErrorHe || state.profileSaveErrorEn) {
+      state.profileSaveErrorHe = null;
+      state.profileSaveErrorEn = null;
+      renderProfileSaveError();
+    }
+  }
+
+  // A sheet opened below 1180px must not survive at desktop width, and a desktop modal window must not survive below it
+  function closeProfileSheetOnBreakpointCross() {
+    if (typeof window === 'undefined') return;
+    if (!state.isProfileSheetOpen && !document.body.classList.contains('is-sheet-locked')) return;
+    const isSheetViewport = window.innerWidth < 1180;
+    const openedAsDesktopView = state.profileSheetView !== null;
+    if (isSheetViewport === openedAsDesktopView) {
+      setProfileSheetOpen(false);
+    }
+  }
+
   function setProfileSheetOpen(open, opts) {
     const options = opts || {};
+    const willOpen = Boolean(open);
+    if (willOpen && state.isAuthPopoverOpen) {
+      setAuthPopoverOpen(false, { restoreFocus: false });
+    }
     const isSheetViewport = typeof window !== 'undefined' && window.innerWidth < 1180;
     const profZone = document.getElementById('zone-profile');
     const backdrop = document.getElementById('profile-sheet-backdrop');
-    const btnHeaderHh = document.getElementById('btn-header-household');
+    const btnEditTravelers = document.getElementById('btn-open-profile-sheet');
     const dockProfBtn = document.querySelector('.mobile-dock-btn[data-dock-zone="zone-profile"]');
 
     if (!isSheetViewport) {
-      state.isProfileSheetOpen = false;
-      if (profZone) profZone.classList.remove('is-sheet-open');
-      if (backdrop) {
-        backdrop.setAttribute('hidden', '');
-        backdrop.style.display = 'none';
+      // Desktop (>=1180px): clicking "Edit" opens the travelers panel as a wide centered modal dialog
+      const view = willOpen ? 'travelers' : null;
+      const wasOpen = state.isProfileSheetOpen;
+      const isModal = view === 'travelers';
+      const pageScrollbarPx = document.body.classList.contains('is-sheet-locked')
+        ? heldPageScrollbarPx
+        : Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+      clearDesktopProfileViewState();
+      state.isProfileSheetOpen = Boolean(view);
+      state.profileSheetView = view;
+      if (profZone) {
+        profZone.classList.toggle('is-sheet-open', Boolean(view));
+        if (view) {
+          profZone.setAttribute('data-sheet-view', view);
+          profZone.setAttribute('role', 'dialog');
+          profZone.setAttribute('aria-modal', 'true');
+        }
       }
-      document.body.classList.remove('is-sheet-locked');
-      if (btnHeaderHh) btnHeaderHh.setAttribute('aria-expanded', 'false');
+      if (backdrop) {
+        if (isModal) {
+          backdrop.removeAttribute('hidden');
+          backdrop.style.display = 'block';
+        } else {
+          backdrop.setAttribute('hidden', '');
+          backdrop.style.display = 'none';
+        }
+      }
+      if (isModal) {
+        DESKTOP_MODAL_INERT_SELECTORS.forEach((sel) => {
+          const el = document.querySelector(sel);
+          if (el) el.setAttribute('inert', '');
+        });
+      }
+      document.body.classList.toggle('is-sheet-locked', isModal);
+      heldPageScrollbarPx = isModal ? pageScrollbarPx : 0;
+      if (heldPageScrollbarPx > 0) {
+        const scrollbarSide =
+          getComputedStyle(document.documentElement).direction === 'rtl'
+            ? 'padding-inline-start'
+            : 'padding-inline-end';
+        document.body.style.setProperty(scrollbarSide, `${heldPageScrollbarPx}px`);
+      }
+      if (btnEditTravelers) btnEditTravelers.setAttribute('aria-expanded', isModal ? 'true' : 'false');
       if (dockProfBtn) dockProfBtn.classList.remove('active');
-      if (open) {
-        if (profZone) profZone.scrollIntoView({ behavior: getScrollBehavior(), block: 'start' });
+      if (isModal) {
+        if (!wasOpen) {
+          const activeEl = document.activeElement;
+          profileSheetOpenerEl =
+            options.opener || (activeEl && activeEl !== document.body ? activeEl : btnEditTravelers);
+        }
         const focusTarget = document.getElementById(
           options.focusMatmid ? 'prof-matmid-points' : 'prof-adults-count'
         );
         if (focusTarget) {
           setTimeout(() => {
+            if (state.profileSheetView !== 'travelers') return;
             focusTarget.focus();
             if (options.focusMatmid && typeof focusTarget.select === 'function') {
               focusTarget.select();
             }
           }, 80);
         }
+      } else if (wasOpen) {
+        if (options.restoreFocus !== false) {
+          const activeEl = document.activeElement;
+          const focusWasInside =
+            !activeEl || activeEl === document.body || Boolean(profZone && profZone.contains(activeEl));
+          if (focusWasInside && profileSheetOpenerEl && document.contains(profileSheetOpenerEl)) {
+            profileSheetOpenerEl.focus();
+          }
+        }
+        profileSheetOpenerEl = null;
       }
       return;
     }
 
-    state.isProfileSheetOpen = Boolean(open);
+    const wasSheetOpen = state.isProfileSheetOpen;
+    clearDesktopProfileViewState();
+    state.isProfileSheetOpen = willOpen;
+    if (!willOpen && (state.profileSaveErrorHe || state.profileSaveErrorEn)) {
+      state.profileSaveErrorHe = null;
+      state.profileSaveErrorEn = null;
+      renderProfileSaveError();
+    }
     if (profZone) {
       profZone.classList.toggle('is-sheet-open', state.isProfileSheetOpen);
     }
@@ -626,8 +825,8 @@
       }
     }
     document.body.classList.toggle('is-sheet-locked', state.isProfileSheetOpen);
-    if (btnHeaderHh) {
-      btnHeaderHh.setAttribute('aria-expanded', state.isProfileSheetOpen ? 'true' : 'false');
+    if (btnEditTravelers) {
+      btnEditTravelers.setAttribute('aria-expanded', state.isProfileSheetOpen ? 'true' : 'false');
     }
     if (dockProfBtn) {
       if (state.isProfileSheetOpen) {
@@ -650,14 +849,32 @@
         }
       }
     }
-    if (state.isProfileSheetOpen && options.focusMatmid) {
-      const matmidEl = document.getElementById('prof-matmid-points');
-      if (matmidEl) {
-        setTimeout(() => {
-          matmidEl.focus();
-          if (typeof matmidEl.select === 'function') matmidEl.select();
-        }, 90);
+    if (state.isProfileSheetOpen) {
+      if (!wasSheetOpen) {
+        const activeEl = document.activeElement;
+        profileSheetOpenerEl =
+          options.opener || (activeEl && activeEl !== document.body ? activeEl : btnEditTravelers);
       }
+      if (options.focusMatmid) {
+        const matmidEl = document.getElementById('prof-matmid-points');
+        if (matmidEl) {
+          setTimeout(() => {
+            if (!state.isProfileSheetOpen) return;
+            matmidEl.focus();
+            if (typeof matmidEl.select === 'function') matmidEl.select();
+          }, 90);
+        }
+      }
+    } else if (wasSheetOpen) {
+      if (options.restoreFocus !== false) {
+        const activeEl = document.activeElement;
+        const focusWasInside =
+          !activeEl || activeEl === document.body || Boolean(profZone && profZone.contains(activeEl));
+        if (focusWasInside && profileSheetOpenerEl && document.contains(profileSheetOpenerEl)) {
+          profileSheetOpenerEl.focus();
+        }
+      }
+      profileSheetOpenerEl = null;
     }
   }
 
@@ -956,21 +1173,11 @@
         if (window.innerWidth >= 1024) {
           document.body.classList.remove('is-keyboard-open');
         }
-        if (
-          window.innerWidth >= 1180 &&
-          (state.isProfileSheetOpen || document.body.classList.contains('is-sheet-locked'))
-        ) {
-          setProfileSheetOpen(false);
-        }
+        closeProfileSheetOnBreakpointCross();
       });
       if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
-          if (
-            window.innerWidth >= 1180 &&
-            (state.isProfileSheetOpen || document.body.classList.contains('is-sheet-locked'))
-          ) {
-            setProfileSheetOpen(false);
-          }
+          closeProfileSheetOnBreakpointCross();
           if (window.innerWidth >= 1024) {
             document.body.classList.remove('is-keyboard-open');
             return;
@@ -1254,13 +1461,6 @@
       matmidOverride !== undefined
         ? matmidOverride
         : Math.max(0, Math.round(Number((state.profile && state.profile.matmid_points_balance) || 0)));
-    const fmtCompact = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-
-    const compactChip = document.getElementById('header-household-compact');
-    if (compactChip) {
-      compactChip.setAttribute('dir', 'ltr');
-      compactChip.textContent = `${adults}+${kids} · ${fmtCompact(matmidTotal)}`;
-    }
 
     const summaryText = document.getElementById('household-summary-text');
     if (summaryText) {
@@ -1293,13 +1493,6 @@
       matmidTotal = Math.max(0, Math.round(Number(matmidInput.value || 0)));
     }
 
-    const ptsPill = document.getElementById('header-points-pill');
-    if (ptsPill) {
-      const fmtCompact = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-      ptsPill.setAttribute('dir', 'ltr');
-      ptsPill.setAttribute('title', `${matmidTotal.toLocaleString()} El Al Matmid Points`);
-      ptsPill.textContent = `${fmtCompact(matmidTotal)} Matmid`;
-    }
     syncHouseholdDisplaySummary(matmidTotal);
     return matmidTotal;
   }
@@ -1346,17 +1539,37 @@
   function renderAuthControls() {
     const isHe = state.locale === 'he';
     const isAuthed = Boolean(state.auth && state.auth.authenticated && state.auth.user);
+    const userEmail = isAuthed && state.auth.user ? String(state.auth.user.email || '') : '';
 
     const btnHeaderAuth = document.getElementById('btn-header-auth');
+    const btnHeaderAccount = document.getElementById('btn-header-account');
     const btnHeaderSignout = document.getElementById('btn-header-signout');
     if (btnHeaderAuth) {
       if (isAuthed) {
         btnHeaderAuth.setAttribute('hidden', '');
         btnHeaderAuth.style.display = 'none';
+        btnHeaderAuth.setAttribute('aria-expanded', 'false');
       } else {
         btnHeaderAuth.removeAttribute('hidden');
         btnHeaderAuth.style.display = 'inline-flex';
-        btnHeaderAuth.textContent = isHe ? 'כניסה' : 'Sign in';
+        btnHeaderAuth.setAttribute('aria-expanded', state.isAuthPopoverOpen ? 'true' : 'false');
+        const authLbl = document.getElementById('header-auth-label');
+        if (authLbl) authLbl.textContent = isHe ? 'כניסה' : 'Sign in';
+      }
+    }
+    if (btnHeaderAccount) {
+      if (isAuthed) {
+        btnHeaderAccount.removeAttribute('hidden');
+        btnHeaderAccount.style.display = 'inline-flex';
+        btnHeaderAccount.setAttribute('aria-expanded', state.isAuthPopoverOpen ? 'true' : 'false');
+        const accEmailEl = document.getElementById('header-account-email');
+        if (accEmailEl) accEmailEl.textContent = userEmail;
+        const accShortEl = document.getElementById('header-account-short');
+        if (accShortEl) accShortEl.textContent = isHe ? 'חשבון' : 'Account';
+      } else {
+        btnHeaderAccount.setAttribute('hidden', '');
+        btnHeaderAccount.style.display = 'none';
+        btnHeaderAccount.setAttribute('aria-expanded', 'false');
       }
     }
     if (btnHeaderSignout) {
@@ -1398,7 +1611,7 @@
 
     const emailEl = document.getElementById('auth-user-email');
     if (emailEl) {
-      emailEl.textContent = isAuthed && state.auth.user ? String(state.auth.user.email || '') : '';
+      emailEl.textContent = userEmail;
     }
 
     const notifCheckbox = document.getElementById('input-notifications-opt-in');
@@ -1431,9 +1644,10 @@
       }
     }
 
-    const feedbackEl = document.getElementById('auth-save-feedback');
-    if (feedbackEl) {
-      const fbMsg = isHe ? state.saveFeedbackHe : state.saveFeedbackEn;
+    const fbMsg = isHe ? state.saveFeedbackHe : state.saveFeedbackEn;
+    ['auth-save-feedback', 'profile-save-feedback'].forEach((fbId) => {
+      const feedbackEl = document.getElementById(fbId);
+      if (!feedbackEl) return;
       if (isAuthed && fbMsg) {
         feedbackEl.textContent = fbMsg;
         feedbackEl.removeAttribute('hidden');
@@ -1443,7 +1657,7 @@
         feedbackEl.setAttribute('hidden', '');
         feedbackEl.style.display = 'none';
       }
-    }
+    });
 
     const btnSaveProfile = document.getElementById('btn-save-profile');
     if (btnSaveProfile) {
@@ -1460,6 +1674,8 @@
         btnSaveProfile.style.display = 'none';
       }
     }
+
+    renderProfileSaveError();
   }
 
   function renderProfileControls() {
@@ -1473,17 +1689,6 @@
     const matmidInput = document.getElementById('prof-matmid-points');
     if (adultsInput) adultsInput.value = state.profile.adults_count;
     if (matmidInput) matmidInput.value = state.profile.matmid_points_balance;
-
-    const famPill = document.getElementById('header-family-pill');
-    if (famPill) {
-      // Words render in the body face; only the numerals keep the telemetry face (`.num`)
-      const adultsNum = `<span class="num">${escapeHtml(state.profile.adults_count)}</span>`;
-      const childrenNum = `<span class="num">${escapeHtml(state.profile.children.length)}</span>`;
-      famPill.setAttribute('dir', 'auto');
-      famPill.innerHTML = isHe
-        ? `${adultsNum} מבוגרים + ${childrenNum} ילדים`
-        : `${adultsNum} Adults + ${childrenNum} Children`;
-    }
     syncHouseholdDisplaySummary();
 
     const childrenContainer = document.getElementById('children-list-container');
@@ -2792,7 +2997,7 @@
       state.authNoticeEn =
         'Gmail OAuth 2.0 is not configured on this server yet (set GOOGLE_OAUTH_CLIENT_ID in auth.env). You can continue searching as a guest.';
       renderAuthControls();
-      setProfileSheetOpen(true);
+      setAuthPopoverOpen(true);
       return;
     }
 
@@ -3299,7 +3504,8 @@
     const btnRunSearch = document.getElementById('btn-run-search');
     if (btnRunSearch) {
       btnRunSearch.addEventListener('click', async () => {
-        setProfileSheetOpen(false);
+        setAuthPopoverOpen(false, { restoreFocus: false });
+        setProfileSheetOpen(false, { restoreFocus: false });
         await runVacationSearch();
         if (typeof window !== 'undefined' && window.innerWidth < 1180) {
           state.lastActiveMobileZone = 'zone-results';
@@ -3359,17 +3565,10 @@
       profAdultsInput.addEventListener('change', onAdultsChange);
     }
 
-    const btnHeaderHh = document.getElementById('btn-header-household');
-    if (btnHeaderHh) {
-      btnHeaderHh.addEventListener('click', () => {
-        setProfileSheetOpen(!state.isProfileSheetOpen, { focusMatmid: false });
-      });
-    }
-
     const btnOpenProfileSheet = document.getElementById('btn-open-profile-sheet');
     if (btnOpenProfileSheet) {
       btnOpenProfileSheet.addEventListener('click', () => {
-        setProfileSheetOpen(true, { focusMatmid: false });
+        setProfileSheetOpen(true, { focusMatmid: false, opener: btnOpenProfileSheet });
       });
     }
 
@@ -3443,6 +3642,9 @@
         if (state.isDestPickerOpen) {
           setDestPickerOpen(false);
         }
+        if (state.isAuthPopoverOpen) {
+          setAuthPopoverOpen(false);
+        }
         if (state.isProfileSheetOpen) {
           setProfileSheetOpen(false);
         }
@@ -3461,7 +3663,14 @@
     const btnHeaderAuth = document.getElementById('btn-header-auth');
     if (btnHeaderAuth) {
       btnHeaderAuth.addEventListener('click', () => {
-        startGoogleSignIn();
+        setAuthPopoverOpen(!state.isAuthPopoverOpen, { opener: btnHeaderAuth });
+      });
+    }
+
+    const btnHeaderAccount = document.getElementById('btn-header-account');
+    if (btnHeaderAccount) {
+      btnHeaderAccount.addEventListener('click', () => {
+        setAuthPopoverOpen(!state.isAuthPopoverOpen, { opener: btnHeaderAccount });
       });
     }
 
@@ -3475,6 +3684,7 @@
     const btnHeaderSignout = document.getElementById('btn-header-signout');
     if (btnHeaderSignout) {
       btnHeaderSignout.addEventListener('click', () => {
+        setAuthPopoverOpen(false, { restoreFocus: false });
         handleSignOut();
       });
     }
@@ -3552,6 +3762,9 @@
         syncProfileStateFromDom();
         state.validationErrorHe = null;
         state.validationErrorEn = null;
+        state.profileSaveErrorHe = null;
+        state.profileSaveErrorEn = null;
+        renderProfileSaveError();
         try {
           const saveBody = {
             ...state.profile,
@@ -3579,6 +3792,13 @@
           state.showAllProposals = false;
           state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
           state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
+          if (state.isProfileSheetOpen) {
+            state.profileSaveErrorHe = state.validationErrorHe;
+            state.profileSaveErrorEn = state.validationErrorEn;
+            state.saveFeedbackHe = null;
+            state.saveFeedbackEn = null;
+            renderAuthControls();
+          }
           renderProposals();
         }
       });
@@ -3678,9 +3898,12 @@
       if (state.isDestPickerOpen && !target.closest('#destination-multiselect')) {
         setDestPickerOpen(false);
       }
+      if (state.isAuthPopoverOpen && !target.closest('#header-auth-wrap')) {
+        setAuthPopoverOpen(false, { restoreFocus: false });
+      }
       const focusMatmidBtn = target.closest('[data-focus-matmid]');
       if (focusMatmidBtn) {
-        setProfileSheetOpen(true, { focusMatmid: true });
+        setProfileSheetOpen(true, { focusMatmid: true, opener: focusMatmidBtn });
         return;
       }
       const toggleFeedBtn = target.closest('[data-toggle-all-proposals]');

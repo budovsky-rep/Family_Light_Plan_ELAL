@@ -55,14 +55,69 @@
       <button type="button" class="desktop-nav-btn" id="btn-toggle-calendar" data-desktop-zone="zone-calendar">📅 לוח חופשות</button>
     </nav>
     <div class="header-summary-pills">
-      <button type="button" class="btn-header-household" id="btn-header-household" aria-haspopup="dialog" aria-expanded="false">
-        <span class="hh-compact-chip" id="header-household-compact" dir="ltr">2+0 · 0</span>
-        <span class="pill pill-family" id="header-family-pill" dir="auto"><span class="num">2</span> מבוגרים + <span class="num">0</span> ילדים</span>
-        <span class="pill pill-points" id="header-points-pill" dir="ltr">0 Matmid</span>
-        <span class="hh-caret" aria-hidden="true">▾</span>
-      </button>
-      <button type="button" class="btn-header-auth" id="btn-header-auth" data-he="כניסה" data-en="Sign in">כניסה</button>
-      <button type="button" class="btn-header-auth btn-header-signout" id="btn-header-signout" hidden style="display: none;" data-he="התנתקות" data-en="Sign out">התנתקות</button>
+      <div class="header-auth-wrap" id="header-auth-wrap">
+        <button type="button" class="btn-header-auth" id="btn-header-auth" aria-expanded="false" aria-controls="header-auth-popover">
+          <svg class="google-mark-svg header-auth-mark" viewBox="0 0 18 18" width="14" height="14" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z" />
+            <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z" />
+            <path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.69 9c0-.6.1-1.18.28-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.05l3.01-2.33Z" />
+            <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z" />
+          </svg>
+          <span id="header-auth-label" data-he="כניסה" data-en="Sign in">כניסה</span>
+          <span class="hh-caret" aria-hidden="true">▾</span>
+        </button>
+        <button type="button" class="btn-header-auth btn-header-account" id="btn-header-account" hidden style="display: none;" aria-expanded="false" aria-controls="header-auth-popover">
+          <span class="header-account-dot" aria-hidden="true"></span>
+          <span class="header-account-email" id="header-account-email" dir="ltr"></span>
+          <span class="header-account-short" id="header-account-short" data-he="חשבון" data-en="Account">חשבון</span>
+          <span class="hh-caret" aria-hidden="true">▾</span>
+        </button>
+        <button type="button" class="btn-header-auth btn-header-signout" id="btn-header-signout" hidden style="display: none;" data-he="התנתקות" data-en="Sign out">התנתקות</button>
+
+        <div class="header-auth-popover" id="header-auth-popover" hidden style="display: none;">
+          <div class="profile-auth-card" id="profile-auth-card">
+            <div id="auth-guest-panel" class="auth-panel-inner">
+              <button type="button" class="btn-google-signin" id="btn-google-signin">
+                <svg class="google-mark-svg" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">
+                  <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z" />
+                  <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z" />
+                  <path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.69 9c0-.6.1-1.18.28-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.05l3.01-2.33Z" />
+                  <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z" />
+                </svg>
+                <span id="btn-google-signin-label" data-he="התחברות עם Gmail לשמירת פרופיל" data-en="Sign in with Gmail to Save Profile">התחברות עם Gmail לשמירת פרופיל</span>
+              </button>
+              <p id="auth-status-note" class="auth-status-note" hidden style="display: none;"></p>
+              <p class="auth-affiliation-disclaimer" id="profile-signin-disclaimer" data-non-affiliation-disclaimer="profile-guest" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.</p>
+            </div>
+
+            <div id="auth-user-panel" class="auth-panel-inner" hidden style="display: none;">
+              <div class="auth-user-top-row">
+                <div class="auth-user-identity">
+                  <span class="auth-verified-badge" id="auth-verified-badge" data-he="🔒 חשבון:" data-en="🔒 Account:">🔒 חשבון:</span>
+                  <span id="auth-user-email" class="auth-user-email" dir="ltr"></span>
+                </div>
+                <div class="auth-user-actions">
+                  <button type="button" class="btn-secondary btn-compact-action" id="btn-signout" data-he="התנתקות" data-en="Sign out">התנתקות</button>
+                  <button type="button" class="btn-secondary btn-remove-inline" id="btn-delete-profile" data-he="מחיקת נתונים" data-en="Delete Data">מחיקת נתונים</button>
+                </div>
+              </div>
+              <div id="auth-delete-confirm-bar" class="auth-delete-confirm-bar" hidden style="display: none;">
+                <span id="auth-delete-confirm-text" data-he="למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?" data-en="Permanently delete your saved family data?">למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?</span>
+                <div class="auth-delete-confirm-btns">
+                  <button type="button" class="btn-danger-confirm" id="btn-confirm-delete-profile" data-he="כן, מחק" data-en="Yes, delete">כן, מחק</button>
+                  <button type="button" class="btn-secondary btn-compact-action" id="btn-cancel-delete-profile" data-he="ביטול" data-en="Cancel">ביטול</button>
+                </div>
+              </div>
+              <label class="auth-notif-toggle-label" for="input-notifications-opt-in">
+                <input type="checkbox" id="input-notifications-opt-in" />
+                <span id="auth-notif-label-short" data-he="🔔 התראות במייל על מושבי בונוס (בקרוב)" data-en="🔔 Email alerts for award seats (coming soon)">🔔 התראות במייל על מושבי בונוס (בקרוב)</span>
+              </label>
+              <p id="auth-save-feedback" class="auth-save-feedback" hidden style="display: none;"></p>
+              <p class="auth-affiliation-disclaimer" id="profile-user-disclaimer" data-non-affiliation-disclaimer="profile-user" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.</p>
+            </div>
+          </div>
+        </div>
+      </div>
       <button type="button" class="btn-locale-toggle" id="btn-toggle-locale" aria-label="החלף שפה וכיוון טקסט" data-aria-he="החלף שפה וכיוון טקסט" data-aria-en="Toggle language and text direction">
         EN
       </button>
@@ -270,8 +325,14 @@
       </div>
     </section>
 
-    <!-- Inline-Start Control Rail: Search & Mode Control Panel + Compact Family Profile -->
+    <!-- Inline-Start Control Rail: Closed Travelers Summary Above Search + Search Panel -->
     <div class="sidebar-column">
+
+      <!-- Closed Travelers & Matmid Summary Bar Above Search (Mobile & Desktop) -->
+      <div class="household-summary-bar" id="household-summary-bar">
+        <div class="household-summary-text" id="household-summary-text">👨‍👩‍👧‍👦 <span class="num">2</span> מבוגרים · <span class="num">0</span> ילדים · 💳 <span class="num">0</span> מתמיד</div>
+        <button type="button" class="btn-secondary btn-compact-action" id="btn-open-profile-sheet" aria-haspopup="dialog" aria-expanded="false" aria-controls="zone-profile" aria-label="עריכת הרכב הנוסעים" data-aria-he="עריכת הרכב הנוסעים" data-aria-en="Edit travelers" data-he="עריכה" data-en="Edit">עריכה</button>
+      </div>
 
       <!-- Zone 2: Search & Mode Control Panel -->
       <section class="zone-card" id="zone-search" aria-labelledby="zone-search-title">
@@ -494,12 +555,6 @@
         </div>
       </section>
 
-      <!-- 48px Household & Matmid Summary Bar (<1180px Bottom-Sheet Trigger) -->
-      <div class="household-summary-bar" id="household-summary-bar">
-        <div class="household-summary-text" id="household-summary-text">👨‍👩‍👧‍👦 <span class="num">2</span> מבוגרים · <span class="num">0</span> ילדים · 💳 <span class="num">0</span> מתמיד</div>
-        <button type="button" class="btn-secondary btn-compact-action" id="btn-open-profile-sheet" data-he="עריכה ▾" data-en="Edit ▾">עריכה ▾</button>
-      </div>
-
       <!-- Zone 1: Family Profile, Children Ages & Optional Frameworks, Household Matmid Balance -->
       <section class="zone-card" id="zone-profile" aria-labelledby="zone-profile-title">
         <div class="zone-header">
@@ -512,50 +567,8 @@
           </div>
         </div>
 
-        <div class="profile-auth-card" id="profile-auth-card">
-          <div id="auth-guest-panel" class="auth-panel-inner">
-            <p class="auth-panel-copy" id="auth-guest-copy" data-he="חיפוש חופשי ללא הרשמה. התחברו עם Gmail כדי לשמור בפרטיות את הרכב המשפחה וגילאי הילדים ולהתכונן להתראות עתידיות." data-en="Search freely without signing in. Sign in with Gmail to privately save your family details &amp; children&#39;s ages and prepare for future alerts.">
-              חיפוש חופשי ללא הרשמה. התחברו עם Gmail כדי לשמור בפרטיות את הרכב המשפחה וגילאי הילדים ולהתכונן להתראות עתידיות.
-            </p>
-            <button type="button" class="btn-google-signin" id="btn-google-signin">
-              <svg class="google-mark-svg" viewBox="0 0 18 18" width="16" height="16" aria-hidden="true">
-                <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z" />
-                <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z" />
-                <path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.69 9c0-.6.1-1.18.28-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.05l3.01-2.33Z" />
-                <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z" />
-              </svg>
-              <span id="btn-google-signin-label" data-he="התחברות עם Gmail לשמירת פרופיל" data-en="Sign in with Gmail to Save Profile">התחברות עם Gmail לשמירת פרופיל</span>
-            </button>
-            <p id="auth-status-note" class="auth-status-note" hidden style="display: none;"></p>
-            <p class="auth-affiliation-disclaimer" id="profile-signin-disclaimer" data-non-affiliation-disclaimer="profile-guest" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.</p>
-          </div>
-
-          <div id="auth-user-panel" class="auth-panel-inner" hidden style="display: none;">
-            <div class="auth-user-top-row">
-              <div class="auth-user-identity">
-                <span class="auth-verified-badge" id="auth-verified-badge" data-he="🔒 חשבון פרטי:" data-en="🔒 Private account:">🔒 חשבון פרטי:</span>
-                <span id="auth-user-email" class="auth-user-email" dir="ltr"></span>
-              </div>
-              <div class="auth-user-actions">
-                <button type="button" class="btn-secondary btn-compact-action" id="btn-signout" data-he="התנתקות" data-en="Sign out">התנתקות</button>
-                <button type="button" class="btn-secondary btn-remove-inline" id="btn-delete-profile" data-he="מחיקת נתונים" data-en="Delete Data">מחיקת נתונים</button>
-              </div>
-            </div>
-            <div id="auth-delete-confirm-bar" class="auth-delete-confirm-bar" hidden style="display: none;">
-              <span id="auth-delete-confirm-text" data-he="למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?" data-en="Permanently delete your saved family data?">למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?</span>
-              <div class="auth-delete-confirm-btns">
-                <button type="button" class="btn-danger-confirm" id="btn-confirm-delete-profile" data-he="כן, מחק" data-en="Yes, delete">כן, מחק</button>
-                <button type="button" class="btn-secondary btn-compact-action" id="btn-cancel-delete-profile" data-he="ביטול" data-en="Cancel">ביטול</button>
-              </div>
-            </div>
-            <label class="auth-notif-toggle-label" for="input-notifications-opt-in">
-              <input type="checkbox" id="input-notifications-opt-in" />
-              <span id="auth-notif-label-text" data-he="🔔 הכן את החשבון להתראות עתידיות במייל על מושבי בונוס (בקרוב)" data-en="🔔 Prepare account for future email alerts on award seats (coming soon)">🔔 הכן את החשבון להתראות עתידיות במייל על מושבי בונוס (בקרוב)</span>
-            </label>
-            <p id="auth-save-feedback" class="auth-save-feedback" hidden style="display: none;"></p>
-            <p class="auth-affiliation-disclaimer" id="profile-user-disclaimer" data-non-affiliation-disclaimer="profile-user" data-he="הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית." data-en="Disclaimer: breezyflights is an independent vacation planning application and is not affiliated with, endorsed by, or operated by EL AL Israel Airlines.">הבהרה: אתר breezyflights הוא אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על, אינה מופעלת על ידה ואינה קשורה אליה רשמית.</p>
-          </div>
-        </div>
+        <p class="profile-save-error" id="profile-save-error" role="alert" hidden></p>
+        <p class="auth-save-feedback profile-save-feedback" id="profile-save-feedback" hidden style="display: none;"></p>
 
         <div class="form-grid form-grid-2 compact-num-duo">
           <div class="form-field">

@@ -276,49 +276,24 @@ h3,
 }
 
 .header-summary-pills {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.btn-header-household {
-  min-height: var(--control-h);
+.header-auth-wrap {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding-block: 4px;
-  padding-inline: 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.12);
-  color: #FFFFFF;
-  font-family: var(--font-body);
-  font-size: var(--fs-tag);
-  font-weight: 700;
-  white-space: nowrap;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background-color 0.16s ease, border-color 0.16s ease;
-}
-
-.btn-header-household:hover {
-  background: rgba(255, 255, 255, 0.22);
-  border-color: #93C5FD;
-}
-
-.hh-compact-chip {
-  font-family: var(--font-mono);
-  font-size: var(--fs-tag);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .hh-caret {
   font-size: var(--fs-tag);
   line-height: 1;
   opacity: 0.88;
+  transition: transform 0.16s ease;
 }
 
 .pill {
@@ -2244,14 +2219,15 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   color: #78350F;
 }
 
-/* Gmail Sign-In, Private Account Strip & Clean Guest State Controls */
+/* Gmail Sign-In, Private Account Popover & Clean Header Controls */
 .btn-header-auth {
   min-height: var(--control-h);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   padding-block: 4px;
-  padding-inline: 8px;
+  padding-inline: 9px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   background: rgba(255, 255, 255, 0.14);
@@ -2264,9 +2240,42 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   transition: background-color 0.16s ease, border-color 0.16s ease;
 }
 
-.btn-header-auth:hover {
+.btn-header-auth:hover,
+.btn-header-auth[aria-expanded="true"] {
   background: rgba(255, 255, 255, 0.24);
   border-color: #93C5FD;
+}
+
+.btn-header-auth[aria-expanded="true"] .hh-caret {
+  transform: rotate(180deg);
+}
+
+.header-auth-mark {
+  background: #FFFFFF;
+  border-radius: 999px;
+  padding: 1.5px;
+  flex-shrink: 0;
+}
+
+.btn-header-account {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.header-account-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #34D399;
+  flex-shrink: 0;
+}
+
+.header-account-email {
+  display: none;
+  unicode-bidi: isolate;
+}
+
+.header-account-short {
+  display: inline;
 }
 
 .btn-header-signout {
@@ -2274,14 +2283,26 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   border-color: var(--pine-border);
 }
 
+.header-auth-popover {
+  position: absolute;
+  inset-block-start: calc(100% + 8px);
+  inset-inline-end: 0;
+  z-index: 65;
+  width: min(352px, calc(100vw - 20px));
+  color: var(--ink-flightdeck);
+  background: var(--surface-boarding);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 28px rgba(11, 31, 58, 0.22);
+}
+
 .profile-auth-card {
   background: var(--azure-tint);
   border: 1px solid var(--azure-border);
-  border-inline-start: 3px solid var(--azure-elal);
+  border-inline-start: 4px solid var(--azure-elal);
   border-radius: var(--radius-md);
-  padding-block: 9px;
-  padding-inline: 11px;
-  margin-block-end: 8px;
+  padding-block: 10px;
+  padding-inline: 12px;
+  margin-block-end: 0;
 }
 
 .profile-auth-card-signed-in {
@@ -2544,6 +2565,31 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
 
 body.is-keyboard-open .profile-sheet-footer {
   position: static;
+}
+
+/* Save-status messages inside the travelers editor */
+.profile-save-error:not([hidden]) {
+  display: block;
+}
+
+.profile-save-error {
+  display: none;
+  margin-block-start: 0;
+  margin-block-end: 8px;
+  padding-block: 7px;
+  padding-inline: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-tint);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-ink);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: start;
+}
+
+.profile-save-feedback {
+  margin-block-end: 8px;
 }
 
 /* Site Footer & Independent Non-Affiliation Disclaimer (Neutral Body/Surface Palette) */
@@ -3414,22 +3460,12 @@ body.is-keyboard-open .profile-sheet-footer {
     padding-inline: 15px;
   }
 
-  .hh-compact-chip {
+  .header-account-short {
     display: none;
   }
 
-  .btn-header-household .pill-family {
-    display: inline-block;
-    border: none;
-    background: transparent;
-    padding-block: 0;
-    padding-inline: 2px;
-  }
-
-  .btn-header-household .pill-points {
-    display: inline-block;
-    padding-block: 2px;
-    padding-inline: 7px;
+  .header-account-email {
+    display: inline;
   }
 
   .hero-lead {
@@ -3687,26 +3723,33 @@ body.is-keyboard-open .profile-sheet-footer {
     display: block;
   }
 
-  body.is-sheet-locked {
-    overflow: visible;
-  }
-
-  .household-summary-bar,
-  .profile-sheet-backdrop,
-  .profile-sheet-close-btn,
-  .profile-sheet-footer {
-    display: none !important;
-  }
-
   #zone-profile,
   #zone-profile.is-sheet-open {
-    display: block;
-    position: static;
-    max-height: none;
-    overflow: visible;
     border-radius: var(--radius-lg);
-    padding-block: 12px;
     box-shadow: var(--shadow-card);
+  }
+
+  /* Passenger window: "edit" opens the profile panel as a centred modal dialog, wider than the control rail */
+  #zone-profile[data-sheet-view="travelers"] {
+    inset-block-start: 84px;
+    inset-block-end: auto;
+    margin-inline: auto;
+    width: clamp(720px, 54vw, 880px);
+    max-height: calc(100dvh - 112px);
+    padding-block-start: 14px;
+    padding-inline: 18px;
+    box-shadow: 0 12px 32px rgba(11, 31, 58, 0.24);
+  }
+
+  #zone-profile[data-sheet-view="travelers"] .profile-sheet-footer {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  #zone-profile[data-sheet-view="travelers"] .profile-sheet-footer .btn-primary {
+    width: auto;
+    flex: 0 1 auto;
+    min-width: 300px;
   }
 
   .desktop-nav-btn {
@@ -3812,10 +3855,6 @@ body.is-keyboard-open .profile-sheet-footer {
 @media (min-width: 1280px) {
   .app-header {
     padding-inline: 32px;
-  }
-
-  .pill-family {
-    display: inline-block;
   }
 
   .dashboard-shell {
