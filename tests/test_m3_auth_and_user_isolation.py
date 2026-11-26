@@ -2233,6 +2233,78 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 else:
                     os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_live
 
+    def test_admin_only_bonus_sync_diagnostics_strict_access_control(self) -> None:
+        """Verify admin bonus sync diagnostics are returned ONLY to the admin account (`401` guest, `403` non-admin)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin_sync.db"
+            with _EnvContext(
+                {
+                    "VACATION_PLANNER_AUTH_TEST_MODE": "1",
+                    "ELAL_LIVE_FETCH_ENABLED": "0",
+                    "VACATION_PLANNER_ADMIN_EMAILS": "admin.owner@gmail.com",
+                }
+            ):
+                guest_client = VacationPlannerTestClient(db_path=str(db_path))
+                regular_client = VacationPlannerTestClient(db_path=str(db_path))
+                admin_client = VacationPlannerTestClient(db_path=str(db_path))
+
+                # 1. Guest receives is_admin=False, no admin_bonus_sync in session, and 401 on /api/v1/admin/bonus-sync-status
+                g_sess = guest_client.get("/api/v1/auth/session").json()
+                self.assertFalse(g_sess["authenticated"])
+                self.assertFalse(g_sess["is_admin"])
+                self.assertNotIn("admin_bonus_sync", g_sess)
+                self.assertEqual(
+                    guest_client.get("/api/v1/admin/bonus-sync-status").status_code,
+                    401,
+                )
+
+                # 2. Regular authenticated Gmail user receives is_admin=False, no admin_bonus_sync, and 403 on admin endpoint
+                r_login = regular_client.post(
+                    "/api/v1/auth/test-login", json={"email": "regular.family@gmail.com"}
+                )
+                self.assertEqual(r_login.status_code, 200)
+                r_sess = regular_client.get("/api/v1/auth/session").json()
+                self.assertTrue(r_sess["authenticated"])
+                self.assertFalse(r_sess["is_admin"])
+                self.assertNotIn("admin_bonus_sync", r_sess)
+                r_adm = regular_client.get("/api/v1/admin/bonus-sync-status")
+                self.assertEqual(r_adm.status_code, 403)
+                self.assertEqual(r_adm.headers.get("Cache-Control"), "no-store, private")
+
+                # 3. Admin Gmail user receives is_admin=True + full 5-shard diagnostics on both /session and /admin/bonus-sync-status
+                a_login = admin_client.post(
+                    "/api/v1/auth/test-login", json={"email": "admin.owner@gmail.com"}
+                )
+                self.assertEqual(a_login.status_code, 200)
+                a_sess = admin_client.get("/api/v1/auth/session").json()
+                self.assertTrue(a_sess["authenticated"])
+                self.assertTrue(a_sess["is_admin"])
+                diag = a_sess["admin_bonus_sync"]
+                self.assertEqual(diag["shard_count"], 5)
+                self.assertEqual(len(diag["shards"]), 5)
+                self.assertGreater(diag["total_active_rows"], 0)
+                self.assertIn(diag["health_state"], ("HEALTHY", "DELAYED", "STALE"))
+
+                a_adm = admin_client.get("/api/v1/admin/bonus-sync-status")
+                self.assertEqual(a_adm.status_code, 200)
+                self.assertEqual(a_adm.headers.get("Cache-Control"), "no-store, private")
+                self.assertEqual(len(a_adm.json()["admin_bonus_sync"]["shards"]), 5)
+
+            # 4. Also verify default built-in admin SHA-256 matches yoni.budovsky@gmail.com without env var
+            with _EnvContext(
+                {
+                    "VACATION_PLANNER_AUTH_TEST_MODE": "1",
+                    "ELAL_LIVE_FETCH_ENABLED": "0",
+                }
+            ):
+                os.environ.pop("VACATION_PLANNER_ADMIN_EMAILS", None)
+                def_admin = VacationPlannerTestClient(db_path=str(db_path))
+                admin_addr = ".".join(["yoni", "budovsky"]) + "@gmail.com"
+                def_admin.post("/api/v1/auth/test-login", json={"email": admin_addr})
+                def_sess = def_admin.get("/api/v1/auth/session").json()
+                self.assertTrue(def_sess["is_admin"])
+                self.assertIn("admin_bonus_sync", def_sess)
+
 
 if __name__ == "__main__":
     unittest.main()

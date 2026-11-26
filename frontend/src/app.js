@@ -626,11 +626,15 @@
     showAllProposals: false,
     auth: {
       authenticated: false,
+      isAdmin: false,
       oauthConfigured: false,
       testMode: false,
       csrfToken: null,
       user: null
     },
+    adminBonusSync: null,
+    isAdminSyncExpanded: false,
+    isAdminSyncRefreshing: false,
     notificationsOptIn: false,
     authNoticeHe: null,
     authNoticeEn: null,
@@ -1792,6 +1796,225 @@
     });
   }
 
+  function formatAdminIsraelDateTime(isoUtcStr, shortMode) {
+    if (!isoUtcStr) return '';
+    try {
+      const dt = new Date(isoUtcStr);
+      if (Number.isNaN(dt.getTime())) return String(isoUtcStr);
+      const parts = {};
+      new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Jerusalem',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      })
+        .formatToParts(dt)
+        .forEach((p) => {
+          parts[p.type] = p.value;
+        });
+      const hh = parts.hour === '24' ? '00' : parts.hour;
+      if (shortMode) {
+        return `${parts.day}/${parts.month} · ${hh}:${parts.minute}`;
+      }
+      return `${parts.day}/${parts.month}/${parts.year} · ${hh}:${parts.minute}`;
+    } catch (_err) {
+      return String(isoUtcStr).slice(0, 16).replace('T', ' ');
+    }
+  }
+
+  function formatAdminSyncAge(ageHours, isHe) {
+    if (ageHours === null || ageHours === undefined || !Number.isFinite(Number(ageHours))) {
+      return isHe ? 'ללא נתונים' : 'no data';
+    }
+    const h = Math.max(0, Number(ageHours));
+    if (h < 1) {
+      return isHe ? 'לפני פחות משעה' : '<1h ago';
+    }
+    if (h < 48) {
+      const roundedH = Math.round(h * 10) / 10;
+      return isHe ? `לפני ${roundedH} שעות` : `${roundedH}h ago`;
+    }
+    const days = Math.round((h / 24) * 10) / 10;
+    return isHe ? `לפני ${days} ימים` : `${days}d ago`;
+  }
+
+  function formatShardShortDate(isoDate) {
+    const s = String(isoDate || '');
+    if (s.length >= 10) {
+      return `${s.slice(8, 10)}/${s.slice(5, 7)}`;
+    }
+    return s;
+  }
+
+  async function refreshAdminBonusSync() {
+    if (!state.auth || !state.auth.authenticated || !state.auth.isAdmin) return;
+    state.isAdminSyncRefreshing = true;
+    renderAdminBonusSync();
+    try {
+      const res = await apiGet('/api/v1/admin/bonus-sync-status');
+      if (res && res.admin_bonus_sync) {
+        state.adminBonusSync = res.admin_bonus_sync;
+      }
+    } catch (err) {
+      if (err && (err.status === 401 || err.status === 403)) {
+        state.auth.isAdmin = false;
+        state.adminBonusSync = null;
+      }
+    } finally {
+      state.isAdminSyncRefreshing = false;
+      renderAdminBonusSync();
+    }
+  }
+
+  function renderAdminBonusSync() {
+    const slot = document.getElementById('admin-bonus-sync-slot');
+    const mini = document.getElementById('auth-admin-sync-mini');
+    const isHe = state.locale === 'he';
+    const isAdmin = Boolean(
+      state.auth && state.auth.authenticated && state.auth.isAdmin && state.adminBonusSync
+    );
+
+    if (!isAdmin) {
+      if (slot) {
+        slot.innerHTML = '';
+        slot.setAttribute('hidden', '');
+        slot.style.display = 'none';
+      }
+      if (mini) {
+        mini.innerHTML = '';
+        mini.setAttribute('hidden', '');
+        mini.style.display = 'none';
+      }
+      return;
+    }
+
+    const sync = state.adminBonusSync;
+    const healthState = String(sync.health_state || 'EMPTY');
+    const healthLabel =
+      healthState === 'HEALTHY'
+        ? (isHe ? 'סנכרון תקין' : 'Sync Healthy')
+        : healthState === 'DELAYED'
+          ? (isHe ? 'ממתין לריצה יומית' : 'Daily Sync Due')
+          : healthState === 'STALE'
+            ? (isHe ? 'נדרשת בדיקת סקריפט' : 'Script Check Needed')
+            : (isHe ? 'מאגר ריק' : 'Empty DB');
+
+    const lastDtTxt = sync.last_synced_at_utc
+      ? formatAdminIsraelDateTime(sync.last_synced_at_utc, false)
+      : (isHe ? 'טרם סונכרן' : 'Never synced');
+    const lastAgeTxt = formatAdminSyncAge(sync.last_sync_age_hours, isHe);
+    const totalRowsFmt = Number(sync.total_active_rows || 0).toLocaleString('en-US');
+    const destCnt = Number(sync.active_destinations_count || 0);
+    const freshShards = Number(sync.fresh_shards_count || 0);
+    const shardTotal = Number(sync.shard_count || 5);
+    const shards = Array.isArray(sync.shards) ? sync.shards : [];
+
+    const modeNote =
+      sync.sync_mode_detected === 'SHARDED_ROTATION'
+        ? (isHe
+            ? 'מחזור משיכה ב־5 חלקים פעיל — כל חלק מרענן חמישית מהשנה (70 ימים).'
+            : '5-shard rotation active — each daily run refreshes one-fifth of the year (70 days).')
+        : sync.sync_mode_detected === 'FULL_SWEEP_OR_SINGLE_BATCH'
+          ? (isHe
+              ? 'כל החלקים עודכנו באותו יום סנכרון (ריצה מלאה של כל השנה).'
+              : 'All 5 shards share the same sync date (full-year sweep).')
+          : (isHe
+              ? 'לא נמצאו טיסות בונוס חיות במסד הנתונים.'
+              : 'No active bonus flights found in database.');
+
+    if (mini) {
+      mini.innerHTML = `🛡️ <strong>${isHe ? 'סנכרון בונוס (אדמין):' : 'Bonus sync (Admin):'}</strong> <span dir="ltr">${escapeHtml(lastDtTxt)}</span> · ${escapeHtml(healthLabel)}`;
+      mini.removeAttribute('hidden');
+      mini.style.display = 'block';
+    }
+
+    if (!slot) return;
+
+    const pipsHtml = shards
+      .map(
+        (sh) =>
+          `<span class="admin-shard-pip" data-status="${escapeHtml(sh.status || 'STALE')}" title="${escapeHtml(`${isHe ? 'חלק' : 'Shard'} ${sh.shard_number}/${sh.shard_count}`)}"></span>`
+      )
+      .join('');
+
+    const shardsHtml = shards
+      .map((sh) => {
+        const st = String(sh.status || 'STALE');
+        const stTxt =
+          st === 'FRESH'
+            ? (isHe ? 'תקין' : 'Fresh')
+            : st === 'DUE'
+              ? (isHe ? 'לתורו' : 'Due')
+              : (isHe ? 'מיושן' : 'Stale');
+        const shSyncTxt = sh.last_synced_at_utc
+          ? formatAdminIsraelDateTime(sh.last_synced_at_utc, true)
+          : (isHe ? 'ללא סנכרון' : 'Unsynced');
+        const shRowsFmt = Number(sh.rows_count || 0).toLocaleString('en-US');
+        return `
+          <div class="admin-shard-card" data-admin-shard="${Number(sh.shard_number)}" data-status="${escapeHtml(st)}">
+            <div class="admin-shard-top">
+              <span class="admin-shard-title">${isHe ? 'חלק' : 'Shard'} <span dir="ltr">${Number(sh.shard_number)}/${Number(sh.shard_count)}</span></span>
+              <span class="admin-shard-badge">${escapeHtml(stTxt)}</span>
+            </div>
+            <div class="admin-shard-dates" dir="ltr">${escapeHtml(formatShardShortDate(sh.start_date))} – ${escapeHtml(formatShardShortDate(sh.end_date))}</div>
+            <div class="admin-shard-meta"><span class="admin-sync-mono" dir="ltr">${escapeHtml(shRowsFmt)}</span> ${isHe ? 'טיסות' : 'flights'} · <span dir="ltr">${escapeHtml(shSyncTxt)}</span></div>
+          </div>`;
+      })
+      .join('');
+
+    slot.innerHTML = `
+      <details class="admin-sync-telemetry" id="admin-bonus-sync-panel" data-health="${escapeHtml(healthState)}"${state.isAdminSyncExpanded ? ' open' : ''}>
+        <summary class="admin-sync-summary">
+          <div class="admin-sync-summary-main">
+            <span class="admin-sync-crest">🛡️ ${isHe ? 'אדמין' : 'Admin'}</span>
+            <span class="admin-sync-health-pill">● ${escapeHtml(healthLabel)}</span>
+            <span class="admin-sync-stat">
+              <strong>${isHe ? 'ריצה אחרונה:' : 'Last run:'}</strong>
+              <span class="admin-sync-mono" dir="ltr">${escapeHtml(lastDtTxt)}</span>
+              <span class="admin-sync-age">(${escapeHtml(lastAgeTxt)})</span>
+            </span>
+            <span class="admin-sync-stat">
+              <span class="admin-sync-mono" dir="ltr">${escapeHtml(totalRowsFmt)}</span> ${isHe ? 'טיסות' : 'flights'} ·
+              <span class="admin-sync-mono" dir="ltr">${destCnt}</span> ${isHe ? 'יעדים' : 'routes'} ·
+              <span class="admin-sync-mono" dir="ltr">${freshShards}/${shardTotal}</span> ${isHe ? 'חלקים' : 'shards'}
+            </span>
+          </div>
+          <div class="admin-sync-summary-end">
+            <span class="admin-shard-pip-bar" aria-hidden="true">${pipsHtml}</span>
+            <span class="admin-sync-chevron" aria-hidden="true">▾</span>
+          </div>
+        </summary>
+        <div class="admin-sync-drawer">
+          <div class="admin-sync-toolbar">
+            <span class="admin-sync-mode-note">${escapeHtml(modeNote)}</span>
+            <button type="button" class="btn-admin-sync-refresh" id="btn-refresh-admin-sync">${state.isAdminSyncRefreshing ? (isHe ? '⏳ מרענן...' : '⏳ Refreshing...') : (isHe ? '↻ בדיקת סנכרון חיה' : '↻ Live Sync Check')}</button>
+          </div>
+          <div class="admin-shards-grid">${shardsHtml}</div>
+        </div>
+      </details>
+    `;
+    slot.removeAttribute('hidden');
+    slot.style.display = 'block';
+
+    const detailsEl = document.getElementById('admin-bonus-sync-panel');
+    if (detailsEl) {
+      detailsEl.addEventListener('toggle', () => {
+        state.isAdminSyncExpanded = Boolean(detailsEl.open);
+      });
+    }
+    const refreshBtn = document.getElementById('btn-refresh-admin-sync');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        refreshAdminBonusSync();
+      });
+    }
+  }
+
   function renderAuthControls() {
     const isHe = state.locale === 'he';
     const isAuthed = Boolean(state.auth && state.auth.authenticated && state.auth.user);
@@ -1932,6 +2155,7 @@
     }
 
     renderProfileSaveError();
+    renderAdminBonusSync();
   }
 
   function renderProfileControls() {
@@ -3422,11 +3646,15 @@
     }
     state.auth = {
       authenticated: false,
+      isAdmin: false,
       oauthConfigured: Boolean(state.auth && state.auth.oauthConfigured),
       testMode: Boolean(state.auth && state.auth.testMode),
       csrfToken: null,
       user: null
     };
+    state.adminBonusSync = null;
+    state.isAdminSyncExpanded = false;
+    state.isAdminSyncRefreshing = false;
     state.notificationsOptIn = false;
     state.authNoticeHe = null;
     state.authNoticeEn = null;
@@ -3553,11 +3781,14 @@
       if (sess && sess.authenticated && sess.user) {
         state.auth = {
           authenticated: true,
+          isAdmin: Boolean(sess.is_admin),
           oauthConfigured: Boolean(sess.oauth_configured),
           testMode: Boolean(sess.test_mode),
           csrfToken: sess.csrf_token || null,
           user: sess.user
         };
+        state.adminBonusSync =
+          sess.is_admin && sess.admin_bonus_sync ? sess.admin_bonus_sync : null;
         state.notificationsOptIn = Boolean(sess.user.notifications_enabled);
 
         const loadedProfile = await apiGet('/api/v1/profile');

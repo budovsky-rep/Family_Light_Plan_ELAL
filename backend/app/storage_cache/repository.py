@@ -1922,3 +1922,158 @@ class SQLiteRepository:
             "user_id": row["user_id"],
             "is_legacy_quarantined": bool(int(row["is_legacy_quarantined"] or 0)),
         }
+
+    def get_bonus_sync_diagnostics(
+        self, now_dt: Optional[datetime] = None
+    ) -> dict[str, Any]:
+        """Compute admin-only El Al bonus flight sync freshness and 5-shard coverage diagnostics."""
+        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
+        now_iso = ref_now.isoformat().replace("+00:00", "Z")
+        anchor_d = ref_now.date()
+        anchor_iso = anchor_d.isoformat()
+
+        with self.connection() as conn:
+            live_rows = conn.execute(
+                """
+                SELECT origin_iata, destination_iata, direction, flight_date, fetched_at, expires_at
+                FROM elal_bonus_availability
+                WHERE source_url LIKE '%#live%'
+                  AND expires_at > ?
+                  AND flight_date >= ?
+                """,
+                (now_iso, anchor_iso),
+            ).fetchall()
+            if live_rows or self.is_live_fetch_mode():
+                active_rows = live_rows
+                inv_source = "LIVE" if live_rows else "EMPTY"
+            else:
+                active_rows = conn.execute(
+                    """
+                    SELECT origin_iata, destination_iata, direction, flight_date, fetched_at, expires_at
+                    FROM elal_bonus_availability
+                    WHERE expires_at > ?
+                      AND flight_date >= ?
+                    """,
+                    (now_iso, anchor_iso),
+                ).fetchall()
+                inv_source = "SEEDED" if active_rows else "EMPTY"
+
+        parsed_items: list[tuple[str, str, str, Optional[datetime]]] = []
+        dests_all: set[str] = set()
+        flight_dates: list[str] = []
+        fetched_pairs: list[tuple[datetime, str]] = []
+
+        for r in active_rows:
+            orig = str(r["origin_iata"] or "").strip().upper()
+            dest = str(r["destination_iata"] or "").strip().upper()
+            route_dest = orig if dest == "TLV" else dest
+            fdate = str(r["flight_date"] or "")[:10]
+            f_raw = str(r["fetched_at"] or "").strip()
+            f_dt = _parse_iso_utc(f_raw)
+            f_norm = (
+                f_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                if f_dt is not None
+                else f_raw
+            )
+            if route_dest and route_dest != "TLV":
+                dests_all.add(route_dest)
+            if fdate:
+                flight_dates.append(fdate)
+            if f_dt is not None:
+                fetched_pairs.append((f_dt, f_norm))
+            parsed_items.append((fdate, route_dest, f_norm, f_dt))
+
+        total_rows = len(parsed_items)
+        last_sync_utc: Optional[str] = None
+        oldest_sync_utc: Optional[str] = None
+        last_age_hours: Optional[float] = None
+        if fetched_pairs:
+            max_dt, max_iso = max(fetched_pairs, key=lambda x: x[0])
+            _, min_iso = min(fetched_pairs, key=lambda x: x[0])
+            last_sync_utc = max_iso
+            oldest_sync_utc = min_iso
+            last_age_hours = round(
+                max(0.0, (ref_now - max_dt).total_seconds() / 3600.0), 1
+            )
+
+        shard_count = 5
+        days_per_shard = 70
+        shards: list[dict[str, Any]] = []
+        fresh_shards_count = 0
+        shard_sync_days: set[str] = set()
+
+        for s_idx in range(shard_count):
+            s_start = anchor_d + timedelta(days=days_per_shard * s_idx)
+            s_end = anchor_d + timedelta(days=days_per_shard * (s_idx + 1) - 1)
+            s_start_iso = s_start.isoformat()
+            s_end_iso = s_end.isoformat()
+
+            s_rows = [
+                it for it in parsed_items if s_start_iso <= it[0] <= s_end_iso
+            ]
+            s_dests = {it[1] for it in s_rows if it[1] and it[1] != "TLV"}
+            s_fetched = [(it[3], it[2]) for it in s_rows if it[3] is not None]
+            s_latest_utc: Optional[str] = None
+            s_age_h: Optional[float] = None
+            if s_fetched:
+                s_max_dt, s_max_iso = max(s_fetched, key=lambda x: x[0])
+                s_latest_utc = s_max_iso
+                s_age_h = round(
+                    max(0.0, (ref_now - s_max_dt).total_seconds() / 3600.0), 1
+                )
+                shard_sync_days.add(s_max_iso[:10])
+
+            if len(s_rows) == 0 or s_age_h is None or s_age_h > 192.0:
+                s_status = "STALE"
+            elif s_age_h <= 132.0:
+                s_status = "FRESH"
+                fresh_shards_count += 1
+            else:
+                s_status = "DUE"
+
+            shards.append(
+                {
+                    "shard_number": s_idx + 1,
+                    "shard_count": shard_count,
+                    "start_date": s_start_iso,
+                    "end_date": s_end_iso,
+                    "rows_count": len(s_rows),
+                    "destinations_count": len(s_dests),
+                    "last_synced_at_utc": s_latest_utc,
+                    "age_hours": s_age_h,
+                    "status": s_status,
+                }
+            )
+
+        if total_rows == 0 or last_age_hours is None:
+            health_state = "EMPTY"
+            sync_mode = "NONE"
+        else:
+            sync_mode = (
+                "SHARDED_ROTATION"
+                if len(shard_sync_days) >= 2
+                else "FULL_SWEEP_OR_SINGLE_BATCH"
+            )
+            if last_age_hours <= 36.0 and fresh_shards_count >= 4:
+                health_state = "HEALTHY"
+            elif last_age_hours <= 72.0:
+                health_state = "DELAYED"
+            else:
+                health_state = "STALE"
+
+        return {
+            "checked_at_utc": now_iso,
+            "inventory_source": inv_source,
+            "health_state": health_state,
+            "sync_mode_detected": sync_mode,
+            "total_active_rows": total_rows,
+            "active_destinations_count": len(dests_all),
+            "min_flight_date": min(flight_dates) if flight_dates else None,
+            "max_flight_date": max(flight_dates) if flight_dates else None,
+            "last_synced_at_utc": last_sync_utc,
+            "oldest_synced_at_utc": oldest_sync_utc,
+            "last_sync_age_hours": last_age_hours,
+            "fresh_shards_count": fresh_shards_count,
+            "shard_count": shard_count,
+            "shards": shards,
+        }

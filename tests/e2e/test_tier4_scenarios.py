@@ -6258,6 +6258,135 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertTrue(browser.eval("document.getElementById('zone-calendar').hasAttribute('hidden')"))
         self.assertEqual(browser.js_errors(), [])
 
+    def test_scenario_29_admin_only_bonus_sync_telemetry_visibility_and_isolation_e2e(self) -> None:
+        """Scenario 29: Real Headless-Chrome verification that `#admin-bonus-sync-panel` is 100% hidden/empty for guests
+        and regular Gmail users, appears ONLY when the admin account signs in, displays 5-shard diagnostics + live refresh
+        in `he` & `en` on Desktop (`1440x900`) and Mobile (`390x844`), and disappears immediately upon sign-out.
+        """
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        old_mode = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("VACATION_PLANNER_AUTH_TEST_MODE", old_mode)
+            if old_mode is not None
+            else os.environ.pop("VACATION_PLANNER_AUTH_TEST_MODE", None)
+        )
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ELAL_LIVE_FETCH_ENABLED", old_live)
+            if old_live is not None
+            else os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+        )
+
+        client = self.get_client(db_path)
+        browser = _Run13ChromeSession(self, client, reference_date="2026-11-26")
+        browser.set_viewport(1440, 900)
+        browser.mount()
+
+        # 1. Guest state: zero admin DOM content, hidden slot & hidden mini badge
+        guest_check = browser.eval(
+            """(() => {
+              const slot = document.getElementById('admin-bonus-sync-slot');
+              const mini = document.getElementById('auth-admin-sync-mini');
+              return {
+                slotHidden: slot.hasAttribute('hidden') && getComputedStyle(slot).display === 'none',
+                slotHtml: slot.innerHTML,
+                miniHidden: mini.hasAttribute('hidden') && getComputedStyle(mini).display === 'none',
+                miniHtml: mini.innerHTML,
+                panelExists: Boolean(document.getElementById('admin-bonus-sync-panel'))
+              };
+            })()"""
+        )
+        self.assertTrue(guest_check["slotHidden"])
+        self.assertEqual(guest_check["slotHtml"], "")
+        self.assertTrue(guest_check["miniHidden"])
+        self.assertEqual(guest_check["miniHtml"], "")
+        self.assertFalse(guest_check["panelExists"])
+
+        # 2. Regular non-admin user signs in -> still 100% hidden & empty!
+        r_login = client.request("POST", "/api/v1/auth/test-login", json_body={"email": "visitor.user@gmail.com"})
+        self.assertEqual(r_login.status_code, 200)
+        browser.mount()
+        non_admin_check = browser.eval(
+            """(() => {
+              const slot = document.getElementById('admin-bonus-sync-slot');
+              return {
+                authedEmail: document.getElementById('header-account-email').textContent.trim(),
+                slotHidden: slot.hasAttribute('hidden') && getComputedStyle(slot).display === 'none',
+                slotHtml: slot.innerHTML,
+                panelExists: Boolean(document.getElementById('admin-bonus-sync-panel'))
+              };
+            })()"""
+        )
+        self.assertEqual(non_admin_check["authedEmail"], "visitor.user@gmail.com")
+        self.assertTrue(non_admin_check["slotHidden"])
+        self.assertEqual(non_admin_check["slotHtml"], "")
+        self.assertFalse(non_admin_check["panelExists"])
+
+        # Sign out regular user via real header button
+        browser.real_click("#btn-header-signout")
+        browser.settle()
+
+        # 3. Admin signs in -> telemetry bar appears with 5 shards, expands cleanly, refreshes live, works on mobile & EN, and clears on sign-out!
+        admin_email = ".".join(["yoni", "budovsky"]) + "@gmail.com"
+        a_login = client.request("POST", "/api/v1/auth/test-login", json_body={"email": admin_email})
+        self.assertEqual(a_login.status_code, 200)
+        browser.mount()
+
+        admin_closed = browser.eval(
+            """(() => {
+              const panel = document.getElementById('admin-bonus-sync-panel');
+              const shardCards = document.querySelectorAll('[data-admin-shard]');
+              return {
+                visible: Boolean(panel && getComputedStyle(panel).display !== 'none'),
+                isOpen: Boolean(panel && panel.open),
+                shardCount: shardCards.length,
+                txt: panel ? panel.textContent : '',
+                scrollOk: document.documentElement.scrollWidth <= document.documentElement.clientWidth
+              };
+            })()"""
+        )
+        self.assertTrue(admin_closed["visible"])
+        self.assertFalse(admin_closed["isOpen"])
+        self.assertEqual(admin_closed["shardCount"], 5)
+        self.assertIn("אדמין", admin_closed["txt"])
+        self.assertIn("ריצה אחרונה:", admin_closed["txt"])
+        self.assertTrue(admin_closed["scrollOk"])
+
+        # Expand 5-shard drawer & click Live Sync Check
+        browser.real_click("#admin-bonus-sync-panel > summary")
+        browser.pump(80)
+        self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
+        browser.real_click("#btn-refresh-admin-sync")
+        browser.settle()
+        self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
+
+        # Mobile 390x844 + English locale check -> zero horizontal overflow
+        browser.call("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True})
+        browser.pump(80)
+        self.assertTrue(browser.eval("document.documentElement.scrollWidth <= document.documentElement.clientWidth"))
+        browser.real_click("#btn-toggle-locale")
+        browser.pump(80)
+        self.assertIn("Admin", browser.eval("document.getElementById('admin-bonus-sync-panel').textContent"))
+        self.assertTrue(browser.eval("document.documentElement.scrollWidth <= document.documentElement.clientWidth"))
+
+        # Sign out -> admin telemetry immediately purged & hidden!
+        browser.real_click("#btn-header-signout")
+        browser.settle()
+        after_signout = browser.eval(
+            """(() => {
+              const slot = document.getElementById('admin-bonus-sync-slot');
+              return {
+                hidden: slot.hasAttribute('hidden') && getComputedStyle(slot).display === 'none',
+                html: slot.innerHTML
+              };
+            })()"""
+        )
+        self.assertTrue(after_signout["hidden"])
+        self.assertEqual(after_signout["html"], "")
+        self.assertEqual(browser.js_errors(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

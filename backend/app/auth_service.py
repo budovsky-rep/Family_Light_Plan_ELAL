@@ -48,6 +48,12 @@ OAUTH_BIND_COOKIE = "fvp_oauth_bind"
 DEFAULT_SESSION_TTL_SECONDS = 14 * 86400  # 14 days
 OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes
 LOCAL_TEST_CLIENT_ID = "local-test-google-client-id.apps.googleusercontent.com"
+DEFAULT_ADMIN_EMAIL_SHA256S = frozenset(
+    {
+        "294f4ec2e06c5d2c2bfaeeb45d76c333fc210e0ea6486a317d37a066229b3c16",
+        "7a9de977db05157772ab74f3e8d359639e8d868ad4b32c7e3e5ca27570cb0d5f",
+    }
+)
 
 _EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,63}$")
 _PII_EMAIL_SCAN_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}")
@@ -297,6 +303,46 @@ class GoogleOAuthService:
         if not raw:
             return {"gmail.com", "googlemail.com"}
         return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+    @staticmethod
+    def get_admin_email_hashes() -> set[str]:
+        raw = os.environ.get("VACATION_PLANNER_ADMIN_EMAILS", "").strip()
+        if raw:
+            hashes = {
+                sha256_hex(part.strip().lower())
+                for part in raw.split(",")
+                if part.strip()
+            }
+            if hashes:
+                return hashes
+        return set(DEFAULT_ADMIN_EMAIL_SHA256S)
+
+    def is_admin_session(self, session: Optional[dict[str, Any]]) -> bool:
+        """Return True iff `session` belongs to a verified admin Google account."""
+        if not session or not isinstance(session, dict):
+            return False
+        user = session.get("user")
+        if not isinstance(user, dict):
+            return False
+        if not bool(user.get("email_verified", True)):
+            return False
+        email = str(user.get("email") or "").strip().lower()
+        if not email:
+            return False
+        candidate_hash = sha256_hex(email)
+        return any(
+            _const_time_str_eq(candidate_hash, allowed_hash)
+            for allowed_hash in self.get_admin_email_hashes()
+        )
+
+    def require_admin(
+        self, request_headers: Optional[dict[str, str]] = None
+    ) -> dict[str, Any]:
+        """Require a valid authenticated session (`401`) AND admin authorization (`403`)."""
+        session = self.require_session(request_headers)
+        if not self.is_admin_session(session):
+            raise AuthError(403, "Admin privileges required.")
+        return session
 
     def is_oauth_configured(self) -> bool:
         return bool(self.get_client_id() and self.get_client_secret())

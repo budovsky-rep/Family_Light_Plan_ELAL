@@ -1345,6 +1345,7 @@ class VacationPlannerAPIRouter:
         method_u = method.upper()
         is_private_route = (
             path.startswith("/api/v1/auth")
+            or path.startswith("/api/v1/admin")
             or path.startswith("/api/v1/profile")
             or path == "/api/v1/moe-calendar/upcoming"
             or (
@@ -1382,25 +1383,44 @@ class VacationPlannerAPIRouter:
                 oauth_cfg = self.auth_service.is_oauth_configured()
                 test_mode = self.auth_service.is_test_mode_allowed(request_headers)
                 if session is None:
-                    sess_payload = {
+                    sess_payload: dict[str, Any] = {
                         "authenticated": False,
+                        "is_admin": False,
                         "oauth_configured": oauth_cfg,
                         "test_mode": test_mode,
                         "csrf_token": None,
                         "user": None,
                     }
                 else:
+                    is_admin = self.auth_service.is_admin_session(session)
                     sess_payload = {
                         "authenticated": True,
+                        "is_admin": is_admin,
                         "oauth_configured": oauth_cfg,
                         "test_mode": test_mode,
                         "csrf_token": session["csrf_token"],
                         "user": session["user"],
                     }
+                    if is_admin:
+                        sess_payload["admin_bonus_sync"] = (
+                            self.repository.get_bonus_sync_diagnostics()
+                        )
                 return (
                     200,
                     private_json_headers,
                     json.dumps(sess_payload, ensure_ascii=False),
+                )
+
+            if method_u == "GET" and path == "/api/v1/admin/bonus-sync-status":
+                self.auth_service.require_admin(request_headers)
+                admin_payload = {
+                    "status": "ok",
+                    "admin_bonus_sync": self.repository.get_bonus_sync_diagnostics(),
+                }
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(admin_payload, ensure_ascii=False),
                 )
 
             if method_u == "GET" and path == "/api/v1/auth/google/login":
