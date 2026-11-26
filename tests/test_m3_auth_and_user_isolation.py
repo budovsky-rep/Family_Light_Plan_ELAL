@@ -2335,11 +2335,14 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 self.assertEqual(ack_done.json()["trigger_job"]["status"], "COMPLETED")
                 self.assertEqual(ack_done.json()["trigger_job"]["records_synced"], 612)
 
-                # 3c. Verify macOS LaunchAgent plist builder configures 2x/day --daemon + --no-local cleanly
+                # 3c. Verify macOS LaunchAgent plist builder & CDP AJAX response parser
                 import plistlib
                 from scripts.sync_elal_to_server import (
+                    DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS,
                     MAC_LAUNCH_AGENT_LABEL,
+                    _is_transient_dpel_gateway_failure,
                     build_mac_launch_agent_plist,
+                    parse_cdp_ajax_eval_value,
                 )
 
                 mac_plist = build_mac_launch_agent_plist(
@@ -2352,12 +2355,58 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 self.assertEqual(mac_plist["Label"], MAC_LAUNCH_AGENT_LABEL)
                 self.assertTrue(mac_plist["RunAtLoad"])
                 self.assertTrue(mac_plist["KeepAlive"])
+                self.assertEqual(mac_plist["ProcessType"], "Standard")
                 self.assertIn("--daemon", mac_plist["ProgramArguments"])
                 self.assertIn("--no-local", mac_plist["ProgramArguments"])
                 self.assertIn("2", mac_plist["ProgramArguments"])
                 # Ensure plistlib serializes and parses cleanly
                 raw_plist_xml = plistlib.dumps(mac_plist)
                 self.assertEqual(plistlib.loads(raw_plist_xml)["Label"], MAC_LAUNCH_AGENT_LABEL)
+
+                # Verify stringified JSON 200, null AccumulatedOutput 200, WCF 'd' wrapper, and HTML/error fail-fast
+                self.assertEqual(len(DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS), 43)
+                self.assertNotIn("FLL", DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS)
+                self.assertNotIn("ZRH", DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS)
+
+                parsed_str, st1, err1 = parse_cdp_ajax_eval_value(
+                    {
+                        "ok": True,
+                        "status": 200,
+                        "contentType": "text/plain",
+                        "data": '{"AccumulatedOutput":{"resultSet":[{"Record":{"SegmentRoute":"TLVATH"}}]}}',
+                    }
+                )
+                self.assertEqual(st1, 200)
+                self.assertEqual(err1, "")
+                self.assertIsNotNone(parsed_str)
+                assert parsed_str is not None
+                self.assertIn("resultSet", parsed_str["AccumulatedOutput"])
+
+                parsed_null, st2, err2 = parse_cdp_ajax_eval_value(
+                    {"ok": True, "status": 200, "data": {"AccumulatedOutput": None}}
+                )
+                self.assertEqual(st2, 200)
+                self.assertEqual(err2, "")
+                self.assertEqual(parsed_null, {"AccumulatedOutput": {"resultSet": []}})
+
+                parsed_html, st3, err3 = parse_cdp_ajax_eval_value(
+                    {"ok": True, "status": 200, "data": "<!DOCTYPE html><html><body>Access</body></html>"}
+                )
+                self.assertIsNone(parsed_html)
+                self.assertEqual(st3, 200)
+                self.assertTrue(err3.startswith("html_interstitial_200:"))
+                self.assertFalse(_is_transient_dpel_gateway_failure(st3, err3))
+
+                parsed_err_obj, st4, err4 = parse_cdp_ajax_eval_value(
+                    {"ok": True, "status": 200, "data": {"ErrorCode": "INVALID_AIRPORT", "Airport": "FLL"}}
+                )
+                self.assertIsNone(parsed_err_obj)
+                self.assertEqual(st4, 200)
+                self.assertIn("missing_AccumulatedOutput", err4)
+                self.assertIn("ErrorCode", err4)
+                self.assertFalse(_is_transient_dpel_gateway_failure(st4, err4))
+                self.assertTrue(_is_transient_dpel_gateway_failure(502, "Bad Gateway"))
+                self.assertFalse(_is_transient_dpel_gateway_failure(403, "Forbidden"))
 
             # 4. Also verify default built-in admin SHA-256 matches yoni.budovsky@gmail.com without env var
             with _EnvContext(

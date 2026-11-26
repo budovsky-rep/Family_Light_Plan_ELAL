@@ -70,8 +70,19 @@ except Exception:
         "JMK", "PVK", "DBV", "ZAG", "LJU", "RMO", "SEZ",
     ]
 
-# El Al GetRbdAvailability supports at most 50 directional segments (25 round-trip destinations) per request
-MAX_DESTINATIONS_PER_AJAX_BATCH = 25
+# El Al GetRbdAvailability supports up to 50 directional segments; 22 destinations (44 segments)
+# splits 43 active routes cleanly into 2 balanced batches (22 + 21) below the 50-segment ceiling.
+MAX_DESTINATIONS_PER_AJAX_BATCH = 22
+
+# Verified active El Al calculator airports used as a safety fallback if DOM <select option>
+# elements have not populated yet (prevents inactive codes like FLL/ZRH from breaking Batch 1).
+DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS: tuple[str, ...] = (
+    "AMS", "ATH", "BCN", "BEG", "BER", "BKK", "BOS", "BUD", "BUS", "CDG",
+    "DXB", "EFL", "EWR", "FCO", "FRA", "GVA", "HER", "HKT", "JFK", "JTR",
+    "KRK", "LAX", "LCA", "LHR", "LIS", "LTN", "MAD", "MIA", "MUC", "MXP",
+    "NCE", "NRT", "OTP", "PFO", "PRG", "RHO", "SKG", "SOF", "TBS", "TIV",
+    "VCE", "VIE", "WAW",
+)
 
 # El Al calculator RBD codes: "E" = Economy, "A" = Premium
 CABIN_RBDS: tuple[str, ...] = ("E", "A")
@@ -823,17 +834,93 @@ def sync_payload_to_local_db(
     return int(res_json.get("records_synced", 0))
 
 
+def parse_cdp_ajax_eval_value(val: Any) -> tuple[Optional[dict[str, Any]], int, str]:
+    """Parse the CDP `Runtime.evaluate` dictionary returned by `_query_batch_once`.
+
+    Matches `chrome_extension/content.js`'s `parseJsonIfNeeded(res)` so stringified JSON
+    responses (`Content-Type: text/plain` or missing JSON header) and empty `AccumulatedOutput`
+    windows succeed cleanly, while HTML interstitials or gateway error objects fail fast with
+    clear diagnostics.
+    """
+    if not isinstance(val, dict):
+        return None, 0, "invalid_eval"
+
+    st_code = int(val.get("status") or 0)
+    if not val.get("ok"):
+        err_str = str(val.get("error") or "ajax_error").strip()
+        prev = " ".join(str(val.get("preview") or "").split())[:120]
+        if prev and not prev.startswith("<"):
+            return None, st_code, f"{err_str} ({prev})"
+        return None, st_code, err_str
+
+    raw_data: Any = val.get("data")
+    if isinstance(raw_data, str):
+        stripped = raw_data.strip()
+        if not stripped:
+            ct = str(val.get("contentType") or "none")
+            return None, st_code or 200, f"empty_body_200(ct={ct})"
+        if stripped.startswith("<"):
+            prev = " ".join(stripped.split())[:120]
+            return None, st_code or 200, f"html_interstitial_200:{prev}"
+        try:
+            raw_data = json.loads(stripped)
+        except Exception:
+            prev = " ".join(stripped.split())[:120]
+            return None, st_code or 200, f"non_json_200:{prev}"
+
+    if isinstance(raw_data, dict) and "d" in raw_data and "AccumulatedOutput" not in raw_data:
+        inner_d = raw_data.get("d")
+        if isinstance(inner_d, str) and inner_d.strip().startswith("{"):
+            try:
+                inner_d = json.loads(inner_d.strip())
+            except Exception:
+                pass
+        if isinstance(inner_d, dict):
+            raw_data = inner_d
+
+    if isinstance(raw_data, dict):
+        if "AccumulatedOutput" in raw_data:
+            acc = raw_data.get("AccumulatedOutput")
+            norm_acc = acc if isinstance(acc, dict) else {"resultSet": []}
+            return {"AccumulatedOutput": norm_acc}, 200, ""
+        keys_str = ",".join(sorted(str(k) for k in raw_data.keys())[:8])
+        prev = " ".join(
+            str(val.get("preview") or json.dumps(raw_data, ensure_ascii=False)).split()
+        )[:140]
+        return (
+            None,
+            st_code or 200,
+            f"missing_AccumulatedOutput(keys=[{keys_str}] body={prev})",
+        )
+
+    prev = " ".join(str(val.get("preview") or repr(raw_data)).split())[:120]
+    return None, st_code or 200, f"unexpected_type({type(raw_data).__name__}):{prev}"
+
+
+def _is_transient_dpel_gateway_failure(http_status: int, err_msg: str) -> bool:
+    """Identify transient El Al DPEL/Amadeus gateway hiccups (`502`/`503`/`504`/timeout).
+
+    Never retries `403`, `429`, or `200` invalid/interstitial responses.
+    """
+    if http_status in (502, 503, 504):
+        return True
+    upper_err = str(err_msg or "").upper()
+    if http_status == 0 and ("TIMEOUT" in upper_err or upper_err.startswith("AJAX_ERROR")):
+        return True
+    return False
+
+
 def fetch_live_holiday_payloads_via_cdp(
     destinations: list[str],
     windows: Optional[list[dict[str, str]]] = None,
     profile_dir: str = DEFAULT_SYNC_PROFILE_DIR,
     headed: Optional[bool] = None,
-    min_delay_sec: float = 2.5,
-    max_delay_sec: float = 4.5,
+    min_delay_sec: float = 2.8,
+    max_delay_sec: float = 4.6,
     return_reconcile_slices: bool = False,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Launch stock Google Chrome via CDP with honest native headers, persistent profile,
-    polite human-paced spacing (`2.5s..4.5s`), and strict fail-fast abort on any error.
+    polite human-paced spacing (`2.8s..4.6s`), and strict fail-fast abort on any WAF/challenge error.
     """
     chrome_bin = _find_chrome_binary()
     port = _find_free_port()
@@ -843,12 +930,6 @@ def fetch_live_holiday_payloads_via_cdp(
         else build_sharded_rolling_windows(days_ahead=350, shard_count=5, shard_index=None)
     )
     valid_dests = [d for d in destinations if d in ALL_ELAL_DESTINATIONS] or list(ALL_ELAL_DESTINATIONS)
-
-    dest_batches: list[list[str]] = [
-        valid_dests[i : i + MAX_DESTINATIONS_PER_AJAX_BATCH]
-        for i in range(0, len(valid_dests), MAX_DESTINATIONS_PER_AJAX_BATCH)
-    ]
-    total_segments = len(valid_dests) * 2
 
     resolved_profile = Path(profile_dir or DEFAULT_SYNC_PROFILE_DIR).expanduser().resolve()
     resolved_profile.mkdir(parents=True, exist_ok=True)
@@ -924,13 +1005,14 @@ def fetch_live_holiday_payloads_via_cdp(
         cdp = _StdlibCdpWebSocket(ws_url, timeout=40.0)
 
         ready = False
-        ready_deadline = time.time() + 15.0
+        ready_deadline = time.time() + 20.0
         while time.time() < ready_deadline:
             res = cdp.call(
                 "Runtime.evaluate",
                 {
                     "expression": (
-                        "Boolean(window.$ && typeof window.$.ajax === 'function' "
+                        "Boolean(document.readyState === 'complete' "
+                        "&& window.$ && typeof window.$.ajax === 'function' "
                         "&& document.querySelectorAll('select').length >= 2)"
                     ),
                     "returnByValue": True,
@@ -944,26 +1026,37 @@ def fetch_live_holiday_payloads_via_cdp(
         if not ready:
             raise RuntimeError("Fail-fast abort: jQuery $.ajax not initialized on rbddataclients page.")
 
+        # Wait up to 15s for the asynchronous airport dropdown <option> elements to populate
+        page_codes: set[str] = set()
+        options_deadline = time.time() + 15.0
+        while time.time() < options_deadline:
+            opt_res = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": """
+                    (() => {
+                        const codes = new Set();
+                        document.querySelectorAll('select option, [role="option"]').forEach((opt) => {
+                            const raw = `${opt.value || ''} ${opt.textContent || ''}`.toUpperCase();
+                            const matches = raw.match(/\\b[A-Z]{3}\\b/g) || [];
+                            matches.forEach((m) => codes.add(m));
+                        });
+                        return Array.from(codes);
+                    })()
+                    """,
+                    "returnByValue": True,
+                },
+            )
+            page_codes = set(opt_res.get("result", {}).get("value") or [])
+            if len(page_codes) >= 15:
+                break
+            time.sleep(0.6)
+
+        # Allow normal page initialization scripts to finish settling before the first XHR
+        time.sleep(2.5)
+
         print("El Al rbddataclients ready. Checking active calculator airports & running polite sharded scan...")
 
-        opt_res = cdp.call(
-            "Runtime.evaluate",
-            {
-                "expression": """
-                (() => {
-                    const codes = new Set();
-                    document.querySelectorAll('select option').forEach((opt) => {
-                        const raw = `${opt.value || ''} ${opt.textContent || ''}`.toUpperCase();
-                        const matches = raw.match(/\\b[A-Z]{3}\\b/g) || [];
-                        matches.forEach((m) => codes.add(m));
-                    });
-                    return Array.from(codes);
-                })()
-                """,
-                "returnByValue": True,
-            },
-        )
-        page_codes = set(opt_res.get("result", {}).get("value") or [])
         active_dests = list(valid_dests)
         if len(page_codes) >= 15:
             filtered = [d for d in active_dests if d in page_codes]
@@ -975,6 +1068,17 @@ def fetch_live_holiday_payloads_via_cdp(
                         f"  Note: {len(skipped)} seasonal destination(s) not listed in El Al's calculator dropdown today "
                         f"(skipping {','.join(skipped)}; syncing {len(active_dests)} active destinations)."
                     )
+        elif len(active_dests) > len(DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS):
+            fallback_set = set(DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS)
+            filtered = [d for d in active_dests if d in fallback_set]
+            skipped = [d for d in active_dests if d not in fallback_set]
+            if filtered:
+                active_dests = filtered
+                print(
+                    f"  Note: calculator dropdown options still lazy ({len(page_codes)} code(s)); "
+                    f"using {len(active_dests)} verified active El Al calculator destinations "
+                    f"(skipping {','.join(skipped)})."
+                )
 
         def _query_batch_once(
             batch_dests: list[str],
@@ -1003,15 +1107,38 @@ def fetch_live_holiday_payloads_via_cdp(
                             seg: {seg_json}
                         }}
                     }}),
-                    timeout: 25000,
-                    success: function(res) {{
-                        resolve({{ ok: true, status: 200, data: res }});
+                    timeout: 26000,
+                    success: function(res, _textStatus, xhr) {{
+                        const ct = (xhr && typeof xhr.getResponseHeader === "function")
+                            ? String(xhr.getResponseHeader("content-type") || "")
+                            : "";
+                        const rawText = (xhr && typeof xhr.responseText === "string")
+                            ? xhr.responseText
+                            : (typeof res === "string" ? res : "");
+                        let parsed = res;
+                        if (typeof res === "string") {{
+                            const trimmed = res.trim();
+                            if (trimmed.startsWith("{{") || trimmed.startsWith("[")) {{
+                                try {{ parsed = JSON.parse(trimmed); }} catch (_e) {{}}
+                            }}
+                        }}
+                        resolve({{
+                            ok: true,
+                            status: xhr && xhr.status ? xhr.status : 200,
+                            contentType: ct,
+                            data: parsed,
+                            preview: rawText ? rawText.slice(0, 180) : ""
+                        }});
                     }},
                     error: function(xhr, status, err) {{
+                        const rawErr = (xhr && typeof xhr.responseText === "string")
+                            ? xhr.responseText.slice(0, 160)
+                            : "";
                         resolve({{
                             ok: false,
                             status: xhr ? xhr.status : 0,
-                            error: String(err || status || "ajax_error")
+                            error: String(err || status || "ajax_error"),
+                            preview: rawErr
                         }});
                     }}
                 }});
@@ -1026,13 +1153,34 @@ def fetch_live_holiday_payloads_via_cdp(
                 },
             )
             val = eval_res.get("result", {}).get("value") or {}
-            if isinstance(val, dict) and val.get("ok") and isinstance(val.get("data"), dict):
-                data_obj = val["data"]
-                if "AccumulatedOutput" in data_obj:
-                    return data_obj, 200, ""
-            st_code = int(val.get("status") or 0) if isinstance(val, dict) else 0
-            err_msg = str(val.get("error") or "unexpected_response") if isinstance(val, dict) else "invalid_eval"
-            return None, st_code, err_msg
+            return parse_cdp_ajax_eval_value(val)
+
+        def _query_batch_with_502_split_fallback(
+            batch_dests: list[str],
+            start_iso: str,
+            end_iso: str,
+            rbd: str,
+        ) -> tuple[Optional[list[tuple[list[str], dict[str, Any]]]], int, str]:
+            first_obj, http_st, err_str = _query_batch_once(batch_dests, start_iso, end_iso, rbd)
+            if first_obj is not None:
+                return [(batch_dests, first_obj)], 200, ""
+            if not _is_transient_dpel_gateway_failure(http_st, err_str) or len(batch_dests) <= 4:
+                return None, http_st, err_str
+            print(
+                f"    ~ Transient El Al DPEL gateway status={http_st} ({err_str}); "
+                "waiting 10s and splitting batch in half once..."
+            )
+            time.sleep(10.0)
+            mid = (len(batch_dests) + 1) // 2
+            sub_outcomes: list[tuple[list[str], dict[str, Any]]] = []
+            for s_idx, sub_dests in enumerate((batch_dests[:mid], batch_dests[mid:])):
+                sub_obj, sub_st, sub_err = _query_batch_once(sub_dests, start_iso, end_iso, rbd)
+                if sub_obj is None:
+                    return None, sub_st, sub_err
+                sub_outcomes.append((sub_dests, sub_obj))
+                if s_idx == 0:
+                    time.sleep(random.uniform(float(min_delay_sec), float(max_delay_sec)))
+            return sub_outcomes, 200, ""
 
         current_batches = [
             active_dests[i : i + MAX_DESTINATIONS_PER_AJAX_BATCH]
@@ -1059,10 +1207,10 @@ def fetch_live_holiday_payloads_via_cdp(
                 cabin_label = "Economy" if rbd == "E" else "Premium"
                 window_cabin_cnt = 0
                 for b_dests in current_batches:
-                    data_obj, http_status, err_msg = _query_batch_once(
+                    sub_results, http_status, err_msg = _query_batch_with_502_split_fallback(
                         b_dests, start_iso, end_iso, rbd
                     )
-                    if data_obj is None:
+                    if sub_results is None:
                         print(
                             f"  ! Fail-fast stop on window [{w_idx:02d}/{len(active_windows):02d}] "
                             f"{cabin_label} ({rbd}) [status={http_status} error={err_msg}]. "
@@ -1070,11 +1218,12 @@ def fetch_live_holiday_payloads_via_cdp(
                         )
                         aborted_early = True
                         break
-                    collected_payloads.append(data_obj)
-                    slice_key = (tuple(b_dests), loc_start, loc_end)
-                    verified_slices_map.setdefault(slice_key, set()).add(rbd)
-                    _, _, _, _, rec_cnt = normalize_accumulated_payloads([data_obj])
-                    window_cabin_cnt += rec_cnt
+                    for verified_sub_dests, data_obj in sub_results:
+                        collected_payloads.append(data_obj)
+                        slice_key = (tuple(verified_sub_dests), loc_start, loc_end)
+                        verified_slices_map.setdefault(slice_key, set()).add(rbd)
+                        _, _, _, _, rec_cnt = normalize_accumulated_payloads([data_obj])
+                        window_cabin_cnt += rec_cnt
                     delay = random.uniform(
                         max(0.5, float(min_delay_sec)),
                         max(float(min_delay_sec), float(max_delay_sec)),
@@ -1622,7 +1771,7 @@ def build_mac_launch_agent_plist(
         "WorkingDirectory": str(prof),
         "RunAtLoad": True,
         "KeepAlive": True,
-        "ProcessType": "Background",
+        "ProcessType": "Standard",
         "StandardOutPath": log_path,
         "StandardErrorPath": log_path,
         "EnvironmentVariables": env_vars,
