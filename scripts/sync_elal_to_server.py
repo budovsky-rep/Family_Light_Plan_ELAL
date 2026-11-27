@@ -835,15 +835,22 @@ def sync_payload_to_local_db(
 
 
 def parse_cdp_ajax_eval_value(val: Any) -> tuple[Optional[dict[str, Any]], int, str]:
-    """Parse the CDP `Runtime.evaluate` dictionary returned by `_query_batch_once`.
+    """Parse the CDP `Runtime.evaluate` value returned by `_query_batch_once`.
 
-    Matches `chrome_extension/content.js`'s `parseJsonIfNeeded(res)` so stringified JSON
-    responses (`Content-Type: text/plain` or missing JSON header) and empty `AccumulatedOutput`
-    windows succeed cleanly, while HTML interstitials or gateway error objects fail fast with
-    clear diagnostics.
+    Accepts either a JSON-encoded envelope string (`resolve(JSON.stringify(obj))` so V8
+    `returnByValue` never fails on deeply nested `AccumulatedOutput` objects) or a `dict`.
     """
-    if not isinstance(val, dict):
-        return None, 0, "invalid_eval"
+    if isinstance(val, str):
+        s_val = val.strip()
+        if not s_val:
+            return None, 0, "empty_cdp_eval"
+        try:
+            val = json.loads(s_val)
+        except Exception as exc:
+            return None, 0, f"invalid_cdp_json:{exc}"
+
+    if not isinstance(val, dict) or not val:
+        return None, 0, "cdp_context_closed_or_empty"
 
     st_code = int(val.get("status") or 0)
     if not val.get("ok"):
@@ -898,16 +905,36 @@ def parse_cdp_ajax_eval_value(val: Any) -> tuple[Optional[dict[str, Any]], int, 
 
 
 def _is_transient_dpel_gateway_failure(http_status: int, err_msg: str) -> bool:
-    """Identify transient El Al DPEL/Amadeus gateway hiccups (`502`/`503`/`504`/timeout).
+    """Identify transient El Al DPEL/Amadeus gateway hiccups (`502`/`503`/`504`/XHR timeout).
 
-    Never retries `403`, `429`, or `200` invalid/interstitial responses.
+    Never retries `403`, `429`, `200` invalid/interstitial responses, or closed Chrome sockets.
     """
     if http_status in (502, 503, 504):
         return True
     upper_err = str(err_msg or "").upper()
-    if http_status == 0 and ("TIMEOUT" in upper_err or upper_err.startswith("AJAX_ERROR")):
+    if http_status == 0 and "TIMEOUT" in upper_err:
         return True
     return False
+
+
+def _cleanup_stale_profile_chrome(profile_dir: Path) -> None:
+    """Terminate any orphaned Chrome process holding `profile_dir` and clear stale lock symlinks."""
+    prof_str = str(profile_dir)
+    if os.name == "posix":
+        subprocess.run(
+            ["pkill", "-TERM", "-f", f"[C]hrome.*--user-data-dir={prof_str}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        time.sleep(0.8)
+    for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        lock_p = profile_dir / lock_name
+        if lock_p.is_symlink() or lock_p.exists():
+            try:
+                lock_p.unlink()
+            except Exception:
+                pass
 
 
 def fetch_live_holiday_payloads_via_cdp(
@@ -933,6 +960,7 @@ def fetch_live_holiday_payloads_via_cdp(
 
     resolved_profile = Path(profile_dir or DEFAULT_SYNC_PROFILE_DIR).expanduser().resolve()
     resolved_profile.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_profile_chrome(resolved_profile)
 
     # Default to visible desktop Chrome on macOS/Windows (personal computers), headless on headless Linux
     use_headed = (
@@ -946,6 +974,8 @@ def fetch_live_holiday_payloads_via_cdp(
         cmd.append("--headless=new")
         if sys.platform.startswith("linux"):
             cmd.append("--no-sandbox")
+    else:
+        cmd.append("--window-size=980,680")
     cmd.extend(
         [
             f"--user-data-dir={resolved_profile}",
@@ -961,7 +991,7 @@ def fetch_live_holiday_payloads_via_cdp(
     print(
         f"Launching {mode_str} Chrome ({chrome_bin}) on CDP port {port} "
         f"[persistent profile: {resolved_profile}] for {len(valid_dests)} destinations "
-        f"across {len(active_windows)} window(s)..."
+        f"across {len(active_windows)} window(s) (please leave the Chrome window open until scan completes)..."
     )
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     cdp: Optional[_StdlibCdpWebSocket] = None
@@ -1002,7 +1032,7 @@ def fetch_live_holiday_payloads_via_cdp(
                 "Stopping immediately without retrying so any active rate-limit cooldown is not extended."
             )
 
-        cdp = _StdlibCdpWebSocket(ws_url, timeout=40.0)
+        cdp = _StdlibCdpWebSocket(ws_url, timeout=60.0)
 
         ready = False
         ready_deadline = time.time() + 20.0
@@ -1088,72 +1118,110 @@ def fetch_live_holiday_payloads_via_cdp(
         ) -> tuple[Optional[dict[str, Any]], int, str]:
             if not batch_dests:
                 return None, 0, "empty_batch"
+            if proc.poll() is not None:
+                return None, 0, f"chrome_process_exited(code={proc.returncode})"
             segs: list[dict[str, str]] = []
             for d in batch_dests:
                 segs.append({"org": "TLV", "dest": d})
                 segs.append({"org": d, "dest": "TLV"})
             seg_json = json.dumps(segs)
+            # Resolve a flat JSON string so V8 CDP `returnByValue: True` never fails
+            # with `Object reference chain is too long` on nested AccumulatedOutput trees.
             js_expr = f"""
             new Promise((resolve) => {{
-                window.$.ajax({{
-                    url: {json.dumps(ELAL_RBD_API_URL)},
-                    type: "POST",
-                    contentType: "application/json",
-                    data: JSON.stringify({{
-                        input: {{
-                            startDate: {json.dumps(start_iso)},
-                            endDate: {json.dumps(end_iso)},
-                            rbd: {json.dumps(rbd)},
-                            seg: {seg_json}
-                        }}
-                    }}),
-                    timeout: 26000,
-                    success: function(res, _textStatus, xhr) {{
-                        const ct = (xhr && typeof xhr.getResponseHeader === "function")
-                            ? String(xhr.getResponseHeader("content-type") || "")
-                            : "";
-                        const rawText = (xhr && typeof xhr.responseText === "string")
-                            ? xhr.responseText
-                            : (typeof res === "string" ? res : "");
-                        let parsed = res;
-                        if (typeof res === "string") {{
-                            const trimmed = res.trim();
-                            if (trimmed.startsWith("{{") || trimmed.startsWith("[")) {{
-                                try {{ parsed = JSON.parse(trimmed); }} catch (_e) {{}}
-                            }}
-                        }}
-                        resolve({{
-                            ok: true,
-                            status: xhr && xhr.status ? xhr.status : 200,
-                            contentType: ct,
-                            data: parsed,
-                            preview: rawText ? rawText.slice(0, 180) : ""
-                        }});
-                    }},
-                    error: function(xhr, status, err) {{
-                        const rawErr = (xhr && typeof xhr.responseText === "string")
-                            ? xhr.responseText.slice(0, 160)
-                            : "";
-                        resolve({{
+                const finish = (obj) => {{
+                    try {{
+                        resolve(JSON.stringify(obj));
+                    }} catch (serErr) {{
+                        resolve(JSON.stringify({{
                             ok: false,
-                            status: xhr ? xhr.status : 0,
-                            error: String(err || status || "ajax_error"),
-                            preview: rawErr
-                        }});
+                            status: 0,
+                            error: "serialize_error:" + String(serErr)
+                        }}));
                     }}
-                }});
+                }};
+                try {{
+                    window.$.ajax({{
+                        url: {json.dumps(ELAL_RBD_API_URL)},
+                        type: "POST",
+                        contentType: "application/json",
+                        data: JSON.stringify({{
+                            input: {{
+                                startDate: {json.dumps(start_iso)},
+                                endDate: {json.dumps(end_iso)},
+                                rbd: {json.dumps(rbd)},
+                                seg: {seg_json}
+                            }}
+                        }}),
+                        timeout: 26000,
+                        success: function(res, _textStatus, xhr) {{
+                            const ct = (xhr && typeof xhr.getResponseHeader === "function")
+                                ? String(xhr.getResponseHeader("content-type") || "")
+                                : "";
+                            let parsed = res;
+                            let preview = "";
+                            if (typeof res === "string") {{
+                                const trimmed = res.trim();
+                                preview = trimmed.slice(0, 180);
+                                if (trimmed.startsWith("{{") || trimmed.startsWith("[")) {{
+                                    try {{ parsed = JSON.parse(trimmed); }} catch (_e) {{}}
+                                }}
+                            }}
+                            finish({{
+                                ok: true,
+                                status: xhr && xhr.status ? xhr.status : 200,
+                                contentType: ct,
+                                data: parsed,
+                                preview: preview
+                            }});
+                        }},
+                        error: function(xhr, status, err) {{
+                            let rawErr = "";
+                            try {{
+                                if (xhr && typeof xhr.responseText === "string") {{
+                                    rawErr = xhr.responseText.slice(0, 160);
+                                }}
+                            }} catch (_e) {{}}
+                            const stLabel = String(status || "error");
+                            const errLabel = String(err || "");
+                            finish({{
+                                ok: false,
+                                status: xhr ? (xhr.status || 0) : 0,
+                                error: errLabel ? (stLabel + ":" + errLabel) : ("xhr_" + stLabel),
+                                preview: rawErr
+                            }});
+                        }}
+                    }});
+                }} catch (outerErr) {{
+                    finish({{
+                        ok: false,
+                        status: 0,
+                        error: "js_outer_error:" + String(outerErr)
+                    }});
+                }}
             }})
             """
-            eval_res = cdp.call(
-                "Runtime.evaluate",
-                {
-                    "expression": js_expr,
-                    "awaitPromise": True,
-                    "returnByValue": True,
-                },
-            )
-            val = eval_res.get("result", {}).get("value") or {}
-            return parse_cdp_ajax_eval_value(val)
+            try:
+                eval_res = cdp.call(
+                    "Runtime.evaluate",
+                    {
+                        "expression": js_expr,
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                    },
+                )
+            except Exception as cdp_exc:
+                return None, 0, f"cdp_socket_error:{cdp_exc}"
+            if "exceptionDetails" in eval_res:
+                exc_det = eval_res.get("exceptionDetails") or {}
+                exc_txt = str(exc_det.get("text") or exc_det)[:160]
+                return None, 0, f"cdp_js_exception:{exc_txt}"
+            res_inner = eval_res.get("result") or {}
+            if "value" not in res_inner:
+                r_type = str(res_inner.get("type") or "missing")
+                r_desc = str(res_inner.get("description") or "")[:120]
+                return None, 0, f"cdp_missing_value(type={r_type} desc={r_desc})"
+            return parse_cdp_ajax_eval_value(res_inner.get("value"))
 
         def _query_batch_with_502_split_fallback(
             batch_dests: list[str],
@@ -1823,13 +1891,14 @@ def install_mac_launch_agent(
         stderr=subprocess.DEVNULL,
         check=False,
     )
+    time.sleep(1.0)
+    _cleanup_stale_profile_chrome(prof)
+    # Note: `RunAtLoad: True` in the plist automatically starts a single clean daemon
+    # instance upon `bootstrap`; do NOT follow `bootstrap` with `kickstart -k`, which
+    # SIGKILLs that fresh daemon mid-launch and leaves an orphaned Chrome holding SingletonLock.
     subprocess.run(
         ["/bin/launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
         check=True,
-    )
-    subprocess.run(
-        ["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{MAC_LAUNCH_AGENT_LABEL}"],
-        check=False,
     )
     log_path = prof / "mac_sync_agent.log"
     print(f"Installed & started macOS LaunchAgent: {plist_path}")

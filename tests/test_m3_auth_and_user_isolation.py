@@ -2405,6 +2405,32 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 self.assertIn("missing_AccumulatedOutput", err4)
                 self.assertIn("ErrorCode", err4)
                 self.assertFalse(_is_transient_dpel_gateway_failure(st4, err4))
+                # Also verify JSON-stringified envelope from Runtime.evaluate (`resolve(JSON.stringify(obj))`)
+                deep_envelope_json = json.dumps(
+                    {
+                        "ok": True,
+                        "status": 200,
+                        "contentType": "application/json",
+                        "data": {
+                            "AccumulatedOutput": {
+                                "resultSet": [
+                                    {"Record": [{"SegmentRoute": "TLVFCO", "NewAvailability": "2+"}]}
+                                ]
+                            }
+                        },
+                    }
+                )
+                parsed_env, st_env, err_env = parse_cdp_ajax_eval_value(deep_envelope_json)
+                self.assertEqual(st_env, 200)
+                self.assertEqual(err_env, "")
+                self.assertIsNotNone(parsed_env)
+
+                # Closed CDP context / empty dict must NOT be treated as a 502 DPEL gateway retry
+                parsed_closed, st_closed, err_closed = parse_cdp_ajax_eval_value({})
+                self.assertIsNone(parsed_closed)
+                self.assertEqual(err_closed, "cdp_context_closed_or_empty")
+                self.assertFalse(_is_transient_dpel_gateway_failure(st_closed, err_closed))
+                self.assertTrue(_is_transient_dpel_gateway_failure(0, "xhr_timeout"))
                 self.assertTrue(_is_transient_dpel_gateway_failure(502, "Bad Gateway"))
                 self.assertFalse(_is_transient_dpel_gateway_failure(403, "Forbidden"))
 
