@@ -3911,6 +3911,632 @@ body.is-keyboard-open .profile-sheet-footer {
   color: var(--ink-flightdeck);
 }
 
+/* Run 16: Per-Card Re-Open Booking Guide Trigger & Pre-Booking Handoff Modal / Bottom Sheet */
+.btn-booking-guide {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  align-self: flex-start;
+  flex-shrink: 0;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--azure-border);
+  background: var(--surface-boarding);
+  color: var(--azure-elal);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.btn-booking-guide:hover,
+.btn-booking-guide:focus-visible {
+  background: var(--azure-tint);
+  border-color: var(--azure-elal);
+  color: var(--ink-flightdeck);
+}
+
+.btn-booking-guide:focus-visible {
+  outline: 2px solid var(--azure-elal);
+  outline-offset: 2px;
+}
+
+.btn-booking-guide-icon {
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.btn-booking-guide-label {
+  display: none;
+}
+
+.booking-handoff-backdrop {
+  position: fixed;
+  inset-block: 0;
+  inset-inline: 0;
+  z-index: 80;
+  background: rgba(11, 31, 58, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+.booking-handoff-modal {
+  display: none;
+}
+
+.booking-handoff-modal.is-open {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset-block-end: 0;
+  inset-inline: 0;
+  z-index: 85;
+  width: 100%;
+  max-height: min(90dvh, 720px);
+  background: var(--surface-boarding);
+  border-start-start-radius: 18px;
+  border-start-end-radius: 18px;
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+  border-block-start: 1px solid var(--border-strong);
+  box-shadow: 0 -14px 36px rgba(11, 31, 58, 0.28);
+  overflow: hidden;
+}
+
+.booking-handoff-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  margin-block: 8px 2px;
+  margin-inline: auto;
+  flex-shrink: 0;
+}
+
+.booking-handoff-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-block: 6px 8px;
+  padding-inline: 14px;
+  border-block-end: 1px solid var(--border-subtle);
+  background: var(--surface-boarding);
+}
+
+.booking-handoff-title-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.booking-handoff-eyebrow {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--azure-elal);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.booking-handoff-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  font-weight: 800;
+  color: var(--ink-flightdeck);
+  line-height: 1.25;
+}
+
+.booking-handoff-close {
+  min-height: 36px;
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-recessed);
+  color: var(--ink-flightdeck);
+  font-size: 0.95rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.booking-handoff-close:hover,
+.booking-handoff-close:focus-visible {
+  background: var(--azure-tint);
+  border-color: var(--azure-elal);
+}
+
+.booking-handoff-close:focus-visible {
+  outline: 2px solid var(--azure-elal);
+  outline-offset: 2px;
+}
+
+.booking-handoff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  padding-block: 8px;
+  padding-inline: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* Signature Boarding-Pass Flight Cheat-Sheet */
+.handoff-cheatsheet {
+  flex-shrink: 0;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-boarding);
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(11, 31, 58, 0.08);
+}
+
+.handoff-slip-head {
+  background: linear-gradient(135deg, #0B1F3A 0%, #123463 100%);
+  color: #FFFFFF;
+  padding-block: 7px;
+  padding-inline: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.handoff-slip-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.handoff-slip-dest {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.handoff-slip-icon {
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.handoff-slip-city {
+  font-family: var(--font-display);
+  font-size: 0.98rem;
+  font-weight: 800;
+  color: #FFFFFF;
+  line-height: 1.2;
+}
+
+.handoff-openjaw-tag {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 1px;
+  padding-inline: 6px;
+  border-radius: 999px;
+  background: rgba(243, 206, 142, 0.2);
+  border: 1px solid rgba(243, 206, 142, 0.55);
+  color: #FDE6B8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.handoff-slip-route {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 2px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  direction: ltr;
+  unicode-bidi: isolate;
+  white-space: nowrap;
+}
+
+.handoff-slip-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 0.78rem;
+  color: #D7E5F8;
+  line-height: 1.3;
+}
+
+.handoff-slip-dates {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #FFFFFF;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.handoff-slip-sep {
+  opacity: 0.55;
+}
+
+.handoff-slip-nights,
+.handoff-slip-cabin,
+.handoff-slip-pax {
+  font-weight: 600;
+}
+
+.handoff-slip-coverage {
+  display: flex;
+  align-items: center;
+  padding-block: 5px;
+  padding-inline: 10px;
+  background: var(--surface-boarding);
+  border-block-end: 2px dashed rgba(180, 197, 220, 0.85);
+}
+
+.handoff-coverage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 2px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+  color: var(--pine-bridge);
+  font-family: var(--font-display);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.handoff-coverage-pill-partial {
+  background: var(--brass-tint);
+  border-color: var(--brass-border);
+  color: var(--brass-matmid);
+}
+
+.handoff-legs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--surface-recessed);
+}
+
+.handoff-leg {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 3px;
+  padding-block: 5px;
+  padding-inline: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+}
+
+.handoff-leg[data-has-bonus="false"] {
+  background: var(--surface-boarding);
+  border: 1.5px dashed var(--border-strong);
+  color: var(--ink-muted);
+}
+
+.handoff-leg-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.handoff-leg-eyebrow {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--ink-secondary);
+  line-height: 1.2;
+}
+
+.handoff-leg-route {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-muted);
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.handoff-leg-seats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  line-height: 1.2;
+}
+
+.handoff-leg-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.04rem;
+  font-weight: 800;
+  color: var(--pine-bridge);
+  unicode-bidi: isolate;
+}
+
+.handoff-leg-unit {
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  color: var(--ink-flightdeck);
+}
+
+.handoff-leg-empty {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  color: var(--ink-muted);
+}
+
+.handoff-leg-flight {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  align-self: flex-start;
+  gap: 1px;
+  max-width: 100%;
+  padding-block: 2px;
+  padding-inline: 6px;
+  border-radius: 5px;
+  background: var(--surface-boarding);
+  border: 1px solid var(--pine-border);
+  color: var(--ink-flightdeck);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  line-height: 1.25;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.handoff-flight-num,
+.handoff-flight-times {
+  display: block;
+  white-space: nowrap;
+}
+
+.handoff-flight-times {
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.handoff-flight-sep {
+  display: none;
+}
+
+.handoff-leg-flight-commercial {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-weight: 600;
+  border: 1px dashed var(--border-strong);
+  color: var(--ink-muted);
+}
+
+/* 3-Step Visual Booking Flow */
+.handoff-steps {
+  flex-shrink: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.handoff-step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+}
+
+.handoff-step-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--azure-tint);
+  border: 1px solid var(--azure-border);
+  color: var(--azure-elal);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.handoff-step-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.handoff-step-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+  font-weight: 700;
+  color: var(--ink-flightdeck);
+  line-height: 1.3;
+}
+
+.handoff-step-desc {
+  margin: 0;
+  font-size: var(--fs-label);
+  color: var(--ink-secondary);
+  line-height: 1.4;
+}
+
+.handoff-warning-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-block-start: 6px;
+  padding-block: 7px;
+  padding-inline: 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-label);
+  line-height: 1.42;
+}
+
+.handoff-warning-callout[data-handoff-warning="high"] {
+  background: var(--brass-tint);
+  border: 1px solid var(--brass-border);
+  border-inline-start: 3px solid var(--brass-matmid);
+  color: #78350F;
+  font-weight: 600;
+}
+
+.handoff-warning-callout[data-handoff-warning="info"] {
+  background: var(--azure-tint);
+  border: 1px solid var(--azure-border);
+  border-inline-start: 3px solid var(--azure-elal);
+  color: var(--ink-secondary);
+}
+
+.handoff-seq-mono {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  direction: ltr;
+  unicode-bidi: isolate;
+  white-space: nowrap;
+}
+
+.booking-handoff-footer {
+  flex-shrink: 0;
+  padding-block: 8px max(10px, env(safe-area-inset-bottom));
+  padding-inline: 14px;
+  background: var(--surface-boarding);
+  border-block-start: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.handoff-cta-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.btn-handoff-primary,
+.btn-handoff-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding-block: 7px;
+  padding-inline: 14px;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+
+.btn-handoff-primary {
+  background: linear-gradient(135deg, #0B1F3A 0%, #1452A6 100%);
+  border: 1px solid #0E3D7E;
+  color: #FFFFFF;
+  box-shadow: 0 4px 12px rgba(20, 82, 166, 0.22);
+}
+
+.btn-handoff-primary:hover,
+.btn-handoff-primary:focus-visible {
+  background: linear-gradient(135deg, #0E2B52 0%, #0E3D7E 100%);
+  color: #FFFFFF;
+}
+
+.btn-handoff-secondary {
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-strong);
+  color: var(--ink-flightdeck);
+}
+
+.btn-handoff-secondary:hover,
+.btn-handoff-secondary:focus-visible {
+  background: var(--azure-tint);
+  border-color: var(--azure-elal);
+  color: var(--ink-flightdeck);
+}
+
+.btn-handoff-primary:focus-visible,
+.btn-handoff-secondary:focus-visible {
+  outline: 2px solid var(--azure-elal);
+  outline-offset: 2px;
+}
+
+.booking-handoff-suppress-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-h);
+  font-size: var(--fs-label);
+  color: var(--ink-secondary);
+  cursor: pointer;
+  text-align: start;
+}
+
+.booking-handoff-suppress-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--azure-elal);
+  cursor: pointer;
+}
+
 /* Mobile-First Responsive Breakpoints (`min-width` only, ascending: one cascade from phone to wide desktop) */
 @media (min-width: 560px) {
   .hero-eyebrow-short {
@@ -4002,6 +4628,44 @@ body.is-keyboard-open .profile-sheet-footer {
 
   .admin-periods-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .btn-booking-guide {
+    align-self: center;
+    width: auto;
+    min-width: auto;
+    height: 28px;
+    min-height: 28px;
+    padding-block: 2px;
+    padding-inline: 9px;
+    gap: 5px;
+    font-size: var(--fs-tag);
+  }
+
+  .btn-booking-guide-label {
+    display: inline;
+  }
+
+  .handoff-leg-flight {
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0;
+  }
+
+  .handoff-leg-flight-commercial {
+    display: inline-block;
+  }
+
+  .handoff-flight-num,
+  .handoff-flight-times {
+    display: inline;
+  }
+
+  .handoff-flight-sep {
+    display: inline;
+    white-space: pre;
   }
 }
 
@@ -4308,6 +4972,46 @@ body.is-keyboard-open .profile-sheet-footer {
 
   .calendar-ledger-title {
     font-size: 0.94rem;
+  }
+
+  .booking-handoff-sheet-handle {
+    display: none;
+  }
+
+  .booking-handoff-modal.is-open {
+    inset-block-start: 50%;
+    inset-block-end: auto;
+    inset-inline: 0;
+    margin-inline: auto;
+    transform: translateY(-50%);
+    width: min(580px, calc(100vw - 32px));
+    max-height: min(88dvh, 760px);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 20px 50px rgba(11, 31, 58, 0.3);
+  }
+
+  .booking-handoff-header,
+  .booking-handoff-body,
+  .booking-handoff-footer {
+    padding-inline: 18px;
+  }
+
+  .booking-handoff-header {
+    padding-block: 12px;
+  }
+
+  .booking-handoff-body {
+    padding-block: 12px;
+  }
+
+  .booking-handoff-footer {
+    padding-block: 12px 14px;
+  }
+
+  .btn-handoff-primary,
+  .btn-handoff-secondary {
+    min-height: 40px;
   }
 }
 

@@ -1525,6 +1525,195 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self.assertGreater(len(non_elal), 0)
         for p_other in non_elal:
             self.assertIsNone(p_other.itinerary.elal_google_flights_url)
+            self.assertIsNone(p_other.itinerary.elal_google_flights_single_adult_url)
+
+    def test_elal_google_flights_single_adult_url_parity_and_edge_cases(
+        self,
+    ) -> None:
+        """Run 16: Verify `elal_google_flights_single_adult_url` matches exact route (incl. open-jaw),
+        dates, cabin (`ECONOMY`/`PREMIUM`/`BUSINESS`), Sun d'Or city mapping (`TBS` -> `Tbilisi`),
+        `1 adult nonstop` without `"on EL AL"`, `to_dict`/`from_dict` round-trip, equality for solo
+        adult (`seatedCount=1, infants=0`), and strict distinction for `seatedCount > 1` or lap infant.
+        """
+        from urllib.parse import parse_qs, urlparse
+        from backend.app.planner_synthesizer.bonus_planner_service import (
+            _PassengerSpec,
+            build_elal_google_flights_url,
+        )
+        from backend.app.schemas.domain import FamilyProfile, FlightItinerary
+
+        # 1. Mixed family (2 adults + 1 teen + 1 child + 1 lap infant -> 4 seated)
+        mixed_profile = FamilyProfile.from_dict(
+            {
+                **self.default_profile.to_dict(),
+                "adults_count": 2,
+                "children": [
+                    {
+                        "id": "c-teen",
+                        "child_name": "נועה",
+                        "child_age_years": 14,
+                        "framework_type": "MIDDLE_SCHOOL_7_9",
+                    },
+                    {
+                        "id": "c-child",
+                        "child_name": "אורי",
+                        "child_age_years": 7,
+                        "framework_type": "ELEMENTARY_1_3",
+                    },
+                    {
+                        "id": "c-inf",
+                        "child_name": "גיל",
+                        "child_age_years": 1,
+                        "passenger_Current_type": "INFANT_LAP",
+                        "framework_type": "DAYCARE_SUPERVISED",
+                    },
+                ],
+            }
+        )
+        props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+            },
+            profile=mixed_profile,
+        )
+        self.assertGreater(len(props), 0)
+        itin = props[0].itinerary
+        assert itin is not None
+        self.assertIsNotNone(itin.elal_google_flights_url)
+        self.assertIsNotNone(itin.elal_google_flights_single_adult_url)
+        self.assertNotEqual(itin.elal_google_flights_single_adult_url, itin.elal_google_flights_url)
+
+        parsed_1a = urlparse(str(itin.elal_google_flights_single_adult_url))
+        self.assertEqual(parsed_1a.scheme, "https")
+        self.assertEqual(parsed_1a.netloc, "www.google.com")
+        self.assertEqual(parsed_1a.path, "/travel/flights")
+        qs_1a = {k: v[0] for k, v in parse_qs(parsed_1a.query).items()}
+        self.assertEqual(qs_1a["curr"], "USD")
+        self.assertEqual(qs_1a["gl"], "IL")
+        self.assertEqual(qs_1a["hl"], "en")
+        self.assertIn("Flights to Rome from Tel Aviv on 2027-04-11 through 2027-04-18", qs_1a["q"])
+        self.assertIn("with 1 adult", qs_1a["q"])
+        self.assertTrue(qs_1a["q"].endswith("nonstop"))
+        self.assertNotIn("on EL AL", qs_1a["q"])
+        self.assertNotIn("child", qs_1a["q"])
+        self.assertNotIn("infant", qs_1a["q"])
+
+        # Round-trip FlightItinerary to_dict / from_dict preserves single-adult URL
+        rt_dict = itin.to_dict()
+        self.assertEqual(
+            rt_dict["elal_google_flights_single_adult_url"],
+            itin.elal_google_flights_single_adult_url,
+        )
+        rt_obj = FlightItinerary.from_dict(rt_dict)
+        self.assertEqual(
+            rt_obj.elal_google_flights_single_adult_url,
+            itin.elal_google_flights_single_adult_url,
+        )
+
+        # 2. Cabin parity (ECONOMY, PREMIUM, BUSINESS) & Open-Jaw & Sun d'Or (`TBS`)
+        pax_family = [
+            _PassengerSpec("ADULT_1", "Adult 1", True, 35, "ADULT", True, False),
+            _PassengerSpec("ADULT_2", "Adult 2", True, 35, "ADULT", True, False),
+            _PassengerSpec("CHILD_1", "Child 1", False, 7, "CHILD", True, True),
+            _PassengerSpec("CHILD_2", "Infant 1", False, 1, "INFANT_LAP", False, True),
+        ]
+        for cabin, expected_phrase in (
+            ("ECONOMY", "with 1 adult nonstop"),
+            ("PREMIUM", "with 1 adult premium economy nonstop"),
+            ("BUSINESS", "with 1 adult business class nonstop"),
+        ):
+            u_full = build_elal_google_flights_url(
+                "TLV", "FCO", "FCO", date(2027, 4, 11), date(2027, 4, 18), pax_family, primary_cabin=cabin
+            )
+            u_single = build_elal_google_flights_url(
+                "TLV",
+                "FCO",
+                "FCO",
+                date(2027, 4, 11),
+                date(2027, 4, 18),
+                pax_family,
+                primary_cabin=cabin,
+                single_adult_only=True,
+            )
+            self.assertNotEqual(u_single, u_full)
+            q_s = parse_qs(urlparse(u_single).query)["q"][0]
+            self.assertIn(expected_phrase, q_s)
+            self.assertNotIn("on EL AL", q_s)
+
+        u_oj_full = build_elal_google_flights_url(
+            "TLV", "MXP", "FCO", date(2027, 4, 11), date(2027, 4, 18), pax_family, primary_cabin="PREMIUM"
+        )
+        u_oj_single = build_elal_google_flights_url(
+            "TLV",
+            "MXP",
+            "FCO",
+            date(2027, 4, 11),
+            date(2027, 4, 18),
+            pax_family,
+            primary_cabin="PREMIUM",
+            single_adult_only=True,
+        )
+        self.assertNotEqual(u_oj_single, u_oj_full)
+        q_oj = parse_qs(urlparse(u_oj_single).query)["q"][0]
+        self.assertEqual(
+            q_oj,
+            "One way flights to Milan from Tel Aviv on 2027-04-11 with 1 adult premium economy nonstop",
+        )
+
+        u_tbs_single = build_elal_google_flights_url(
+            "TLV",
+            "TBS",
+            "TBS",
+            date(2027, 4, 16),
+            date(2027, 4, 27),
+            pax_family,
+            single_adult_only=True,
+        )
+        q_tbs = parse_qs(urlparse(u_tbs_single).query)["q"][0]
+        self.assertEqual(
+            q_tbs,
+            "Flights to Tbilisi from Tel Aviv on 2027-04-16 through 2027-04-27 with 1 adult nonstop",
+        )
+
+        # 3. Solo adult (1 adult, 0 infants) -> single-adult URL == full-party URL
+        solo_profile = FamilyProfile(adults_count=1, matmid_points_balance=100000, children=[])
+        solo_props = self.planner.search_vacations(
+            {
+                "date_selection_mode": "SPECIFIC_DATES",
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+            },
+            profile=solo_profile,
+        )
+        self.assertGreater(len(solo_props), 0)
+        solo_itin = solo_props[0].itinerary
+        assert solo_itin is not None
+        self.assertEqual(
+            solo_itin.elal_google_flights_single_adult_url,
+            solo_itin.elal_google_flights_url,
+        )
+
+        # 4. Solo adult + lap infant -> full-party includes "1 infant", single-adult is "1 adult" only
+        pax_solo_lap = [
+            _PassengerSpec("ADULT_1", "Adult 1", True, 35, "ADULT", True, False),
+            _PassengerSpec("CHILD_1", "Infant 1", False, 1, "INFANT_LAP", False, True),
+        ]
+        u_lap_full = build_elal_google_flights_url(
+            "TLV", "FCO", "FCO", date(2027, 4, 11), date(2027, 4, 18), pax_solo_lap
+        )
+        u_lap_single = build_elal_google_flights_url(
+            "TLV", "FCO", "FCO", date(2027, 4, 11), date(2027, 4, 18), pax_solo_lap, single_adult_only=True
+        )
+        self.assertIn("1 adult and 1 infant", parse_qs(urlparse(u_lap_full).query)["q"][0])
+        self.assertIn("with 1 adult nonstop", parse_qs(urlparse(u_lap_single).query)["q"][0])
 
     def test_infant_age_reclassification_live_no_tuesday_discount_and_two_plus_banner_flag(
         self,

@@ -377,10 +377,11 @@ def build_elal_google_flights_url(
     ret_date: date,
     passengers: list[_PassengerSpec],
     primary_cabin: str = "ECONOMY",
+    single_adult_only: bool = False,
 ) -> str:
     """Build a WAF-safe Google Flights search URL pre-filled with verified destination names,
     nonstop filter, exact outbound/return dates, cabin class, and family passenger breakdown
-    (`adults`, `children`, `infants`).
+    (`adults`, `children`, `infants`), or `1 adult` only when `single_adult_only=True`.
 
     Uses verified city/airport names (rather than raw ambiguous 3-letter codes like `TBS`) and
     omits `"on EL AL"` so both EL AL mainline and Sun d'Or (`2U`/`LY5xxx`) nonstop flights load
@@ -392,12 +393,17 @@ def build_elal_google_flights_url(
     orig_place = resolve_google_flights_place_name(orig)
     dest_place = resolve_google_flights_place_name(dest)
 
-    adt_count = max(
-        1,
-        sum(1 for p in passengers if p.requires_seat and not p.is_under_12),
-    )
-    chd_count = sum(1 for p in passengers if p.requires_seat and p.is_under_12)
-    inf_count = min(adt_count, sum(1 for p in passengers if not p.requires_seat))
+    if single_adult_only:
+        adt_count = 1
+        chd_count = 0
+        inf_count = 0
+    else:
+        adt_count = max(
+            1,
+            sum(1 for p in passengers if p.requires_seat and not p.is_under_12),
+        )
+        chd_count = sum(1 for p in passengers if p.requires_seat and p.is_under_12)
+        inf_count = min(adt_count, sum(1 for p in passengers if not p.requires_seat))
 
     pax_parts: list[str] = [f"{adt_count} adult" if adt_count == 1 else f"{adt_count} adults"]
     if chd_count > 0:
@@ -1008,6 +1014,20 @@ class MultiClubWalletAllocationEngine:
                         ret_date=ret_date,
                         passengers=passengers,
                         primary_cabin=norm_cabin,
+                    )
+                    if is_elal
+                    else None
+                ),
+                elal_google_flights_single_adult_url=(
+                    build_elal_google_flights_url(
+                        origin_iata=origin_iata,
+                        dest_iata=dest_iata,
+                        return_origin_iata=return_origin_iata,
+                        dep_date=dep_date,
+                        ret_date=ret_date,
+                        passengers=passengers,
+                        primary_cabin=norm_cabin,
+                        single_adult_only=True,
                     )
                     if is_elal
                     else None

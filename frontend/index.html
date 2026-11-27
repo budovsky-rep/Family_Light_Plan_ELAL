@@ -692,6 +692,46 @@
   <div class="profile-sheet-backdrop" id="profile-sheet-backdrop" hidden style="display: none;"></div>
   <div class="calendar-modal-backdrop" id="calendar-modal-backdrop" hidden style="display: none;"></div>
 
+  <!-- Run 16: Pre-Booking Handoff Modal (Desktop >=768px) / Bottom Sheet (Mobile <768px) -->
+  <div class="booking-handoff-backdrop" id="booking-handoff-backdrop" hidden style="display: none;"></div>
+  <section
+    class="booking-handoff-modal"
+    id="booking-handoff-modal"
+    aria-labelledby="booking-handoff-title"
+    data-aria-he="מדריך הזמנה באל על ופרטי הטיסות"
+    data-aria-en="EL AL booking guide and flight details"
+    hidden
+    style="display: none;"
+  >
+    <div class="booking-handoff-sheet-handle" aria-hidden="true"></div>
+    <header class="booking-handoff-header">
+      <div class="booking-handoff-title-wrap">
+        <span class="booking-handoff-eyebrow" id="booking-handoff-eyebrow" data-he="מדריך מעבר להזמנה באל על" data-en="EL AL Booking Handoff Guide">מדריך מעבר להזמנה באל על</span>
+        <h2 class="booking-handoff-title" id="booking-handoff-title" data-he="לפני שממשיכים להזמנה באל על" data-en="Before you book with EL AL">לפני שממשיכים להזמנה באל על</h2>
+      </div>
+      <button
+        type="button"
+        class="booking-handoff-close"
+        id="btn-close-booking-handoff"
+        aria-label="סגירת מדריך ההזמנה"
+        data-aria-he="סגירת מדריך ההזמנה"
+        data-aria-en="Close booking guide"
+      >✕</button>
+    </header>
+    <div class="booking-handoff-body" id="booking-handoff-body"></div>
+    <footer class="booking-handoff-footer" id="booking-handoff-footer">
+      <div class="handoff-cta-group" id="booking-handoff-cta-group"></div>
+      <label class="booking-handoff-suppress-label" for="input-booking-handoff-suppress">
+        <input type="checkbox" id="input-booking-handoff-suppress" />
+        <span
+          id="booking-handoff-suppress-text"
+          data-he="אל תציג לי שוב את ההסבר במכשיר זה"
+          data-en="Don't show this guide again on this device"
+        >אל תציג לי שוב את ההסבר במכשיר זה</span>
+      </label>
+    </footer>
+  </section>
+
   <!-- Thumb-Ergonomic Mobile Bottom Navigation Dock (Hidden on Desktop `>=1024px`) -->
   <nav class="mobile-thumb-dock" id="mobile-thumb-dock" aria-label="ניווט מהיר במובייל" data-aria-he="ניווט מהיר במובייל" data-aria-en="Mobile quick navigation">
     <button type="button" class="mobile-dock-btn active" data-dock-zone="zone-search">

@@ -619,6 +619,9 @@
     isProfileSheetOpen: false,
     profileSheetView: null,
     isAuthPopoverOpen: false,
+    isBookingHandoffOpen: false,
+    bookingHandoffProposal: null,
+    visibleRenderableProposals: [],
     lastActiveMobileZone: 'zone-search',
     isDestPickerOpen: false,
     destFilterQuery: '',
@@ -698,6 +701,59 @@
   ];
   let calendarModalOpenerEl = null;
 
+  const BOOKING_HANDOFF_SUPPRESS_KEY = 'fvp_elal_handoff_suppress_v1';
+  const BOOKING_HANDOFF_INERT_SELECTORS = [
+    '#app-header',
+    '#dashboard-shell',
+    '#site-footer',
+    '#mobile-thumb-dock'
+  ];
+  let bookingHandoffOpenerEl = null;
+  let bookingHandoffScrollbarPx = 0;
+
+  function isBookingHandoffSuppressed() {
+    try {
+      return (
+        typeof localStorage !== 'undefined' &&
+        localStorage.getItem(BOOKING_HANDOFF_SUPPRESS_KEY) === '1'
+      );
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  function setBookingHandoffSuppressed(suppressed) {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      if (suppressed) {
+        localStorage.setItem(BOOKING_HANDOFF_SUPPRESS_KEY, '1');
+      } else {
+        localStorage.removeItem(BOOKING_HANDOFF_SUPPRESS_KEY);
+      }
+    } catch (_err) {
+      // Ignore storage access errors in restricted contexts
+    }
+  }
+
+  function syncBodyScrollLock() {
+    document.body.classList.toggle(
+      'is-sheet-locked',
+      Boolean(state.isCalendarVisible || state.isProfileSheetOpen || state.isBookingHandoffOpen)
+    );
+  }
+
+  function clearOpenKpiTooltips() {
+    document.querySelectorAll('.kpi-cell.is-tooltip-open, .stub-weather-card.is-tooltip-open').forEach((el) => {
+      el.classList.remove('is-tooltip-open');
+    });
+    document.querySelectorAll('.stub-score-header.has-open-inline-kpi').forEach((hdrEl) => {
+      hdrEl.classList.remove('has-open-inline-kpi');
+    });
+    document.querySelectorAll('.proposal-card.has-open-tooltip').forEach((cardEl) => {
+      cardEl.classList.remove('has-open-tooltip');
+    });
+  }
+
   function setCalendarVisibility(visible, optsOrScroll) {
     const options =
       optsOrScroll && typeof optsOrScroll === 'object' ? optsOrScroll : {};
@@ -705,6 +761,9 @@
     const wasOpen = Boolean(state.isCalendarVisible);
 
     if (willOpen && !wasOpen) {
+      if (state.isBookingHandoffOpen) {
+        closeBookingHandoffModal({ restoreFocus: false });
+      }
       if (state.isProfileSheetOpen) {
         setProfileSheetOpen(false, { restoreFocus: false });
       }
@@ -754,15 +813,12 @@
       if (!el) return;
       if (willOpen) {
         el.setAttribute('inert', '');
-      } else if (state.profileSheetView !== 'travelers') {
+      } else if (state.profileSheetView !== 'travelers' && !state.isBookingHandoffOpen) {
         el.removeAttribute('inert');
       }
     });
 
-    document.body.classList.toggle(
-      'is-sheet-locked',
-      Boolean(willOpen || state.isProfileSheetOpen)
-    );
+    syncBodyScrollLock();
 
     const btnTop = document.getElementById('btn-toggle-calendar');
     if (btnTop) {
@@ -867,6 +923,9 @@
     const options = opts || {};
     const willOpen = Boolean(open);
     const wasOpen = Boolean(state.isAuthPopoverOpen);
+    if (willOpen && state.isBookingHandoffOpen) {
+      closeBookingHandoffModal({ restoreFocus: false });
+    }
     if (willOpen && state.isProfileSheetOpen) {
       setProfileSheetOpen(false, { restoreFocus: false });
     }
@@ -960,7 +1019,7 @@
   // A sheet opened below 1180px must not survive at desktop width, and a desktop modal window must not survive below it
   function closeProfileSheetOnBreakpointCross() {
     if (typeof window === 'undefined') return;
-    if (state.isCalendarVisible && !state.isProfileSheetOpen) return;
+    if ((state.isCalendarVisible || state.isBookingHandoffOpen) && !state.isProfileSheetOpen) return;
     if (!state.isProfileSheetOpen && !document.body.classList.contains('is-sheet-locked')) return;
     const isSheetViewport = window.innerWidth < 1180;
     const openedAsDesktopView = state.profileSheetView !== null;
@@ -972,6 +1031,9 @@
   function setProfileSheetOpen(open, opts) {
     const options = opts || {};
     const willOpen = Boolean(open);
+    if (willOpen && state.isBookingHandoffOpen) {
+      closeBookingHandoffModal({ restoreFocus: false });
+    }
     if (willOpen && state.isAuthPopoverOpen) {
       setAuthPopoverOpen(false, { restoreFocus: false });
     }
@@ -1018,7 +1080,7 @@
           if (el) el.setAttribute('inert', '');
         });
       }
-      document.body.classList.toggle('is-sheet-locked', Boolean(isModal || state.isCalendarVisible));
+      syncBodyScrollLock();
       heldPageScrollbarPx = isModal ? pageScrollbarPx : 0;
       if (heldPageScrollbarPx > 0) {
         const scrollbarSide =
@@ -1081,7 +1143,7 @@
         backdrop.style.display = 'none';
       }
     }
-    document.body.classList.toggle('is-sheet-locked', Boolean(state.isProfileSheetOpen || state.isCalendarVisible));
+    syncBodyScrollLock();
     if (btnEditTravelers) {
       btnEditTravelers.setAttribute('aria-expanded', state.isProfileSheetOpen ? 'true' : 'false');
     }
@@ -2610,6 +2672,13 @@
     return code;
   }
 
+  function resolveGoogleFlightsCabinPhrase(primaryCabin) {
+    const normCabin = String(primaryCabin || 'ECONOMY').trim().toUpperCase();
+    if (normCabin === 'BUSINESS') return ' business class';
+    if (normCabin === 'PREMIUM') return ' premium economy';
+    return '';
+  }
+
   function resolveElAlBookingUrl(it) {
     if (!it || !it.is_elal_flight) return null;
     const serverGfUrl = String(it.elal_google_flights_url || '').trim();
@@ -2629,8 +2698,9 @@
     const destPlace = resolveGoogleFlightsPlace(dest, it.destination_city_en);
     const depIso = String(it.departure_date || '2027-04-11');
     const retIso = String(it.return_date || '2027-04-18');
+    const cabinPhrase = resolveGoogleFlightsCabinPhrase(it.primary_cabin);
 
-    const prof = state.profile || {};
+    const prof = state.lastSearchProfile || state.profile || {};
     let adt = Math.max(1, Number(prof.adults_count || 2));
     let chd = 0;
     let inf = 0;
@@ -2659,8 +2729,8 @@
 
     const qStr =
       retOrig === dest
-        ? `Flights to ${destPlace} from ${origPlace} on ${depIso} through ${retIso} with ${paxPhrase} nonstop`
-        : `One way flights to ${destPlace} from ${origPlace} on ${depIso} with ${paxPhrase} nonstop`;
+        ? `Flights to ${destPlace} from ${origPlace} on ${depIso} through ${retIso} with ${paxPhrase}${cabinPhrase} nonstop`
+        : `One way flights to ${destPlace} from ${origPlace} on ${depIso} with ${paxPhrase}${cabinPhrase} nonstop`;
 
     const params = new URLSearchParams();
     params.set('q', qStr);
@@ -2668,6 +2738,421 @@
     params.set('gl', 'IL');
     params.set('hl', 'en');
     return `https://www.google.com/travel/flights?${params.toString()}`;
+  }
+
+  function resolveElAlSingleAdultGoogleFlightsUrl(it) {
+    if (!it || !it.is_elal_flight) return null;
+    const serverSingleUrl = String(it.elal_google_flights_single_adult_url || '').trim();
+    if (
+      serverSingleUrl.startsWith('https://www.google.com/travel/flights') &&
+      !serverSingleUrl.includes('nonstop+on+EL+AL') &&
+      !serverSingleUrl.includes('nonstop%20on%20EL%20AL')
+    ) {
+      return serverSingleUrl;
+    }
+
+    const orig = String(it.origin_iata || 'TLV').toUpperCase();
+    const dest = String(it.destination_iata || 'FCO').toUpperCase();
+    const retOrig = String(it.return_origin_iata || dest).toUpperCase();
+    const origPlace = resolveGoogleFlightsPlace(orig);
+    const destPlace = resolveGoogleFlightsPlace(dest, it.destination_city_en);
+    const depIso = String(it.departure_date || '2027-04-11');
+    const retIso = String(it.return_date || '2027-04-18');
+    const cabinPhrase = resolveGoogleFlightsCabinPhrase(it.primary_cabin);
+
+    const qStr =
+      retOrig === dest
+        ? `Flights to ${destPlace} from ${origPlace} on ${depIso} through ${retIso} with 1 adult${cabinPhrase} nonstop`
+        : `One way flights to ${destPlace} from ${origPlace} on ${depIso} with 1 adult${cabinPhrase} nonstop`;
+
+    const params = new URLSearchParams();
+    params.set('q', qStr);
+    params.set('curr', 'USD');
+    params.set('gl', 'IL');
+    params.set('hl', 'en');
+    return `https://www.google.com/travel/flights?${params.toString()}`;
+  }
+
+  function formatHandoffCabinLabel(primaryCabin, isHe) {
+    const code = String(primaryCabin || 'ECONOMY').trim().toUpperCase();
+    if (code === 'BUSINESS') return isHe ? 'עסקים' : 'Business';
+    if (code === 'PREMIUM') return isHe ? 'פרימיום' : 'Premium';
+    return isHe ? 'תיירים' : 'Economy';
+  }
+
+  function renderHandoffLegCoupon(directionKey, lane, leg, fromIata, toIata, isHe) {
+    const hasBonus = Boolean(lane && lane.hasBonus);
+    const seatsNum = hasBonus ? Math.max(1, Number(lane.seats || 1)) : 0;
+    const twoPlus = Boolean(hasBonus && lane.twoPlus);
+    const eyebrowText =
+      directionKey === 'outbound'
+        ? (isHe ? 'הלוך' : 'Outbound')
+        : (isHe ? 'חזור' : 'Return');
+
+    let seatsHtml = '';
+    if (!hasBonus) {
+      seatsHtml = `<span class="handoff-leg-empty">${isHe ? 'ללא בונוס' : 'No bonus'}</span>`;
+    } else if (twoPlus) {
+      seatsHtml = `<span class="handoff-leg-count" dir="ltr">2+</span> <span class="handoff-leg-unit">${isHe ? 'מושבי בונוס' : 'bonus seats'}</span>`;
+    } else if (seatsNum === 1) {
+      seatsHtml = isHe
+        ? `<span class="handoff-leg-unit">מושב בונוס</span> <span class="handoff-leg-count" dir="ltr">1</span>`
+        : `<span class="handoff-leg-count" dir="ltr">1</span> <span class="handoff-leg-unit">bonus seat</span>`;
+    } else {
+      seatsHtml = `<span class="handoff-leg-count" dir="ltr">${seatsNum}</span> <span class="handoff-leg-unit">${isHe ? 'מושבי בונוס' : 'bonus seats'}</span>`;
+    }
+
+    const fn = leg && leg.flight_number ? String(leg.flight_number).trim() : '';
+    let flightHtml = '';
+    if (!hasBonus || !fn || fn === 'LY_CASH') {
+      const commercialLabel = isHe ? 'טיסה מסחרית (ללא בונוס)' : 'Commercial flight (no bonus)';
+      flightHtml = `<span class="handoff-leg-flight handoff-leg-flight-commercial">${escapeHtml(commercialLabel)}</span>`;
+    } else {
+      const depT = leg.departure_time_local ? String(leg.departure_time_local).slice(0, 5) : '';
+      const arrT = leg.arrival_time_local ? String(leg.arrival_time_local).slice(0, 5) : '';
+      const timeRange = depT && arrT ? `${depT}–${arrT}` : depT;
+      flightHtml = timeRange
+        ? `<span class="handoff-leg-flight" dir="ltr"><span class="handoff-flight-num">${escapeHtml(fn)}</span><span class="handoff-flight-sep" aria-hidden="true"> · </span><span class="handoff-flight-times">${escapeHtml(timeRange)}</span></span>`
+        : `<span class="handoff-leg-flight" dir="ltr"><span class="handoff-flight-num">${escapeHtml(fn)}</span></span>`;
+    }
+
+    return `
+      <div class="handoff-leg" data-handoff-leg="${directionKey}" data-has-bonus="${hasBonus ? 'true' : 'false'}">
+        <div class="handoff-leg-top">
+          <span class="handoff-leg-eyebrow">${escapeHtml(eyebrowText)}</span>
+          <span class="handoff-leg-route" dir="ltr">${escapeHtml(fromIata)} → ${escapeHtml(toIata)}</span>
+        </div>
+        <div class="handoff-leg-seats" data-seats="${seatsNum}" data-two-plus="${twoPlus ? 'true' : 'false'}">
+          ${seatsHtml}
+        </div>
+        ${flightHtml}
+      </div>
+    `;
+  }
+
+  function renderBookingHandoffModalContent() {
+    const bodyEl = document.getElementById('booking-handoff-body');
+    const ctaGroupEl = document.getElementById('booking-handoff-cta-group');
+    const proposal = state.bookingHandoffProposal;
+    if (!bodyEl || !ctaGroupEl || !proposal) return;
+
+    const isHe = state.locale === 'he';
+    const it = proposal.itinerary || {};
+    const dirInfo = resolveBonusDirectionInfo(it);
+    const cardProfile = state.lastSearchProfile || state.profile || {};
+    const paxInfo = buildHouseholdPassengerSummary(cardProfile, it, isHe);
+    const seatedCount = Math.max(1, Number(paxInfo.seatedCount || 1));
+    const totalTravelers = Math.max(seatedCount, Number(paxInfo.totalTravelers || seatedCount));
+
+    const orig = String(it.origin_iata || 'TLV').trim().toUpperCase();
+    const dest = String(it.destination_iata || 'FCO').trim().toUpperCase();
+    const retOrig = String(it.return_origin_iata || dest).trim().toUpperCase();
+    const isOpenJaw = retOrig !== dest;
+    const destIcon = DESTINATION_ICONS[dest] || '✈️';
+    const cityTitle = isHe
+      ? (it.destination_city_he || dest)
+      : (it.destination_city_en || dest);
+    const depIso = String(it.departure_date || '');
+    const retIso = String(it.return_date || '');
+    const nightsNum = Math.max(1, Number(it.trip_nights || 1));
+    const nightsText = isHe
+      ? (nightsNum === 1 ? 'לילה 1' : `${nightsNum} לילות`)
+      : (nightsNum === 1 ? '1 night' : `${nightsNum} nights`);
+    const cabinText = formatHandoffCabinLabel(it.primary_cabin, isHe);
+
+    const routeDisplay = isOpenJaw
+      ? `${orig} → ${dest} / ${retOrig} → ${orig}`
+      : `${orig} ⇄ ${dest}`;
+    const openJawBadgeHtml = isOpenJaw
+      ? `<span class="handoff-openjaw-tag">${isHe ? 'מסלול משולב' : 'Open-jaw'}</span>`
+      : '';
+
+    const directionStatement = formatBonusDirectionStatement(dirInfo.coverage, isHe);
+    const coveragePillCls =
+      dirInfo.coverage === 'BOTH_DIRECTIONS'
+        ? 'handoff-coverage-pill'
+        : 'handoff-coverage-pill handoff-coverage-pill-partial';
+
+    const outLeg = (it.outbound_legs && it.outbound_legs[0]) || null;
+    const inLeg = (it.inbound_legs && it.inbound_legs[0]) || null;
+    const outCouponHtml = renderHandoffLegCoupon('outbound', dirInfo.outbound, outLeg, orig, dest, isHe);
+    const inCouponHtml = renderHandoffLegCoupon('inbound', dirInfo.inbound, inLeg, retOrig, orig, isHe);
+
+    const hasSingleSeatBonus =
+      (dirInfo.outbound.hasBonus && !dirInfo.outbound.twoPlus && dirInfo.outbound.seats === 1) ||
+      (dirInfo.inbound.hasBonus && !dirInfo.inbound.twoPlus && dirInfo.inbound.seats === 1);
+    const warnNeeded = seatedCount > 2 || (seatedCount >= 2 && hasSingleSeatBonus);
+
+    let step3CalloutHtml = '';
+    if (seatedCount > 2) {
+      const warnText = isHe
+        ? `הרכב של ${seatedCount} מושבים: חיפוש לכל הנוסעים יחד עלול להציג 0 אפשרויות בונוס כשיש רק 1–2 מושבי בונוס בטיסה. מומלץ לפתוח למבוגר 1 ולהעלות בהדרגה באל על <span class="handoff-seq-mono" dir="ltr">(1 → 2 → 3…)</span> כדי לגלות את מספר המושבים המדויק.`
+        : `${seatedCount} seated travelers: searching for all passengers at once can show zero bonus options when only 1–2 bonus seats exist. Open for 1 adult first and increment gradually on EL AL <span class="handoff-seq-mono" dir="ltr">(1 → 2 → 3…)</span> to find the exact count.`;
+      step3CalloutHtml = `<div class="handoff-warning-callout" data-handoff-warning="high"><span aria-hidden="true">⚠️</span> <span>${warnText}</span></div>`;
+    } else if (seatedCount === 2 && hasSingleSeatBonus) {
+      const warnText = isHe
+        ? `מושב בונוס 1 בכיוון אחד לפחות: חיפוש ל-2 נוסעים יחד עלול להסתיר את מושב הבונוס הפנוי. מומלץ לפתוח למבוגר 1 ולבדוק זמינות <span class="handoff-seq-mono" dir="ltr">(1 → 2)</span> ישירות באל על.`
+        : `Only 1 bonus seat on at least one direction: searching for 2 passengers together can hide the open bonus seat. Open for 1 adult first and check availability <span class="handoff-seq-mono" dir="ltr">(1 → 2)</span> on EL AL.`;
+      step3CalloutHtml = `<div class="handoff-warning-callout" data-handoff-warning="high"><span aria-hidden="true">⚠️</span> <span>${warnText}</span></div>`;
+    } else {
+      const tipText = isHe
+        ? 'טיפ: כשמחפשים יותר מ-2 מושבים (או כשיש מושב בודד), התחלה במבוגר 1 והעלאה הדרגתית באתר אל על מונעת פספוס מושבי בונוס.'
+        : 'Tip: When checking for more than 2 seated passengers (or a 1-seat leg), starting with 1 adult and incrementing on EL AL avoids zero-result searches.';
+      step3CalloutHtml = `<div class="handoff-warning-callout" data-handoff-warning="info"><span aria-hidden="true">ℹ️</span> <span>${tipText}</span></div>`;
+    }
+
+    const step1Title = isHe ? 'בחרו את טיסות אל על ב-Google Flights' : 'Pick the EL AL flights on Google Flights';
+    const step1Body = isHe
+      ? 'הקישור ייפתח עם היעד והתאריכים ממולאים מראש. בחרו את טיסות אל על שמופיעות למעלה והמשיכו לאתר אל על.'
+      : 'Google Flights opens pre-filled with your destination and dates. Select the EL AL flights shown above and continue to EL AL\'s site.';
+
+    const step2Title = isHe ? 'התחברו קודם לחשבון הנוסע המתמיד (Login)' : 'Sign in (Login) to your Matmid account first';
+    const step2Body = isHe
+      ? 'באתר אל על, מושבי הבונוס ומחירי הנקודות מוצגים רק לאחר התחברות לחשבון המתמיד.'
+      : 'On EL AL\'s site, bonus ticket availability and points pricing only appear after you sign in.';
+
+    const step3Title = isHe ? 'בדקו כמות מושבי בונוס מדויקת והזמינו' : 'Check exact bonus seat count & book';
+    const step3Body = isHe
+      ? 'אמתו את זמינות מושבי הבונוס העדכנית והשלימו את ההזמנה ישירות באתר אל על.'
+      : 'Confirm live bonus seat availability and complete your booking directly on EL AL.';
+
+    bodyEl.innerHTML = `
+      <div class="handoff-cheatsheet" id="booking-handoff-cheatsheet" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}">
+        <div class="handoff-slip-head">
+          <div class="handoff-slip-top">
+            <div class="handoff-slip-dest">
+              <span class="handoff-slip-icon" aria-hidden="true">${destIcon}</span>
+              <strong class="handoff-slip-city">${escapeHtml(cityTitle)}</strong>
+              ${openJawBadgeHtml}
+            </div>
+            <span class="handoff-slip-route" dir="ltr">${escapeHtml(routeDisplay)}</span>
+          </div>
+          <div class="handoff-slip-meta">
+            <span class="handoff-slip-dates" dir="ltr">${escapeHtml(depIso)} → ${escapeHtml(retIso)}</span>
+            <span class="handoff-slip-sep" aria-hidden="true">·</span>
+            <span class="handoff-slip-nights">${escapeHtml(nightsText)}</span>
+            <span class="handoff-slip-sep" aria-hidden="true">·</span>
+            <span class="handoff-slip-cabin">${escapeHtml(cabinText)}</span>
+            <span class="handoff-slip-sep" aria-hidden="true">·</span>
+            <span class="handoff-slip-pax">${escapeHtml(paxInfo.paxSummaryText)}</span>
+          </div>
+        </div>
+        <div class="handoff-slip-coverage">
+          <span class="${coveragePillCls}">
+            <span class="bonus-direction-dot" aria-hidden="true"></span>
+            <span>${escapeHtml(directionStatement)}</span>
+          </span>
+        </div>
+        <div class="handoff-legs-grid">
+          ${outCouponHtml}
+          ${inCouponHtml}
+        </div>
+      </div>
+
+      <ol class="handoff-steps" id="booking-handoff-steps">
+        <li class="handoff-step">
+          <span class="handoff-step-num" dir="ltr" aria-hidden="true">1</span>
+          <div class="handoff-step-content">
+            <strong class="handoff-step-title">${escapeHtml(step1Title)}</strong>
+            <p class="handoff-step-desc">${escapeHtml(step1Body)}</p>
+          </div>
+        </li>
+        <li class="handoff-step">
+          <span class="handoff-step-num" dir="ltr" aria-hidden="true">2</span>
+          <div class="handoff-step-content">
+            <strong class="handoff-step-title">${escapeHtml(step2Title)}</strong>
+            <p class="handoff-step-desc">${escapeHtml(step2Body)}</p>
+          </div>
+        </li>
+        <li class="handoff-step">
+          <span class="handoff-step-num" dir="ltr" aria-hidden="true">3</span>
+          <div class="handoff-step-content">
+            <strong class="handoff-step-title">${escapeHtml(step3Title)}</strong>
+            <p class="handoff-step-desc">${escapeHtml(step3Body)}</p>
+            ${step3CalloutHtml}
+          </div>
+        </li>
+      </ol>
+    `;
+
+    const fullPartyUrl = resolveElAlBookingUrl(it) || 'https://www.google.com/travel/flights';
+    const singleAdultUrl = resolveElAlSingleAdultGoogleFlightsUrl(it) || fullPartyUrl;
+    const travelersCountLabel = isHe
+      ? (totalTravelers === 1 ? 'נוסע 1' : `${totalTravelers} נוסעים`)
+      : (totalTravelers === 1 ? '1 traveler' : `${totalTravelers} travelers`);
+
+    let ctaHtml = '';
+    if (seatedCount <= 1) {
+      const label = isHe
+        ? '✈️ המשך ל-Google Flights להזמנה באל על'
+        : '✈️ Continue to Google Flights for EL AL';
+      ctaHtml = `
+        <a class="btn-handoff-primary" id="btn-handoff-book-full" href="${escapeHtml(fullPartyUrl)}" target="_blank" rel="noopener noreferrer" data-handoff-cta="full-party" data-handoff-priority="primary">
+          <span>${escapeHtml(label)}</span>
+          <span dir="ltr" aria-hidden="true">↗</span>
+        </a>
+      `;
+    } else if (warnNeeded) {
+      const singleLabel = isHe
+        ? '✈️ פתח למבוגר 1 ב-Google Flights (מומלץ)'
+        : '✈️ Open for 1 Adult on Google Flights (Recommended)';
+      const fullLabel = isHe
+        ? `פתיחה לכל ההרכב (${travelersCountLabel})`
+        : `Open for Full Party (${travelersCountLabel})`;
+      ctaHtml = `
+        <a class="btn-handoff-primary" id="btn-handoff-book-single" href="${escapeHtml(singleAdultUrl)}" target="_blank" rel="noopener noreferrer" data-handoff-cta="single-adult" data-handoff-priority="primary">
+          <span>${escapeHtml(singleLabel)}</span>
+          <span dir="ltr" aria-hidden="true">↗</span>
+        </a>
+        <a class="btn-handoff-secondary" id="btn-handoff-book-full" href="${escapeHtml(fullPartyUrl)}" target="_blank" rel="noopener noreferrer" data-handoff-cta="full-party" data-handoff-priority="secondary">
+          <span>${escapeHtml(fullLabel)}</span>
+          <span dir="ltr" aria-hidden="true">↗</span>
+        </a>
+      `;
+    } else {
+      const fullLabel = isHe
+        ? `✈️ המשך ל-Google Flights (${travelersCountLabel})`
+        : `✈️ Continue to Google Flights (${travelersCountLabel})`;
+      const singleLabel = isHe
+        ? 'בדיקה למבוגר 1 בלבד ב-Google Flights'
+        : 'Check for 1 Adult Only on Google Flights';
+      ctaHtml = `
+        <a class="btn-handoff-primary" id="btn-handoff-book-full" href="${escapeHtml(fullPartyUrl)}" target="_blank" rel="noopener noreferrer" data-handoff-cta="full-party" data-handoff-priority="primary">
+          <span>${escapeHtml(fullLabel)}</span>
+          <span dir="ltr" aria-hidden="true">↗</span>
+        </a>
+        <a class="btn-handoff-secondary" id="btn-handoff-book-single" href="${escapeHtml(singleAdultUrl)}" target="_blank" rel="noopener noreferrer" data-handoff-cta="single-adult" data-handoff-priority="secondary">
+          <span>${escapeHtml(singleLabel)}</span>
+          <span dir="ltr" aria-hidden="true">↗</span>
+        </a>
+      `;
+    }
+    ctaGroupEl.innerHTML = ctaHtml;
+  }
+
+  function openBookingHandoffModal(proposal, opts) {
+    if (!proposal) return;
+    const options = opts || {};
+    if (state.isCalendarVisible) {
+      setCalendarVisibility(false, { restoreFocus: false });
+    }
+    if (state.isProfileSheetOpen) {
+      setProfileSheetOpen(false, { restoreFocus: false });
+    }
+    if (state.isAuthPopoverOpen) {
+      setAuthPopoverOpen(false, { restoreFocus: false });
+    }
+    if (state.isDestPickerOpen) {
+      setDestPickerOpen(false);
+    }
+    clearOpenKpiTooltips();
+
+    const wasOpen = Boolean(state.isBookingHandoffOpen);
+    const pageScrollbarPx =
+      typeof window !== 'undefined' && window.innerWidth >= 768
+        ? (document.body.classList.contains('is-sheet-locked')
+            ? bookingHandoffScrollbarPx
+            : Math.max(0, window.innerWidth - document.documentElement.clientWidth))
+        : 0;
+
+    state.isBookingHandoffOpen = true;
+    state.bookingHandoffProposal = proposal;
+    if (!wasOpen) {
+      const activeEl = document.activeElement;
+      bookingHandoffOpenerEl =
+        options.opener || (activeEl && activeEl !== document.body ? activeEl : null);
+    }
+
+    renderBookingHandoffModalContent();
+
+    const suppressInput = document.getElementById('input-booking-handoff-suppress');
+    if (suppressInput) {
+      suppressInput.checked = isBookingHandoffSuppressed();
+    }
+
+    const backdrop = document.getElementById('booking-handoff-backdrop');
+    const modal = document.getElementById('booking-handoff-modal');
+    if (backdrop) {
+      backdrop.removeAttribute('hidden');
+      backdrop.style.display = 'block';
+    }
+    if (modal) {
+      modal.removeAttribute('hidden');
+      modal.style.display = 'flex';
+      modal.classList.add('is-open');
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+    }
+
+    BOOKING_HANDOFF_INERT_SELECTORS.forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.setAttribute('inert', '');
+    });
+
+    syncBodyScrollLock();
+    bookingHandoffScrollbarPx = pageScrollbarPx;
+    if (bookingHandoffScrollbarPx > 0) {
+      const scrollbarSide =
+        getComputedStyle(document.documentElement).direction === 'rtl'
+          ? 'padding-inline-start'
+          : 'padding-inline-end';
+      document.body.style.setProperty(scrollbarSide, `${bookingHandoffScrollbarPx}px`);
+    }
+
+    const closeBtn = document.getElementById('btn-close-booking-handoff');
+    if (closeBtn && options.focusContent !== false) {
+      setTimeout(() => {
+        if (!state.isBookingHandoffOpen) return;
+        closeBtn.focus();
+      }, 40);
+    }
+  }
+
+  function closeBookingHandoffModal(opts) {
+    const options = opts || {};
+    const wasOpen = Boolean(state.isBookingHandoffOpen);
+    state.isBookingHandoffOpen = false;
+    state.bookingHandoffProposal = null;
+
+    const backdrop = document.getElementById('booking-handoff-backdrop');
+    const modal = document.getElementById('booking-handoff-modal');
+    if (modal) {
+      modal.setAttribute('hidden', '');
+      modal.style.display = 'none';
+      modal.classList.remove('is-open');
+      modal.removeAttribute('role');
+      modal.removeAttribute('aria-modal');
+    }
+    if (backdrop) {
+      backdrop.setAttribute('hidden', '');
+      backdrop.style.display = 'none';
+    }
+
+    BOOKING_HANDOFF_INERT_SELECTORS.forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      if (state.profileSheetView !== 'travelers' && !state.isCalendarVisible) {
+        el.removeAttribute('inert');
+      }
+    });
+
+    if (bookingHandoffScrollbarPx > 0 && state.profileSheetView !== 'travelers') {
+      document.body.style.removeProperty('padding-inline-start');
+      document.body.style.removeProperty('padding-inline-end');
+    }
+    bookingHandoffScrollbarPx = 0;
+
+    syncBodyScrollLock();
+
+    if (wasOpen && options.restoreFocus !== false) {
+      const activeEl = document.activeElement;
+      const focusWasInside =
+        !activeEl || activeEl === document.body || Boolean(modal && modal.contains(activeEl));
+      if (focusWasInside && bookingHandoffOpenerEl && document.contains(bookingHandoffOpenerEl)) {
+        bookingHandoffOpenerEl.focus();
+      }
+    }
+    bookingHandoffOpenerEl = null;
   }
 
   function resolveBonusDirectionInfo(itineraryObj) {
@@ -3231,6 +3716,7 @@
     const visibleList = state.showAllProposals
       ? renderableProposals
       : renderableProposals.slice(0, INITIAL_PROPOSALS_LIMIT);
+    state.visibleRenderableProposals = visibleList;
 
     const cardsHtml = visibleList
       .map((p, idx) => {
@@ -3469,15 +3955,23 @@
 
         const elalBookBtnHtml = elalBookUrl
           ? `
-              <a class="btn-elal-book" href="${escapeHtml(elalBookUrl)}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" title="${isHe ? 'פתיחת הטיסה ב-Google Flights לבדיקת זמינות והזמנה באל על' : 'Open the flight on Google Flights to check availability and book with EL AL'}">
+              <a class="btn-elal-book" href="${escapeHtml(elalBookUrl)}" target="_blank" rel="noopener noreferrer" data-elal-book-link="true" data-proposal-idx="${idx}" title="${isHe ? 'פתיחת הטיסה ב-Google Flights לבדיקת זמינות והזמנה באל על' : 'Open the flight on Google Flights to check availability and book with EL AL'}">
                 <span>✈️ ${isHe ? 'להזמנת טיסת אל על' : 'Book EL AL Flight'}</span>
                 <span dir="ltr" aria-hidden="true">↗</span>
               </a>
             `
           : '';
+        const bookingGuideBtnHtml = elalBookUrl
+          ? `
+              <button type="button" class="btn-booking-guide" data-booking-guide-trigger="true" data-proposal-idx="${idx}" aria-haspopup="dialog" aria-controls="booking-handoff-modal" aria-label="${isHe ? 'פתיחת מדריך ההזמנה ופרטי הטיסות' : 'Open booking guide and flight details'}" title="${isHe ? 'פתיחת מדריך ההזמנה ופרטי הטיסות' : 'Open booking guide and flight details'}">
+                <span class="btn-booking-guide-icon" aria-hidden="true">ⓘ</span>
+                <span class="btn-booking-guide-label">${isHe ? 'מדריך הזמנה' : 'Booking guide'}</span>
+              </button>
+            `
+          : '';
 
         return `
-          <article class="proposal-card tier-${escapeHtml(tierCode)}" data-strategy="${escapeHtml(strategyCode)}" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}">
+          <article class="proposal-card tier-${escapeHtml(tierCode)}" data-strategy="${escapeHtml(strategyCode)}" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}" data-proposal-idx="${idx}">
             <div class="proposal-pass-grid">
               <div class="proposal-pass-main">
                 <div class="proposal-top-bar">
@@ -3488,6 +3982,7 @@
                       <span class="proposal-route-pair"><span class="route-pair-origin" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')}</span> <span aria-hidden="true">⇄</span> <span class="route-pair-dest" dir="ltr">${escapeHtml(it.destination_iata)}</span></span>
                       ${topStyleChipHtml}
                     </div>
+                    ${bookingGuideBtnHtml}
                   </div>
                 </div>
 
@@ -3685,6 +4180,9 @@
     renderCalendarTable();
     renderWorkplaceCalendarTable();
     renderProposals();
+    if (state.isBookingHandoffOpen && state.bookingHandoffProposal) {
+      renderBookingHandoffModalContent();
+    }
   }
 
   function collectActiveFrameworksCsv() {
@@ -4422,6 +4920,10 @@
 
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
+        if (state.isBookingHandoffOpen) {
+          closeBookingHandoffModal();
+          return;
+        }
         if (state.isDestPickerOpen) {
           setDestPickerOpen(false);
         }
@@ -4445,6 +4947,39 @@
         }
       }
     });
+
+    const btnCloseBookingHandoff = document.getElementById('btn-close-booking-handoff');
+    if (btnCloseBookingHandoff) {
+      btnCloseBookingHandoff.addEventListener('click', () => {
+        closeBookingHandoffModal();
+      });
+    }
+
+    const bookingHandoffBackdrop = document.getElementById('booking-handoff-backdrop');
+    if (bookingHandoffBackdrop) {
+      bookingHandoffBackdrop.addEventListener('click', () => {
+        closeBookingHandoffModal();
+      });
+    }
+
+    const inputBookingHandoffSuppress = document.getElementById('input-booking-handoff-suppress');
+    if (inputBookingHandoffSuppress) {
+      inputBookingHandoffSuppress.addEventListener('change', () => {
+        setBookingHandoffSuppressed(Boolean(inputBookingHandoffSuppress.checked));
+      });
+    }
+
+    const bookingHandoffCtaGroup = document.getElementById('booking-handoff-cta-group');
+    if (bookingHandoffCtaGroup) {
+      bookingHandoffCtaGroup.addEventListener('click', (ev) => {
+        const ctaLink =
+          ev.target && typeof ev.target.closest === 'function'
+            ? ev.target.closest('a[data-handoff-cta]')
+            : null;
+        if (!ctaLink) return;
+        closeBookingHandoffModal({ restoreFocus: true });
+      });
+    }
 
     const btnHeaderAuth = document.getElementById('btn-header-auth');
     if (btnHeaderAuth) {
@@ -4663,6 +5198,43 @@
     document.body.addEventListener('click', (ev) => {
       const target = ev.target;
       if (!target) return;
+      const guideTriggerBtn =
+        typeof target.closest === 'function'
+          ? target.closest('[data-booking-guide-trigger="true"]')
+          : null;
+      if (guideTriggerBtn) {
+        const idx = Number(guideTriggerBtn.getAttribute('data-proposal-idx'));
+        const proposal =
+          Number.isInteger(idx) && idx >= 0 ? state.visibleRenderableProposals[idx] : null;
+        if (proposal) {
+          openBookingHandoffModal(proposal, { opener: guideTriggerBtn });
+        }
+        return;
+      }
+      const elalBookLink =
+        typeof target.closest === 'function'
+          ? target.closest('a.btn-elal-book[data-elal-book-link="true"]')
+          : null;
+      if (elalBookLink) {
+        const isUnmodifiedLeft =
+          ev.button === 0 &&
+          !ev.metaKey &&
+          !ev.ctrlKey &&
+          !ev.shiftKey &&
+          !ev.altKey &&
+          !ev.defaultPrevented;
+        if (isUnmodifiedLeft && !isBookingHandoffSuppressed()) {
+          const idx = Number(elalBookLink.getAttribute('data-proposal-idx'));
+          const proposal =
+            Number.isInteger(idx) && idx >= 0 ? state.visibleRenderableProposals[idx] : null;
+          if (proposal) {
+            ev.preventDefault();
+            openBookingHandoffModal(proposal, { opener: elalBookLink });
+            return;
+          }
+        }
+        return;
+      }
       const destOptBtn = target.closest('[data-dest-option]');
       if (destOptBtn) {
         const optCode = destOptBtn.getAttribute('data-dest-option');

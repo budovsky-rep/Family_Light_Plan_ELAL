@@ -5202,6 +5202,148 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertEqual(len(june_list), 1)
         self.assertIn("יונ׳", june_list[0]["label_he"])
 
+    def test_f31_11_run16_booking_handoff_modal_and_single_adult_url_contracts(
+        self,
+    ) -> None:
+        """Run 16 (`M16`) static & API contracts:
+        - `#booking-handoff-backdrop` & `#booking-handoff-modal` live at `<body>` root outside `#zone-results` & `#dashboard-shell`.
+        - Leaf-only `[data-he][data-en]` and paired `[data-aria-he][data-aria-en]` on all modal markup.
+        - `app.css` keeps zero `left`/`right`/`ellipsis`/`max-width`, ascending `@media (min-width: ...)`, and travelers `clamp(520px, 40vw, 580px)`.
+        - Zero standalone `'בוגרים'`, zero `'yoni'`/`'budovsky'`/`'בודובסקי'`/standalone `'יוני'`.
+        - `POST /api/v1/vacations/search` returns `elal_google_flights_single_adult_url` distinct from `elal_google_flights_url` when `seatedCount > 1` and equal when `1 adult, 0 children`.
+        """
+        import re as _re
+        from urllib.parse import parse_qs, urlparse
+        from bs4 import BeautifulSoup
+
+        html_txt = (PROJECT_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        js_txt = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text(encoding="utf-8")
+        css_txt = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text(encoding="utf-8")
+        ts_txt = (PROJECT_ROOT / "frontend" / "src" / "types" / "domain.ts").read_text(encoding="utf-8")
+
+        soup = BeautifulSoup(html_txt, "html.parser")
+        backdrop = soup.find(id="booking-handoff-backdrop")
+        modal = soup.find(id="booking-handoff-modal")
+        self.assertIsNotNone(backdrop)
+        self.assertIsNotNone(modal)
+        self.assertTrue(modal.has_attr("hidden"))
+        self.assertIsNone(soup.select_one("#zone-results #booking-handoff-modal"))
+        self.assertIsNone(soup.select_one("#dashboard-shell #booking-handoff-modal"))
+        self.assertIsNone(soup.select_one("#dashboard-shell #booking-handoff-backdrop"))
+        self.assertIsNotNone(modal.find(id="btn-close-booking-handoff"))
+        self.assertIsNotNone(modal.find(id="booking-handoff-body"))
+        self.assertIsNotNone(modal.find(id="booking-handoff-cta-group"))
+        self.assertIsNotNone(modal.find("input", id="input-booking-handoff-suppress"))
+        suppress_span = modal.find(id="booking-handoff-suppress-text")
+        self.assertIsNotNone(suppress_span)
+        self.assertEqual(suppress_span.get("data-he"), "אל תציג לי שוב את ההסבר במכשיר זה")
+        self.assertEqual(suppress_span.get("data-en"), "Don't show this guide again on this device")
+
+        self.assertIsNone(_re.search(r"(?i)(left|right)", css_txt))
+        self.assertNotIn("ellipsis", css_txt.lower())
+        self.assertIsNone(_re.search(r"@media[^{]*max-width", css_txt, _re.IGNORECASE))
+        widths = [
+            int(m.group(1))
+            for m in _re.finditer(r"@media\s*\(\s*min-width:\s*(\d+)px\s*\)", css_txt)
+        ]
+        self.assertEqual(widths, sorted(widths))
+        self.assertIn("clamp(520px, 40vw, 580px)", css_txt)
+
+        bogrim_re = _re.compile(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])")
+        yoni_he_re = _re.compile(r"(?<![א-ת])יוני(?![א-ת])")
+        for asset_name, asset_txt in (
+            ("index.html", html_txt),
+            ("app.js", js_txt),
+            ("app.css", css_txt),
+            ("domain.ts", ts_txt),
+        ):
+            self.assertIsNone(bogrim_re.search(asset_txt), f"Forbidden בוגרים in {asset_name}")
+            self.assertIsNone(yoni_he_re.search(asset_txt), f"Forbidden standalone יוני in {asset_name}")
+            low = asset_txt.lower()
+            for bad in ("yoni", "budovsky", "בודובסקי"):
+                self.assertNotIn(bad, low, f"Forbidden {bad!r} in {asset_name}")
+
+        for req_js in (
+            "BOOKING_HANDOFF_SUPPRESS_KEY",
+            "fvp_elal_handoff_suppress_v1",
+            "BOOKING_HANDOFF_INERT_SELECTORS",
+            "resolveElAlSingleAdultGoogleFlightsUrl",
+            "openBookingHandoffModal",
+            "closeBookingHandoffModal",
+            "syncBodyScrollLock",
+            'data-booking-guide-trigger="true"',
+        ):
+            self.assertIn(req_js, js_txt)
+        self.assertIn("elal_google_flights_single_adult_url: string | null;", ts_txt)
+
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        client = self.get_client(db_path)
+
+        # Multi-passenger (4 seated): single-adult URL distinct from full-party URL
+        srch_multi = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "inline_profile": {
+                    "adults_count": 2,
+                    "matmid_points_balance": 120000,
+                    "children": [
+                        {"id": "c1", "child_name": "ילד", "child_age_years": 8, "framework_type": "ELEMENTARY_1_3"},
+                        {"id": "c2", "child_name": "ילדה", "child_age_years": 5, "framework_type": "MUNICIPAL_GAN"},
+                    ],
+                },
+            },
+        )
+        self.assertEqual(srch_multi.status_code, 200)
+        props_m = srch_multi.json()["proposals"]
+        self.assertGreater(len(props_m), 0)
+        itin_m = props_m[0]["itinerary"]
+        self.assertTrue(itin_m["elal_google_flights_url"].startswith("https://www.google.com/travel/flights"))
+        self.assertTrue(
+            itin_m["elal_google_flights_single_adult_url"].startswith("https://www.google.com/travel/flights")
+        )
+        self.assertNotEqual(
+            itin_m["elal_google_flights_single_adult_url"],
+            itin_m["elal_google_flights_url"],
+        )
+        qs_1a = {
+            k: v[0]
+            for k, v in parse_qs(urlparse(itin_m["elal_google_flights_single_adult_url"]).query).items()
+        }
+        self.assertEqual(qs_1a["curr"], "USD")
+        self.assertEqual(qs_1a["gl"], "IL")
+        self.assertEqual(qs_1a["hl"], "en")
+        self.assertIn("with 1 adult", qs_1a["q"])
+        self.assertTrue(qs_1a["q"].endswith("nonstop"))
+        self.assertNotIn("on EL AL", qs_1a["q"])
+
+        # Solo adult (1 seated, 0 children): single-adult URL equals full-party URL
+        srch_solo = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+                "inline_profile": {"adults_count": 1, "matmid_points_balance": 120000, "children": []},
+            },
+        )
+        self.assertEqual(srch_solo.status_code, 200)
+        props_s = srch_solo.json()["proposals"]
+        self.assertGreater(len(props_s), 0)
+        itin_s = props_s[0]["itinerary"]
+        self.assertEqual(
+            itin_s["elal_google_flights_single_adult_url"],
+            itin_s["elal_google_flights_url"],
+        )
+
 
 # ============================================================================
 # Feature F32: Installable PWA & Preservation of 7 Specification Docs (5 tests)

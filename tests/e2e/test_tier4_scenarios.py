@@ -6525,6 +6525,482 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(after_signout["miniHtml"], "")
         self.assertEqual(browser.js_errors(), [])
 
+    def test_scenario_30_run16_pre_booking_handoff_modal_e2e(self) -> None:
+        """Scenario 30 (Run 16): Real headless-Chrome CDP verification of the Pre-Booking Handoff
+        Modal / Bottom Sheet, Flight Cheat-Sheet, 1-Adult Google Flights URL shortcut, 4 dismissal
+        paths, localStorage 'don't show again' persistence across reload, unobtrusive per-card
+        re-open guide trigger, and responsive RTL/LTR layout across 1440x900, 390x844, and 360x800.
+        """
+        from urllib.parse import parse_qs, urlparse
+        from backend.app.schemas.domain import ElAlBonusAvailability
+
+        db_path, repo = self.make_isolated_env(auto_seed=True)
+        # Replace synthetic seeded award rows with deterministic live inventory:
+        # - Card A (FCO): both directions bonus (2+ seats, LY385 07:15-10:15 & LY384 12:00-16:25)
+        # - Card B (ATH): 1-way / 1-seat bonus outbound (LY541 08:00-10:15), commercial return on Sun 2027-05-16 (`LY_CASH`)
+        import sqlite3
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("DELETE FROM elal_bonus_availability")
+            conn.commit()
+        repo.upsert_elal_bonus(
+            [
+                ElAlBonusAvailability(
+                    id="R16_LY385_2027-04-11",
+                    flight_number="LY385",
+                    origin_iata="TLV",
+                    destination_iata="FCO",
+                    direction="OUTBOUND",
+                    flight_date=date(2027, 4, 11),
+                    departure_time_local="07:15",
+                    arrival_time_local="10:15",
+                    economy_award_seats=2,
+                    economy_seats_is_two_plus=True,
+                    economy_points_per_pax=9500,
+                    taxes_usd_per_pax=48.0,
+                    source_url="https://www.elal.com/rbddataclients/#live",
+                    expires_at="2099-12-31T23:59:59Z",
+                ),
+                ElAlBonusAvailability(
+                    id="R16_LY384_2027-04-18",
+                    flight_number="LY384",
+                    origin_iata="FCO",
+                    destination_iata="TLV",
+                    direction="INBOUND",
+                    flight_date=date(2027, 4, 18),
+                    departure_time_local="12:00",
+                    arrival_time_local="16:25",
+                    economy_award_seats=2,
+                    economy_seats_is_two_plus=True,
+                    economy_points_per_pax=9500,
+                    taxes_usd_per_pax=52.0,
+                    source_url="https://www.elal.com/rbddataclients/#live",
+                    expires_at="2099-12-31T23:59:59Z",
+                ),
+                ElAlBonusAvailability(
+                    id="R16_LY541_2027-05-10",
+                    flight_number="LY541",
+                    origin_iata="TLV",
+                    destination_iata="ATH",
+                    direction="OUTBOUND",
+                    flight_date=date(2027, 5, 10),
+                    departure_time_local="08:00",
+                    arrival_time_local="10:15",
+                    economy_award_seats=1,
+                    economy_seats_is_two_plus=False,
+                    economy_points_per_pax=8500,
+                    taxes_usd_per_pax=40.0,
+                    source_url="https://www.elal.com/rbddataclients/#live",
+                    expires_at="2099-12-31T23:59:59Z",
+                ),
+            ]
+        )
+
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ELAL_LIVE_FETCH_ENABLED", old_live)
+            if old_live is not None
+            else os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+        )
+
+        client = self.get_client(db_path)
+        browser = _Run13ChromeSession(self, client, reference_date="2026-11-27")
+
+        # Verify V8 script syntax of frontend/src/app.js directly in Chromium
+        js_src = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+        compile_res = browser.call(
+            "Runtime.compileScript",
+            {"expression": js_src, "sourceURL": "app.js", "persistScript": False},
+        )
+        self.assertNotIn("exceptionDetails", compile_res, f"app.js syntax error: {compile_res}")
+
+        def set_dpr2_vp(w: int, h: int, is_mob: bool) -> None:
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": is_mob},
+            )
+            browser.pump(80)
+
+        def assert_cleanly_closed(label: str) -> None:
+            st = browser.eval(
+                """(() => {
+                  const m = document.getElementById('booking-handoff-modal');
+                  const b = document.getElementById('booking-handoff-backdrop');
+                  return {
+                    modalHidden: m.hasAttribute('hidden') && getComputedStyle(m).display === 'none',
+                    modalHasOpen: m.classList.contains('is-open'),
+                    backdropHidden: b.hasAttribute('hidden') && getComputedStyle(b).display === 'none',
+                    inertCount: document.querySelectorAll('[inert]').length,
+                    bodyLocked: document.body.classList.contains('is-sheet-locked'),
+                    bodyOverflow: getComputedStyle(document.body).overflow
+                  };
+                })()"""
+            )
+            self.assertTrue(st["modalHidden"], f"{label}: modal still visible")
+            self.assertFalse(st["modalHasOpen"], f"{label}: .is-open still set")
+            self.assertTrue(st["backdropHidden"], f"{label}: backdrop still visible")
+            self.assertEqual(st["inertCount"], 0, f"{label}: stuck [inert] elements")
+            self.assertFalse(st["bodyLocked"], f"{label}: stuck body.is-sheet-locked")
+            self.assertNotEqual(st["bodyOverflow"], "hidden", f"{label}: stuck body overflow:hidden")
+
+        set_dpr2_vp(1440, 900, False)
+        browser.mount()
+
+        # Configure 4 seated passengers (2 adults + 2 children, default age 7 each) & search FCO 2027-04-11..2027-04-18
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(100)
+        browser.real_click("#btn-add-child")
+        browser.pump(60)
+        browser.real_click("#btn-add-child")
+        browser.pump(60)
+        browser.real_click("#btn-apply-profile-sheet")
+        browser.settle()
+
+        browser.eval(
+            """(() => {
+              document.getElementById('input-dep-date').value = '2027-04-11';
+              document.getElementById('input-ret-date').value = '2027-04-18';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ROM"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+            })()"""
+        )
+        browser.wait_until(
+            "Boolean(document.querySelector('.proposal-card a.btn-elal-book[data-elal-book-link=\"true\"]'))",
+            "FCO 4-seat EL AL card rendered",
+        )
+        browser.settle()
+
+        # 1. Verify a.btn-elal-book remains a real <a> with Google Flights href & modified clicks are NOT intercepted
+        book_info = browser.eval(
+            """(() => {
+              const a = document.querySelector('.proposal-card a.btn-elal-book[data-elal-book-link="true"]');
+              return {
+                tag: a ? a.tagName : '',
+                href: a ? a.getAttribute('href') : '',
+                target: a ? a.getAttribute('target') : '',
+                rel: a ? a.getAttribute('rel') : '',
+                lsLen: window.localStorage.length
+              };
+            })()"""
+        )
+        self.assertEqual(book_info["tag"], "A")
+        self.assertTrue(book_info["href"].startswith("https://www.google.com/travel/flights"))
+        self.assertEqual(book_info["target"], "_blank")
+        self.assertIn("noopener", book_info["rel"])
+        self.assertEqual(book_info["lsLen"], 0)
+
+        # Install capture spy to prevent real tab navigation on modified clicks while checking whether app called preventDefault()
+        browser.eval(
+            """(() => {
+              window.__r16ModChecks = [];
+              window.__r16BubbleSpy = (ev) => {
+                const a = ev.target && ev.target.closest && ev.target.closest('a.btn-elal-book[data-elal-book-link="true"]');
+                if (a && (ev.ctrlKey || ev.metaKey)) {
+                  window.__r16ModChecks.push({ ctrl: ev.ctrlKey, meta: ev.metaKey, preventedByApp: ev.defaultPrevented });
+                  ev.preventDefault();
+                }
+              };
+              document.addEventListener('click', window.__r16BubbleSpy, false);
+            })()"""
+        )
+        pt_book = browser.eval("""window.__r13.clickPoint('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')""")
+        self.assertNotIn("err", pt_book)
+        for mod_flag in (2, 4):  # 2=Ctrl, 4=Meta
+            for ev_t in ("mouseMoved", "mousePressed", "mouseReleased"):
+                p = {"type": ev_t, "x": pt_book["x"], "y": pt_book["y"], "modifiers": mod_flag}
+                if ev_t != "mouseMoved":
+                    p.update({"button": "left", "clickCount": 1})
+                browser.call("Input.dispatchMouseEvent", p)
+            browser.pump(80)
+        mod_results = browser.eval("window.__r16ModChecks")
+        self.assertEqual(len(mod_results), 2)
+        for mr in mod_results:
+            self.assertFalse(mr["preventedByApp"], f"Modified click was intercepted: {mr}")
+        assert_cleanly_closed("after Ctrl/Meta clicks")
+        browser.eval("document.removeEventListener('click', window.__r16BubbleSpy, false);")
+
+        # 2. Unmodified real left-click opens the handoff modal with full Flight Cheat-Sheet & high warning (4 seats)
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        modal_he = browser.eval(
+            """(() => {
+              const m = document.getElementById('booking-handoff-modal');
+              const singleA = m.querySelector('a[data-handoff-cta="single-adult"]');
+              const fullA = m.querySelector('a[data-handoff-cta="full-party"]');
+              const warn = m.querySelector('.handoff-warning-callout');
+              return {
+                open: m.classList.contains('is-open') && !m.hasAttribute('hidden'),
+                role: m.getAttribute('role'),
+                ariaModal: m.getAttribute('aria-modal'),
+                text: m.textContent.replace(/\\s+/g, ' ').trim(),
+                stepsCount: m.querySelectorAll('.handoff-step').length,
+                warnLevel: warn ? warn.getAttribute('data-handoff-warning') : '',
+                singleHref: singleA ? singleA.getAttribute('href') : '',
+                singlePriority: singleA ? singleA.getAttribute('data-handoff-priority') : '',
+                fullHref: fullA ? fullA.getAttribute('href') : '',
+                fullPriority: fullA ? fullA.getAttribute('data-handoff-priority') : '',
+                bodyLocked: document.body.classList.contains('is-sheet-locked'),
+                inertCount: document.querySelectorAll('[inert]').length
+              };
+            })()"""
+        )
+        self.assertTrue(modal_he["open"])
+        self.assertEqual(modal_he["role"], "dialog")
+        self.assertEqual(modal_he["ariaModal"], "true")
+        self.assertEqual(modal_he["stepsCount"], 3)
+        self.assertEqual(modal_he["warnLevel"], "high")
+        self.assertEqual(modal_he["singlePriority"], "primary")
+        self.assertEqual(modal_he["fullPriority"], "secondary")
+        self.assertTrue(modal_he["bodyLocked"])
+        self.assertGreaterEqual(modal_he["inertCount"], 3)
+        for expected_he in ("רומא", "TLV ⇄ FCO", "2027-04-11", "2027-04-18", "LY385", "07:15–10:15", "LY384", "12:00–16:25", "Login", "2+"):
+            self.assertIn(expected_he, modal_he["text"], f"Missing {expected_he!r} in Hebrew modal")
+        self.assertNotIn("LY_CASH", modal_he["text"])
+        self.assertNotEqual(modal_he["singleHref"], modal_he["fullHref"])
+        q_single = parse_qs(urlparse(modal_he["singleHref"]).query)["q"][0]
+        q_full = parse_qs(urlparse(modal_he["fullHref"]).query)["q"][0]
+        self.assertIn("Flights to Rome from Tel Aviv on 2027-04-11 through 2027-04-18", q_single)
+        self.assertIn("with 1 adult", q_single)
+        self.assertTrue(q_single.endswith("nonstop"))
+        self.assertNotIn("1 adult", q_full)
+
+        # 3. Verify responsive geometry across 1440x900 (centered modal), 390x844 (bottom sheet), 360x800 (bottom sheet) in BOTH he (RTL) & en (LTR)
+        for loc_idx in range(2):
+            if loc_idx == 1:
+                set_dpr2_vp(1440, 900, False)
+                browser.real_click("#btn-close-booking-handoff")
+                assert_cleanly_closed("before locale switch")
+                browser.real_click("#btn-toggle-locale")
+                browser.pump(100)
+                browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+                en_txt = browser.eval("document.getElementById('booking-handoff-modal').textContent.replace(/\\s+/g, ' ').trim()")
+                for expected_en in ("Rome", "TLV ⇄ FCO", "LY385", "07:15–10:15", "LY384", "12:00–16:25", "Login", "1 Adult"):
+                    self.assertIn(expected_en, en_txt, f"Missing {expected_en!r} in English modal")
+
+            for vw, vh, is_mob in ((1440, 900, False), (390, 844, True), (360, 800, True)):
+                set_dpr2_vp(vw, vh, is_mob)
+                vp_geom = browser.eval(
+                    """(() => {
+                      const docEl = document.documentElement;
+                      const m = document.getElementById('booking-handoff-modal');
+                      const mr = m.getBoundingClientRect();
+                      const controls = Array.from(m.querySelectorAll('button, a, input[type="checkbox"]'));
+                      const clipped = controls.some((el) => {
+                        const r = el.getBoundingClientRect();
+                        return r.width <= 0 || r.height <= 0 || r.left < -1 || r.right > window.innerWidth + 1 || r.top < -1 || r.bottom > window.innerHeight + 1;
+                      });
+                      const scrollClipped = m.scrollWidth > m.clientWidth + 1;
+                      const cs = document.getElementById('booking-handoff-cheatsheet');
+                      const csVerticalClipped = Boolean(cs && cs.scrollHeight > cs.clientHeight + 2);
+                      return {
+                        dir: docEl.getAttribute('dir'),
+                        docOverflow: docEl.scrollWidth > docEl.clientWidth,
+                        modalTop: mr.top,
+                        modalBottom: mr.bottom,
+                        modalLeft: mr.left,
+                        modalRight: mr.right,
+                        innerW: window.innerWidth,
+                        innerH: window.innerHeight,
+                        clipped,
+                        scrollClipped,
+                        csVerticalClipped
+                      };
+                    })()"""
+                )
+                self.assertEqual(vp_geom["dir"], "rtl" if loc_idx == 0 else "ltr")
+                self.assertFalse(vp_geom["docOverflow"], f"Overflow at {vw}x{vh} loc={loc_idx}")
+                self.assertFalse(vp_geom["scrollClipped"], f"Modal scrollWidth overflow at {vw}x{vh} loc={loc_idx}")
+                self.assertFalse(vp_geom["csVerticalClipped"], f"Cheat-Sheet vertically clipped at {vw}x{vh} loc={loc_idx}")
+                self.assertFalse(vp_geom["clipped"], f"Clipped modal control at {vw}x{vh} loc={loc_idx}")
+                self.assertGreaterEqual(vp_geom["modalLeft"], -0.5)
+                self.assertLessEqual(vp_geom["modalRight"], vw + 0.5)
+                if not is_mob:
+                    # Centered desktop modal
+                    self.assertGreater(vp_geom["modalTop"], 10.0)
+                    self.assertLess(vp_geom["modalBottom"], vh - 10.0)
+                    self.assertLessEqual(abs(vp_geom["modalLeft"] - (vw - vp_geom["modalRight"])), 2.5)
+                else:
+                    # Bottom sheet anchored to bottom of viewport
+                    self.assertLessEqual(abs(vp_geom["modalBottom"] - vh), 2.5)
+
+        # Switch back to desktop Hebrew for dismissal, 1-way, solo, and persistence checks
+        set_dpr2_vp(1440, 900, False)
+
+        # 4. Dismissal paths: (a) X button, (b) Backdrop click, (c) Escape key, (d) CTA click
+        # (a) X button
+        browser.real_click("#btn-close-booking-handoff")
+        assert_cleanly_closed("dismiss via X")
+
+        # Toggle back to Hebrew
+        browser.real_click("#btn-toggle-locale")
+        browser.pump(80)
+
+        # (b) Backdrop click
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        browser.real_click_at(24.0, 24.0, expect_top_id="booking-handoff-backdrop")
+        assert_cleanly_closed("dismiss via backdrop")
+
+        # (c) Escape key
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        browser.real_key("Escape")
+        assert_cleanly_closed("dismiss via Escape")
+
+        # (d) CTA click (install bubble spy on document to block external tab open AFTER modal closes)
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        browser.eval(
+            """(() => {
+              window.__r16CtaNav = null;
+              window.__r16CtaSpy = (ev) => {
+                const a = ev.target && ev.target.closest && ev.target.closest('a[data-handoff-cta]');
+                if (a) {
+                  window.__r16CtaNav = a.getAttribute('href');
+                  ev.preventDefault();
+                }
+              };
+              document.addEventListener('click', window.__r16CtaSpy, false);
+            })()"""
+        )
+        browser.real_click("#btn-handoff-book-single")
+        assert_cleanly_closed("dismiss via CTA click")
+        self.assertTrue(str(browser.eval("window.__r16CtaNav") or "").startswith("https://www.google.com/travel/flights"))
+        browser.eval("document.removeEventListener('click', window.__r16CtaSpy, false);")
+
+        # 5. Persistence across reload + unobtrusive per-card re-open guide trigger
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        browser.real_click("#input-booking-handoff-suppress")
+        saved_ls = browser.eval("window.localStorage._dump()")
+        self.assertEqual(saved_ls.get("fvp_elal_handoff_suppress_v1"), "1")
+        browser.real_click("#btn-close-booking-handoff")
+        assert_cleanly_closed("after checking suppress")
+
+        # Simulate page reload preserving localStorage
+        browser.mount(local_storage=saved_ls)
+        browser.eval(
+            """(() => {
+              document.getElementById('input-dep-date').value = '2027-04-11';
+              document.getElementById('input-ret-date').value = '2027-04-18';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ROM"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+            })()"""
+        )
+        browser.wait_until(
+            "Boolean(document.querySelector('.proposal-card a.btn-elal-book[data-elal-book-link=\"true\"]'))",
+            "FCO card rendered after reload",
+        )
+        browser.settle()
+        # Unmodified left-click on a.btn-elal-book MUST now bypass the modal!
+        browser.eval(
+            """(() => {
+              window.__r16SuppressedBook = null;
+              window.__r16SupSpy = (ev) => {
+                const a = ev.target && ev.target.closest && ev.target.closest('a.btn-elal-book[data-elal-book-link="true"]');
+                if (a) {
+                  window.__r16SuppressedBook = { preventedByApp: ev.defaultPrevented, href: a.getAttribute('href') };
+                  ev.preventDefault();
+                }
+              };
+              document.addEventListener('click', window.__r16SupSpy, false);
+            })()"""
+        )
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        sup_res = browser.eval("window.__r16SuppressedBook")
+        self.assertIsNotNone(sup_res)
+        self.assertFalse(sup_res["preventedByApp"], "Suppressed left-click should NOT be intercepted")
+        assert_cleanly_closed("suppressed left-click bypassed modal")
+        browser.eval("document.removeEventListener('click', window.__r16SupSpy, false);")
+
+        # Clicking the unobtrusive per-card re-open guide trigger MUST still open the modal!
+        browser.real_click('.proposal-card button.btn-booking-guide[data-booking-guide-trigger="true"]')
+        reopened = browser.eval(
+            """(() => {
+              const m = document.getElementById('booking-handoff-modal');
+              const cb = document.getElementById('input-booking-handoff-suppress');
+              return { open: m.classList.contains('is-open') && !m.hasAttribute('hidden'), checked: Boolean(cb && cb.checked) };
+            })()"""
+        )
+        self.assertTrue(reopened["open"])
+        self.assertTrue(reopened["checked"])
+        # Uncheck suppress -> removes key from localStorage
+        browser.real_click("#input-booking-handoff-suppress")
+        self.assertIsNone(browser.eval("window.localStorage.getItem('fvp_elal_handoff_suppress_v1')"))
+        browser.real_click("#btn-close-booking-handoff")
+        assert_cleanly_closed("after re-open & uncheck")
+
+        # 6. Verify 1-way / 1-seat bonus card (ATH Mon 2027-05-10..Sun 2027-05-16, 2 seated adults) shows 1-way & commercial return without leaking LY_CASH
+        browser.eval(
+            """(() => {
+              document.getElementById('input-dep-date').value = '2027-05-10';
+              document.getElementById('input-ret-date').value = '2027-05-16';
+              document.getElementById('input-flex-days').value = '0';
+              document.getElementById('btn-dest-picker-toggle').click();
+              const clearBtn = document.getElementById('btn-dest-clear-all');
+              if (clearBtn) clearBtn.click();
+              document.getElementById('btn-dest-picker-toggle').click();
+              document.querySelector('[data-dest-option="ATH"]').click();
+              document.getElementById('btn-dest-popover-done').click();
+            })()"""
+        )
+        browser.wait_until(
+            "Boolean(document.querySelector('.proposal-card[data-bonus-directions=\"outbound\"]'))",
+            "1-way ATH bonus card rendered",
+        )
+        browser.settle()
+        browser.real_click('.proposal-card[data-bonus-directions="outbound"] a.btn-elal-book[data-elal-book-link="true"]')
+        oneway_snap = browser.eval(
+            """(() => {
+              const m = document.getElementById('booking-handoff-modal');
+              const warn = m.querySelector('.handoff-warning-callout');
+              const singleA = m.querySelector('a[data-handoff-cta="single-adult"]');
+              return {
+                text: m.textContent.replace(/\\s+/g, ' ').trim(),
+                warnLevel: warn ? warn.getAttribute('data-handoff-warning') : '',
+                singlePriority: singleA ? singleA.getAttribute('data-handoff-priority') : ''
+              };
+            })()"""
+        )
+        self.assertEqual(oneway_snap["warnLevel"], "high")
+        self.assertEqual(oneway_snap["singlePriority"], "primary")
+        self.assertIn("LY541", oneway_snap["text"])
+        self.assertIn("08:00–10:15", oneway_snap["text"])
+        self.assertIn("בונוס בכיוון אחד בלבד", oneway_snap["text"])
+        self.assertIn("טיסה מסחרית", oneway_snap["text"])
+        self.assertNotIn("LY_CASH", oneway_snap["text"])
+        browser.real_click("#btn-close-booking-handoff")
+        assert_cleanly_closed("after 1-way ATH card")
+
+        # 7. Verify solo adult (1 adult, 0 children) renders single Primary CTA without duplicate 1-adult shortcut
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(100)
+        browser.real_replace_value("#prof-adults-count", "1")
+        browser.real_click("#btn-apply-profile-sheet")
+        browser.settle()
+        browser.real_click('.proposal-card a.btn-elal-book[data-elal-book-link="true"]')
+        solo_snap = browser.eval(
+            """(() => {
+              const m = document.getElementById('booking-handoff-modal');
+              return {
+                ctaCount: m.querySelectorAll('a[data-handoff-cta]').length,
+                hasSingleShortcut: Boolean(m.querySelector('a[data-handoff-cta="single-adult"]')),
+                hasFull: Boolean(m.querySelector('a[data-handoff-cta="full-party"]')),
+                warnLevel: m.querySelector('.handoff-warning-callout').getAttribute('data-handoff-warning')
+              };
+            })()"""
+        )
+        self.assertEqual(solo_snap["ctaCount"], 1)
+        self.assertFalse(solo_snap["hasSingleShortcut"])
+        self.assertTrue(solo_snap["hasFull"])
+        self.assertEqual(solo_snap["warnLevel"], "info")
+        browser.real_click("#btn-close-booking-handoff")
+        assert_cleanly_closed("after solo adult check")
+
+        # Confirm zero elal.com outbound requests and zero JS errors
+        for req in browser.fetch_log:
+            self.assertNotIn("elal.com", str(req.get("url", "")).lower())
+        self.assertEqual(browser.js_errors(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

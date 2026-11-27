@@ -214,6 +214,7 @@ export interface FlightItinerary {
   min_points_basis: MinPointsBasis | null;
   points_are_estimated: boolean;
   elal_google_flights_url: string | null;
+  elal_google_flights_single_adult_url: string | null;
 }
 
 export interface WorkplaceHolidayPeriod {

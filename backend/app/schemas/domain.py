@@ -1304,6 +1304,7 @@ class FlightItinerary(_DomainModelBase):
     rbddataclients_verify_url: Optional[str] = "https://www.elal.com/rbddataclients/"
     booking_deep_link_url: str = "https://www.elal.com/"
     elal_google_flights_url: Optional[str] = None
+    elal_google_flights_single_adult_url: Optional[str] = None
     # Run 11: results are described by available bonus seats per direction (no cash figures).
     # The cash / all-passenger-points attributes above stay only as defaulted fields so the
     # existing constructors and the NOT NULL SQLite columns keep working; they are neither
@@ -1452,6 +1453,7 @@ class FlightItinerary(_DomainModelBase):
             "rbddataclients_verify_url": self.rbddataclients_verify_url,
             "booking_deep_link_url": self.booking_deep_link_url,
             "elal_google_flights_url": self.elal_google_flights_url,
+            "elal_google_flights_single_adult_url": self.elal_google_flights_single_adult_url,
         }
 
     @classmethod
@@ -1534,6 +1536,11 @@ class FlightItinerary(_DomainModelBase):
             elal_google_flights_url=(
                 str(data["elal_google_flights_url"])
                 if data.get("elal_google_flights_url")
+                else None
+            ),
+            elal_google_flights_single_adult_url=(
+                str(data["elal_google_flights_single_adult_url"])
+                if data.get("elal_google_flights_single_adult_url")
                 else None
             ),
             bonus_direction_coverage=str(data.get("bonus_direction_coverage") or "NONE"),
