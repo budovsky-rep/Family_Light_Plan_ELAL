@@ -633,9 +633,8 @@
       user: null
     },
     adminBonusSync: null,
-    isAdminSyncExpanded: false,
+    isAdminSyncExpanded: true,
     isAdminSyncRefreshing: false,
-    isAdminSyncTriggering: false,
     notificationsOptIn: false,
     authNoticeHe: null,
     authNoticeEn: null,
@@ -1842,37 +1841,103 @@
     return isHe ? `לפני ${days} ימים` : `${days}d ago`;
   }
 
-  function formatShardShortDate(isoDate) {
-    const s = String(isoDate || '');
-    if (s.length >= 10) {
-      return `${s.slice(8, 10)}/${s.slice(5, 7)}`;
-    }
-    return s;
-  }
+  const ADMIN_MONTH_SHORT_HE = [
+    '',
+    'ינו׳',
+    'פבר׳',
+    'מרץ',
+    'אפר׳',
+    'מאי',
+    'יונ׳',
+    'יול׳',
+    'אוג׳',
+    'ספט׳',
+    'אוק׳',
+    'נוב׳',
+    'דצמ׳'
+  ];
 
-  let adminSyncPollTimer = null;
+  const ADMIN_MONTH_SHORT_EN = [
+    '',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec'
+  ];
 
-  function clearAdminSyncAutoPoll() {
-    if (adminSyncPollTimer !== null) {
-      clearTimeout(adminSyncPollTimer);
-      adminSyncPollTimer = null;
+  function normalizeAdminSyncPeriods(sync) {
+    const rawList = Array.isArray(sync && sync.periods)
+      ? sync.periods
+      : Array.isArray(sync && sync.months)
+        ? sync.months
+        : [];
+    const holidayMonths = new Map();
+    if (Array.isArray(state.upcomingHolidays)) {
+      state.upcomingHolidays.forEach((h) => {
+        const s = String(h.start_date || '').slice(0, 7);
+        const e = String(h.end_date || '').slice(0, 7);
+        const nmHe = String(h.name_he || h.holiday_name_he || '').trim();
+        const nmEn = String(h.name_en || h.holiday_name_en || '').trim();
+        [s, e].forEach((mKey) => {
+          if (mKey.length === 7) {
+            if (!holidayMonths.has(mKey)) {
+              holidayMonths.set(mKey, { he: [], en: [] });
+            }
+            const bucket = holidayMonths.get(mKey);
+            if (nmHe && !bucket.he.includes(nmHe)) bucket.he.push(nmHe);
+            if (nmEn && !bucket.en.includes(nmEn)) bucket.en.push(nmEn);
+          }
+        });
+      });
     }
-  }
-
-  function syncAdminAutoPollSchedule() {
-    clearAdminSyncAutoPoll();
-    const isAdmin = Boolean(
-      state.auth && state.auth.authenticated && state.auth.isAdmin && state.adminBonusSync
-    );
-    if (!isAdmin) return;
-    const job = state.adminBonusSync.trigger_job;
-    const jStatus = job ? String(job.status || '').toUpperCase() : '';
-    if (jStatus === 'QUEUED' || jStatus === 'RUNNING') {
-      adminSyncPollTimer = setTimeout(() => {
-        adminSyncPollTimer = null;
-        refreshAdminBonusSync();
-      }, 5000);
-    }
+    return rawList.map((item, idx) => {
+      const pKey = String(item.period_key || item.month_key || item.start_date || '').slice(0, 7);
+      const yr = Number(item.year || (pKey.length === 7 ? pKey.slice(0, 4) : 0));
+      const mo = Number(item.month || (pKey.length === 7 ? pKey.slice(5, 7) : 0));
+      const rows = Math.max(0, Number(item.rows_count ?? item.flights_count ?? 0));
+      const dests = Math.max(0, Number(item.destinations_count ?? item.routes_count ?? 0));
+      const rawSt = String(item.status || '').toUpperCase();
+      const normSt =
+        rawSt === 'COVERED' || rawSt === 'FRESH'
+          ? 'COVERED'
+          : rawSt === 'PARTIAL' || rawSt === 'DUE' || rawSt === 'STALE'
+            ? (rows > 0 ? 'PARTIAL' : 'EMPTY')
+            : rows > 0
+              ? 'COVERED'
+              : 'EMPTY';
+      const fallbackBucket = holidayMonths.get(pKey) || { he: [], en: [] };
+      const holidaysHe = Array.isArray(item.holidays_he)
+        ? item.holidays_he.map((x) => String(x || '').trim()).filter(Boolean)
+        : fallbackBucket.he.slice();
+      const holidaysEn = Array.isArray(item.holidays_en)
+        ? item.holidays_en.map((x) => String(x || '').trim()).filter(Boolean)
+        : fallbackBucket.en.slice();
+      const hasHoliday =
+        item.has_school_holiday !== undefined
+          ? Boolean(item.has_school_holiday)
+          : (holidaysHe.length > 0 || holidaysEn.length > 0 || holidayMonths.has(pKey));
+      return {
+        index: Number(item.period_index || idx + 1),
+        periodKey: pKey || `P${idx + 1}`,
+        year: yr,
+        month: mo,
+        status: normSt,
+        rowsCount: rows,
+        destinationsCount: dests,
+        lastSyncedAtUtc: item.last_synced_at_utc || item.last_synced_at || null,
+        hasHoliday,
+        holidaysHe,
+        holidaysEn
+      };
+    });
   }
 
   async function refreshAdminBonusSync() {
@@ -1895,29 +1960,6 @@
     }
   }
 
-  async function triggerAdminBonusSync(mode) {
-    if (!state.auth || !state.auth.authenticated || !state.auth.isAdmin) return;
-    state.isAdminSyncTriggering = true;
-    state.isAdminSyncExpanded = true;
-    renderAdminBonusSync();
-    try {
-      const res = await apiSend('POST', '/api/v1/admin/bonus-sync-trigger', {
-        mode: mode || 'NEXT_SHARD'
-      });
-      if (res && res.admin_bonus_sync) {
-        state.adminBonusSync = res.admin_bonus_sync;
-      }
-    } catch (err) {
-      if (err && (err.status === 401 || err.status === 403)) {
-        state.auth.isAdmin = false;
-        state.adminBonusSync = null;
-      }
-    } finally {
-      state.isAdminSyncTriggering = false;
-      renderAdminBonusSync();
-    }
-  }
-
   function renderAdminBonusSync() {
     const slot = document.getElementById('admin-bonus-sync-slot');
     const mini = document.getElementById('auth-admin-sync-mini');
@@ -1927,7 +1969,6 @@
     );
 
     if (!isAdmin) {
-      clearAdminSyncAutoPoll();
       if (slot) {
         slot.innerHTML = '';
         slot.setAttribute('hidden', '');
@@ -1942,130 +1983,132 @@
     }
 
     const sync = state.adminBonusSync;
-    const healthState = String(sync.health_state || 'EMPTY');
+    const periods = normalizeAdminSyncPeriods(sync);
+    const periodTotal = Number(sync.period_count || sync.total_periods_count || periods.length || 12);
+    const coveredCount =
+      sync.covered_periods_count !== undefined
+        ? Number(sync.covered_periods_count)
+        : periods.filter((p) => p.status === 'COVERED').length;
+    const nonEmptyCount = periods.filter((p) => p.rowsCount > 0).length;
+
+    const healthState = String(sync.health_state || (nonEmptyCount > 0 ? 'HEALTHY' : 'EMPTY')).toUpperCase();
     const healthLabel =
       healthState === 'HEALTHY'
-        ? (isHe ? 'סנכרון תקין (פעמיים ביום)' : 'Sync Healthy (2x/day)')
-        : healthState === 'DELAYED'
-          ? (isHe ? 'ממתין לסנכרון החצי־יומי' : 'Half-Day Sync Due')
-          : healthState === 'STALE'
-            ? (isHe ? 'עיכוב מעל 36 שעות — נדרשת הרצה' : 'Over 36h — Run Needed')
-            : (isHe ? 'מאגר ריק' : 'Empty DB');
+        ? (isHe ? 'סנכרון תקין' : 'Sync Healthy')
+        : healthState === 'PARTIAL'
+          ? (isHe ? 'כיסוי חלקי' : 'Partial Coverage')
+          : healthState === 'DELAYED'
+            ? (isHe ? 'נדרש רענון' : 'Refresh Recommended')
+            : healthState === 'STALE'
+              ? (isHe ? 'נתונים מיושנים' : 'Sync Stale')
+              : (isHe ? 'מאגר ריק' : 'Empty DB');
 
-    const lastDtTxt = sync.last_synced_at_utc
-      ? formatAdminIsraelDateTime(sync.last_synced_at_utc, false)
+    const lastSyncIso = sync.last_synced_at_utc || sync.last_synced_at || null;
+    const lastDtFull = lastSyncIso
+      ? formatAdminIsraelDateTime(lastSyncIso, false)
       : (isHe ? 'טרם סונכרן' : 'Never synced');
-    const lastAgeTxt = formatAdminSyncAge(sync.last_sync_age_hours, isHe);
-    const totalRowsFmt = Number(sync.total_active_rows || 0).toLocaleString('en-US');
-    const destCnt = Number(sync.active_destinations_count || 0);
-    const freshShards = Number(sync.fresh_shards_count || 0);
-    const shardTotal = Number(sync.shard_count || 5);
-    const shards = Array.isArray(sync.shards) ? sync.shards : [];
-    const job = sync.trigger_job || null;
-    const jobStatus = job ? String(job.status || '').toUpperCase() : '';
-    const isJobActive = jobStatus === 'QUEUED' || jobStatus === 'RUNNING';
-
-    const modeNote =
-      sync.sync_mode_detected === 'SHARDED_ROTATION'
-        ? (isHe
-            ? 'מחזור אוטומטי פעיל (2 חלקים ביום מסוכן ה־Mac — כל השנה מתרעננת כל 2.5 ימים).'
-            : 'Auto 2-shards/day schedule active on Mac agent (full year refreshes every 2.5 days).')
-        : sync.sync_mode_detected === 'FULL_SWEEP_OR_SINGLE_BATCH'
-          ? (isHe
-              ? 'כל החלקים עודכנו באותו מועד; סוכן ה־Mac ימשיך ב־2 חלקים ביום או בהפעלה ידנית מכאן.'
-              : 'All shards share the same sync date; Mac agent runs 2 shards/day or on demand here.')
-          : (isHe
-              ? 'לא נמצאו טיסות בונוס חיות במסד הנתונים.'
-              : 'No active bonus flights found in database.');
+    const lastDtShort = lastSyncIso
+      ? formatAdminIsraelDateTime(lastSyncIso, true)
+      : (isHe ? 'טרם סונכרן' : 'Never synced');
+    const lastAgeVal = sync.last_sync_age_hours !== undefined ? sync.last_sync_age_hours : sync.age_hours;
+    const lastAgeTxt = formatAdminSyncAge(lastAgeVal, isHe);
+    const totalRowsFmt = Number(sync.total_active_rows ?? sync.total_rows ?? 0).toLocaleString('en-US');
+    const destCnt = Number(sync.active_destinations_count ?? sync.destinations_count ?? 0);
+    const horizonDays = Number(sync.horizon_days || 350);
 
     if (mini) {
-      mini.innerHTML = `🛡️ <strong>${isHe ? 'סנכרון בונוס (אדמין):' : 'Bonus sync (Admin):'}</strong> <span dir="ltr">${escapeHtml(lastDtTxt)}</span> · ${escapeHtml(healthLabel)}`;
+      mini.setAttribute('data-health', healthState);
+      mini.innerHTML = `
+        <div class="auth-admin-mini-top">
+          <span class="auth-admin-mini-title">🛡️ ${isHe ? 'סנכרון בונוס (אדמין)' : 'Award Sync (Admin)'}</span>
+          <span class="auth-admin-mini-badge">${escapeHtml(healthLabel)}</span>
+        </div>
+        <div class="auth-admin-mini-meta">
+          <span class="num" dir="ltr">${coveredCount}/${periodTotal}</span> ${isHe ? 'חודשים' : 'months'} ·
+          <span class="num" dir="ltr">${escapeHtml(totalRowsFmt)}</span> ${isHe ? 'טיסות' : 'flights'} ·
+          ${lastSyncIso ? `<span class="num" dir="ltr">${escapeHtml(lastDtShort)}</span>` : escapeHtml(lastDtShort)} (${escapeHtml(lastAgeTxt)})
+        </div>
+      `;
       mini.removeAttribute('hidden');
-      mini.style.display = 'block';
+      mini.style.display = 'flex';
     }
 
     if (!slot) return;
 
-    const pipsHtml = shards
+    const maxPeriodRows = Math.max(1, ...periods.map((p) => p.rowsCount));
+    const sparkHtml = periods
       .map(
-        (sh) =>
-          `<span class="admin-shard-pip" data-status="${escapeHtml(sh.status || 'STALE')}" title="${escapeHtml(`${isHe ? 'חלק' : 'Shard'} ${sh.shard_number}/${sh.shard_count}`)}"></span>`
+        (p) =>
+          `<span class="admin-horizon-pip" data-status="${escapeHtml(p.status)}"></span>`
       )
       .join('');
 
-    const quickTriggerSummaryBtn =
-      healthState !== 'HEALTHY' && !isJobActive
-        ? `<button type="button" class="btn-admin-sync-trigger" id="btn-quick-trigger-admin-sync">${isHe ? '▶️ הפעל עכשיו' : '▶️ Run Now'}</button>`
-        : isJobActive
-          ? `<span class="admin-sync-crest">${jobStatus === 'RUNNING' ? (isHe ? '🚀 מסנכרן...' : '🚀 Running...') : (isHe ? '⏳ בתור...' : '⏳ Queued...')}</span>`
+    const periodsHtml = periods
+      .map((p) => {
+        const mLabel =
+          p.month >= 1 && p.month <= 12
+            ? (isHe ? ADMIN_MONTH_SHORT_HE[p.month] : ADMIN_MONTH_SHORT_EN[p.month])
+            : escapeHtml(p.periodKey);
+        const yrShort = p.year >= 2000 ? String(p.year).slice(-2) : '';
+        const fillPct =
+          p.status === 'EMPTY' || p.rowsCount <= 0
+            ? 0
+            : Math.max(18, Math.min(100, Math.round((p.rowsCount / maxPeriodRows) * 100)));
+        const rowsLabel = p.rowsCount > 0 ? p.rowsCount.toLocaleString('en-US') : '—';
+        const destLabel =
+          p.rowsCount > 0
+            ? `<span class="num" dir="ltr">${p.destinationsCount}</span> ${isHe ? 'יעדים' : 'dest'}`
+            : (isHe ? 'ללא מלאי' : 'Empty');
+        const stTitle =
+          p.status === 'COVERED'
+            ? (isHe ? 'מכוסה' : 'Covered')
+            : p.status === 'PARTIAL'
+              ? (isHe ? 'כיסוי חלקי' : 'Partial')
+              : (isHe ? 'ללא נתונים' : 'Empty');
+        const syncShort = p.lastSyncedAtUtc ? ` · ${formatAdminIsraelDateTime(p.lastSyncedAtUtc, true)}` : '';
+        const holidayNames = isHe ? p.holidaysHe : p.holidaysEn;
+        const holidaySuffix = p.hasHoliday && holidayNames.length > 0 ? ` · ${holidayNames.join(', ')}` : '';
+        const cellTitle = `${p.periodKey} — ${stTitle}${syncShort}${holidaySuffix}`;
+        const holidayTip =
+          holidayNames.length > 0
+            ? (isHe ? `חופשות מוסדות חינוך: ${holidayNames.join(' · ')}` : `School holidays: ${holidayNames.join(' · ')}`)
+            : (isHe ? 'חופשת מוסדות חינוך בחודש זה' : 'School holiday in this month');
+        const holidayMark = p.hasHoliday
+          ? `<span class="admin-period-holiday" title="${escapeHtml(holidayTip)}" aria-hidden="true">✦</span>`
           : '';
-
-    let jobBannerHtml = '';
-    if (job && jobStatus && jobStatus !== 'CANCELLED') {
-      let jobText = '';
-      if (jobStatus === 'QUEUED') {
-        const reqTime = formatAdminIsraelDateTime(job.requested_at_utc, true);
-        jobText = isHe
-          ? `⏳ בקשת סנכרון ממתינה לסוכן ה־Mac (נשלחה ב־${reqTime}) — תתחיל תוך עד 60 שניות כשה־Mac פעיל.`
-          : `⏳ Sync request queued (${reqTime}) — Mac agent picks up within 60s when awake.`;
-      } else if (jobStatus === 'RUNNING') {
-        const stTime = formatAdminIsraelDateTime(job.started_at_utc || job.requested_at_utc, true);
-        jobText = isHe
-          ? `🚀 סנכרון רץ כעת מה־Mac (התחיל ב־${stTime}, כ־90 שניות לסיום)...`
-          : `🚀 Sync currently running on Mac (started ${stTime})...`;
-      } else if (jobStatus === 'COMPLETED') {
-        const finTime = formatAdminIsraelDateTime(job.finished_at_utc, true);
-        const cntTxt = job.records_synced !== null && job.records_synced !== undefined ? ` (${Number(job.records_synced).toLocaleString('en-US')} ${isHe ? 'טיסות עודכנו' : 'flights'})` : '';
-        jobText = isHe
-          ? `✅ הסנכרון הידני האחרון הושלם בהצלחה ב־${finTime}${cntTxt}.`
-          : `✅ Last triggered sync completed at ${finTime}${cntTxt}.`;
-      } else {
-        const errMsg = job.message ? ` (${job.message})` : '';
-        jobText = isHe
-          ? `⚠️ בקשת הסנכרון לא הושלמה — ודא שסוכן ה־Mac פעיל${errMsg}.`
-          : `⚠️ Sync request did not complete — verify Mac sync agent is active${errMsg}.`;
-      }
-      const cancelBtnHtml =
-        jobStatus === 'QUEUED'
-          ? `<button type="button" class="btn-admin-sync-refresh" id="btn-cancel-admin-sync">${isHe ? 'ביטול' : 'Cancel'}</button>`
-          : '';
-      jobBannerHtml = `
-        <div class="admin-sync-job-banner" id="admin-sync-job-banner" data-job-status="${escapeHtml(jobStatus)}">
-          <span>${escapeHtml(jobText)}</span>
-          ${cancelBtnHtml}
-        </div>`;
-    }
-
-    const shardsHtml = shards
-      .map((sh) => {
-        const st = String(sh.status || 'STALE');
-        const stTxt =
-          st === 'FRESH'
-            ? (isHe ? 'תקין' : 'Fresh')
-            : st === 'DUE'
-              ? (isHe ? 'לתורו' : 'Due')
-              : (isHe ? 'מיושן' : 'Stale');
-        const shSyncTxt = sh.last_synced_at_utc
-          ? formatAdminIsraelDateTime(sh.last_synced_at_utc, true)
-          : (isHe ? 'ללא סנכרון' : 'Unsynced');
-        const shRowsFmt = Number(sh.rows_count || 0).toLocaleString('en-US');
         return `
-          <div class="admin-shard-card" data-admin-shard="${Number(sh.shard_number)}" data-status="${escapeHtml(st)}">
-            <div class="admin-shard-top">
-              <span class="admin-shard-title">${isHe ? 'חלק' : 'Shard'} <span dir="ltr">${Number(sh.shard_number)}/${Number(sh.shard_count)}</span></span>
-              <span class="admin-shard-badge">${escapeHtml(stTxt)}</span>
+          <div class="admin-period-cell" data-admin-period="${escapeHtml(p.periodKey)}" data-status="${escapeHtml(p.status)}" title="${escapeHtml(cellTitle)}">
+            <div class="admin-period-head">
+              <span class="admin-period-month">${mLabel} <span class="admin-period-yr" dir="ltr">${escapeHtml(yrShort)}</span></span>
+              ${holidayMark}
             </div>
-            <div class="admin-shard-dates" dir="ltr">${escapeHtml(formatShardShortDate(sh.start_date))} – ${escapeHtml(formatShardShortDate(sh.end_date))}</div>
-            <div class="admin-shard-meta"><span class="admin-sync-mono" dir="ltr">${escapeHtml(shRowsFmt)}</span> ${isHe ? 'טיסות' : 'flights'} · <span dir="ltr">${escapeHtml(shSyncTxt)}</span></div>
+            <div class="admin-period-meter" aria-hidden="true">
+              <div class="admin-period-meter-fill" style="width: ${fillPct}%;"></div>
+            </div>
+            <div class="admin-period-foot">
+              <span class="admin-period-rows" dir="ltr">${escapeHtml(rowsLabel)}</span>
+              <span class="admin-period-dests">${destLabel}</span>
+            </div>
           </div>`;
       })
       .join('');
 
-    const triggerBtnLabel = state.isAdminSyncTriggering
-      ? (isHe ? '⏳ שולח פקודה...' : '⏳ Sending...')
-      : isJobActive
-        ? (jobStatus === 'RUNNING' ? (isHe ? '🚀 סנכרון בביצוע...' : '🚀 Sync Running...') : (isHe ? '⏳ ממתין בתור...' : '⏳ Queued...'))
-        : (isHe ? '▶️ הפעל סנכרון מנה עכשיו' : '▶️ Trigger Next Shard Now');
+    const sourceTag = isHe
+      ? `🧩 תוסף כרום ידני · <span class="num" dir="ltr">${horizonDays}</span> ימים`
+      : `🧩 Manual Chrome Extension · <span class="num" dir="ltr">${horizonDays}d</span>`;
+
+    const guidanceNote =
+      nonEmptyCount === periodTotal && healthState === 'HEALTHY'
+        ? (isHe
+            ? 'כיסוי שנתי מלא מסנכרון ידני בדפדפן מחובר לאל על (ללא משיכה מרחוק).'
+            : 'Full-year coverage from manual browser-assisted EL AL extension sync.')
+        : nonEmptyCount > 0
+          ? (isHe
+              ? `מכוסים ${coveredCount} מתוך ${periodTotal} חודשים — לרענון מלא הפעל סנכרון ידני מתוסף הכרום.`
+              : `${coveredCount} of ${periodTotal} months covered — run manual Chrome extension sync to refresh.`)
+          : (isHe
+              ? 'לא נמצאו טיסות בונוס במסד הנתונים — הפעל סנכרון ידני מתוסף הכרום.'
+              : 'No award flights in database — run manual sync from the Chrome extension.');
 
     slot.innerHTML = `
       <details class="admin-sync-telemetry" id="admin-bonus-sync-panel" data-health="${escapeHtml(healthState)}"${state.isAdminSyncExpanded ? ' open' : ''}>
@@ -2074,32 +2117,31 @@
             <span class="admin-sync-crest">🛡️ ${isHe ? 'אדמין' : 'Admin'}</span>
             <span class="admin-sync-health-pill">● ${escapeHtml(healthLabel)}</span>
             <span class="admin-sync-stat">
-              <strong>${isHe ? 'ריצה אחרונה:' : 'Last run:'}</strong>
-              <span class="admin-sync-mono" dir="ltr">${escapeHtml(lastDtTxt)}</span>
+              <strong>${isHe ? 'סנכרון אחרון:' : 'Last sync:'}</strong>
+              ${lastSyncIso ? `<span class="admin-sync-mono" dir="ltr">${escapeHtml(lastDtFull)}</span>` : escapeHtml(lastDtFull)}
               <span class="admin-sync-age">(${escapeHtml(lastAgeTxt)})</span>
             </span>
+            <span class="admin-sync-sep" aria-hidden="true">│</span>
             <span class="admin-sync-stat">
               <span class="admin-sync-mono" dir="ltr">${escapeHtml(totalRowsFmt)}</span> ${isHe ? 'טיסות' : 'flights'} ·
               <span class="admin-sync-mono" dir="ltr">${destCnt}</span> ${isHe ? 'יעדים' : 'routes'} ·
-              <span class="admin-sync-mono" dir="ltr">${freshShards}/${shardTotal}</span> ${isHe ? 'חלקים' : 'shards'}
+              <span class="admin-sync-mono" dir="ltr">${coveredCount}/${periodTotal}</span> ${isHe ? 'חודשים' : 'months'}
             </span>
           </div>
           <div class="admin-sync-summary-end">
-            ${quickTriggerSummaryBtn}
-            <span class="admin-shard-pip-bar" aria-hidden="true">${pipsHtml}</span>
+            <span class="admin-horizon-spark" aria-hidden="true">${sparkHtml}</span>
             <span class="admin-sync-chevron" aria-hidden="true">▾</span>
           </div>
         </summary>
         <div class="admin-sync-drawer">
           <div class="admin-sync-toolbar">
-            <span class="admin-sync-mode-note">${escapeHtml(modeNote)}</span>
-            <div class="admin-sync-actions">
-              <button type="button" class="btn-admin-sync-trigger" id="btn-trigger-admin-sync"${isJobActive || state.isAdminSyncTriggering ? ' disabled' : ''}>${escapeHtml(triggerBtnLabel)}</button>
-              <button type="button" class="btn-admin-sync-refresh" id="btn-refresh-admin-sync">${state.isAdminSyncRefreshing ? (isHe ? '⏳ מרענן...' : '⏳ Refreshing...') : (isHe ? '↻ בדיקת סנכרון חיה' : '↻ Live Sync Check')}</button>
+            <div class="admin-sync-toolbar-info">
+              <span class="admin-sync-source-tag">${sourceTag}</span>
+              <span class="admin-sync-mode-note">${escapeHtml(guidanceNote)}</span>
             </div>
+            <button type="button" class="btn-admin-sync-refresh" id="btn-refresh-admin-sync"${state.isAdminSyncRefreshing ? ' disabled' : ''}>${state.isAdminSyncRefreshing ? (isHe ? '⏳ מרענן...' : '⏳ Refreshing...') : (isHe ? '↻ בדיקת סטטוס חיה' : '↻ Refresh Status')}</button>
           </div>
-          ${jobBannerHtml}
-          <div class="admin-shards-grid">${shardsHtml}</div>
+          <div class="admin-periods-grid" id="admin-periods-grid">${periodsHtml}</div>
         </div>
       </details>
     `;
@@ -2120,31 +2162,6 @@
         refreshAdminBonusSync();
       });
     }
-    const trigBtn = document.getElementById('btn-trigger-admin-sync');
-    if (trigBtn) {
-      trigBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        triggerAdminBonusSync('NEXT_SHARD');
-      });
-    }
-    const quickTrigBtn = document.getElementById('btn-quick-trigger-admin-sync');
-    if (quickTrigBtn) {
-      quickTrigBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        triggerAdminBonusSync('NEXT_SHARD');
-      });
-    }
-    const cancelBtn = document.getElementById('btn-cancel-admin-sync');
-    if (cancelBtn) {
-      cancelBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        triggerAdminBonusSync('CANCEL');
-      });
-    }
-    syncAdminAutoPollSchedule();
   }
 
   function renderAuthControls() {
@@ -3785,7 +3802,7 @@
       user: null
     };
     state.adminBonusSync = null;
-    state.isAdminSyncExpanded = false;
+    state.isAdminSyncExpanded = true;
     state.isAdminSyncRefreshing = false;
     state.notificationsOptIn = false;
     state.authNoticeHe = null;
@@ -3982,11 +3999,13 @@
       } else {
         state.auth = {
           authenticated: false,
+          isAdmin: false,
           oauthConfigured: Boolean(sess && sess.oauth_configured),
           testMode: Boolean(sess && sess.test_mode),
           csrfToken: null,
           user: null
         };
+        state.adminBonusSync = null;
         state.notificationsOptIn = false;
         try {
           sessionStorage.removeItem('fvp_pending_oauth_draft');

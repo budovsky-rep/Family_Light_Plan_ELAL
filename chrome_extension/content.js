@@ -1,14 +1,13 @@
 /**
- * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v2.1)
+ * Safe Auto-Pilot & Network/DOM Reader Content Script (`chrome_extension/content.js` — v2.2)
  *
  * Key design for 100% stability and zero Reblaze blocks on `https://www.elal.com/rbddataclients/`:
- * 1. All 45 supported `DESTINATION_CATALOG` IATA codes (`PRIORITY_IATAS` — excluding unsupported `"ZRH"`).
+ * 1. All supported `DESTINATION_CATALOG` IATA codes (`PRIORITY_IATAS`).
  * 2. Uses El Al's genuine calculator RBD codes: `rbd: "E"` for Economy and `rbd: "A"` for Premium.
- * 3. Supports all 4 sync modes directly from the floating RTL widget:
- *    - Daily Shard (`auto` or `0..4`): 1/5 of the rolling year (~20 polite requests, ~1.5 min).
- *    - Specific Date (`date`): Single 14-day window across all 45 destinations (4 requests, ~15s).
+ * 3. Supports all 3 manual sync modes directly from the floating RTL widget:
+ *    - Full Year (`all`, default): All 25 rolling 14-day windows (350 days) with 45s breather pauses.
  *    - All Holidays (`holidays`): 16 Israeli holiday & MoE vacation windows with 35s breather pauses.
- *    - Full Year (`all`): All 25 rolling 14-day windows (350 days) with 45s breather pauses.
+ *    - Specific Date (`date`): Single 14-day window across all supported destinations (~15s).
  * 4. Distinguishes transient El Al DPEL gateway hiccups (`502`/`503`/`504`/`TIMEOUT` -> 10s wait +
  *    automatic half-batch split retry) from Reblaze WAAP blocks (`403`/`429`/HTML challenge -> strict
  *    zero-retry Fail-Fast abort), plus one-click Resume from the exact stopped window.
@@ -66,28 +65,20 @@
     ["סוכות 2027 ב'", "2027-10-15", "2027-10-29"]
   ];
 
-  const SHARD_COUNT = 5;
   const DAY_MS = 86400000;
   const fmtDay = (ms) => new Date(ms).toISOString().slice(0, 10);
   const parseUtcIso = (iso) => Date.parse(`${String(iso).slice(0, 10)}T00:00:00Z`);
 
-  function buildCycleAnchoredWindows(daysAhead) {
+  function buildFullYearRollingWindows(daysAhead) {
     const horizon = Math.max(14, Math.min(364, Number(daysAhead) || 350));
     const numWindows = Math.floor((horizon + 13) / 14);
     const now = new Date();
     const todayUtcDays = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS);
-    const cycleAnchorDays = Math.floor(todayUtcDays / SHARD_COUNT) * SHARD_COUNT;
-    const anchorUtcMs = cycleAnchorDays * DAY_MS;
-    const minStartUtcMs = (todayUtcDays - 1) * DAY_MS;
+    const baseStartUtcMs = (todayUtcDays - 1) * DAY_MS;
     const out = [];
     for (let idx = 0; idx < numWindows; idx++) {
-      let startUtcMs = anchorUtcMs - DAY_MS + 14 * idx * DAY_MS;
-      let endUtcMs = startUtcMs + 14 * DAY_MS;
-      if (endUtcMs <= minStartUtcMs) continue;
-      if (startUtcMs < minStartUtcMs) {
-        startUtcMs = minStartUtcMs;
-        endUtcMs = startUtcMs + 14 * DAY_MS;
-      }
+      const startUtcMs = baseStartUtcMs + 14 * idx * DAY_MS;
+      const endUtcMs = startUtcMs + 14 * DAY_MS;
       const localStart = fmtDay(startUtcMs + DAY_MS);
       const localEnd = fmtDay(endUtcMs + DAY_MS);
       out.push({
@@ -98,7 +89,7 @@
         localEnd: localEnd
       });
     }
-    return { windows: out, autoShardIdx: todayUtcDays % SHARD_COUNT };
+    return out;
   }
 
   function buildPlanForMode(modeChoice, customDateIso) {
@@ -150,32 +141,14 @@
       };
     }
 
-    if (modeChoice === "all") {
-      const { windows } = buildCycleAnchoredWindows(350);
-      return {
-        modeTitle: `שנה מלאה (${windows.length} חלונות)`,
-        windows: windows,
-        minDelayMs: 4200,
-        maxDelayMs: 6800,
-        cooldownEveryWindows: 5,
-        cooldownMs: 45000
-      };
-    }
-
-    const { windows, autoShardIdx } = buildCycleAnchoredWindows(350);
-    const idx =
-      modeChoice === "auto"
-        ? autoShardIdx
-        : Math.max(0, Math.min(SHARD_COUNT - 1, Number(modeChoice) || 0));
-    const startPos = Math.floor((idx * windows.length) / SHARD_COUNT);
-    const endPos = Math.floor(((idx + 1) * windows.length) / SHARD_COUNT);
+    const windows = buildFullYearRollingWindows(350);
     return {
-      modeTitle: `מנה ${idx + 1}/5`,
-      windows: windows.slice(startPos, endPos),
-      minDelayMs: 2800,
-      maxDelayMs: 4400,
-      cooldownEveryWindows: 0,
-      cooldownMs: 0
+      modeTitle: `שנה מלאה (${windows.length} חלונות)`,
+      windows: windows,
+      minDelayMs: 4200,
+      maxDelayMs: 6800,
+      cooldownEveryWindows: 5,
+      cooldownMs: 45000
     };
   }
 
@@ -416,7 +389,7 @@
   }
 
   // ============================================================================
-  // ISOLATED EXTENSION WORLD: Widget UI, 4-Mode Auto-Pilot, 502 Split-Retry & Sync
+  // ISOLATED EXTENSION WORLD: Widget UI, 3-Mode Auto-Pilot, 502 Split-Retry & Sync
   // ============================================================================
 
   let autoPilotRunning = false;
@@ -618,12 +591,12 @@
     if (autoPilotRunning) return;
     const btnEl = document.getElementById("fvp-sync-btn");
     const badgePillEl = document.getElementById("fvp-mode-pill");
-    const shardSelectEl = document.getElementById("fvp-shard-select");
+    const modeSelectEl = document.getElementById("fvp-mode-select");
     const dateRowEl = document.getElementById("fvp-date-row");
     const resumeBtnEl = document.getElementById("fvp-resume-btn");
-    if (!btnEl || !shardSelectEl) return;
+    if (!btnEl || !modeSelectEl) return;
 
-    const val = shardSelectEl.value;
+    const val = modeSelectEl.value;
     if (dateRowEl) {
       dateRowEl.style.display = val === "date" ? "flex" : "none";
     }
@@ -634,12 +607,9 @@
     } else if (val === "holidays") {
       btnEl.textContent = "🏖️ סנכרן את כל חגי וחופשות השנה (~6 דק')";
       if (badgePillEl) badgePillEl.textContent = "16 חלונות + הפסקות";
-    } else if (val === "all") {
+    } else {
       btnEl.textContent = "🌍 סנכרן שנה מלאה בקצב בטוח (~14 דק')";
       if (badgePillEl) badgePillEl.textContent = "25 חלונות + הפסקות";
-    } else {
-      btnEl.textContent = "🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)";
-      if (badgePillEl) badgePillEl.textContent = "20 בקשות רגועות";
     }
     btnEl.style.background = "#10b981";
 
@@ -742,7 +712,7 @@
   async function runAutoPilot(useSavedResume = false) {
     const statusEl = document.getElementById("fvp-sync-status");
     const btnEl = document.getElementById("fvp-sync-btn");
-    const shardSelectEl = document.getElementById("fvp-shard-select");
+    const modeSelectEl = document.getElementById("fvp-mode-select");
     const dateInputEl = document.getElementById("fvp-target-date");
     const resumeBtnEl = document.getElementById("fvp-resume-btn");
 
@@ -763,12 +733,14 @@
         btnEl.style.background = "#ef4444";
       }
 
-      const modeChoice =
+      const rawChoice =
         useSavedResume && savedResumeState
           ? savedResumeState.modeChoice
-          : shardSelectEl
-            ? shardSelectEl.value
-            : "auto";
+          : modeSelectEl
+            ? modeSelectEl.value
+            : "all";
+      const modeChoice =
+        rawChoice === "date" || rawChoice === "holidays" ? rawChoice : "all";
       const customDateIso =
         useSavedResume && savedResumeState
           ? savedResumeState.customDateIso
@@ -792,9 +764,9 @@
           : PRIORITY_IATAS.slice();
       const targetIatas = activeIatas.length > 0 ? activeIatas : PRIORITY_IATAS.slice();
 
-      // Use 20 destinations (40 directional segments) per batch for multi-window runs to keep El Al DPEL fast and avoid 502s,
-      // or 25 destinations for fast 1-window / daily-shard scans (with automatic 502 split fallback).
-      const batchSize = modeChoice === "all" || modeChoice === "holidays" ? 16 : 25;
+      // Use 16 destinations (32 directional segments) per batch for multi-window runs to keep El Al DPEL fast and avoid 502s,
+      // or 25 destinations for fast single-window date scans (with automatic 502 split fallback).
+      const batchSize = modeChoice === "date" ? 25 : 16;
       const destBatches = [];
       for (let i = 0; i < targetIatas.length; i += batchSize) {
         destBatches.push(targetIatas.slice(i, i + batchSize));
@@ -937,33 +909,23 @@
 
     box.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <strong>🛡️ סנכרון אל על בטוח (כל 45 היעדים)</strong>
-        <span id="fvp-mode-pill" style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;white-space:nowrap;">20 בקשות רגועות</span>
+        <strong>🛡️ סנכרון אל על בטוח (כל היעדים)</strong>
+        <span id="fvp-mode-pill" style="font-size:11px;background:#0284c7;padding:2px 8px;border-radius:999px;white-space:nowrap;">25 חלונות + הפסקות</span>
       </div>
       <div id="fvp-sync-status" style="font-size:12px;color:#cbd5e1;line-height:1.4;">
         בחר מצב סנכרון למטה (או חפש ידנית בטבלה לסנכרון אוטומטי). כולל הגנת פיצול מול שגיאות 502 של אל על.
       </div>
-      <select id="fvp-shard-select" style="background:#1e293b;color:#f8fafc;border:1px solid #334155;border-radius:8px;padding:6px 8px;font-size:12px;">
-        <optgroup label="מומלץ — מחזור יומי בטוח (5 חלקים)">
-          <option value="auto">🔄 אוטומטי — המנה היומית להיום (מומלץ)</option>
-          <option value="0">📅 חלק 1 מתוך 5 (חלונות 1–5)</option>
-          <option value="1">📅 חלק 2 מתוך 5 (חלונות 6–10)</option>
-          <option value="2">📅 חלק 3 מתוך 5 (חלונות 11–15)</option>
-          <option value="3">📅 חלק 4 מתוך 5 (חלונות 16–20)</option>
-          <option value="4">📅 חלק 5 מתוך 5 (חלונות 21–25)</option>
-        </optgroup>
-        <optgroup label="מצבי סנכרון נוספים לכל היעדים">
-          <option value="date">🎯 תאריך ספציפי — 14 יום לכל היעדים (~15 שנ')</option>
-          <option value="holidays">🏖️ כל חגי וחופשות השנה — עם הפסקות (~6 דק')</option>
-          <option value="all">🌍 כל השנה המלאה (350 יום) — איטי ובטוח (~14 דק')</option>
-        </optgroup>
+      <select id="fvp-mode-select" style="background:#1e293b;color:#f8fafc;border:1px solid #334155;border-radius:8px;padding:6px 8px;font-size:12px;">
+        <option value="all" selected>🌍 כל השנה המלאה (350 יום) — ברירת מחדל מומלצת (~14 דק')</option>
+        <option value="holidays">🏖️ כל חגי וחופשות השנה — עם הפסקות (~6 דק')</option>
+        <option value="date">🎯 תאריך ספציפי — 14 יום לכל היעדים (~15 שנ')</option>
       </select>
       <div id="fvp-date-row" style="display:none;align-items:center;justify-content:space-between;gap:8px;background:#1e293b;padding:6px 8px;border-radius:8px;border:1px solid #334155;">
         <label for="fvp-target-date" style="font-size:12px;color:#e2e8f0;white-space:nowrap;">תאריך התחלה (14 יום):</label>
         <input id="fvp-target-date" type="date" value="${defaultDate}" style="background:#0f172a;color:#f8fafc;border:1px solid #475569;border-radius:6px;padding:4px 6px;font-size:12px;direction:ltr;" />
       </div>
       <button id="fvp-sync-btn" type="button" style="background:#10b981;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:12.5px;">
-        🛡️ הפעל סנכרון בטוח (מנה יומית · ~דקה)
+        🌍 סנכרן שנה מלאה בקצב בטוח (~14 דק')
       </button>
       <button id="fvp-resume-btn" type="button" style="display:none;background:#0284c7;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-weight:700;cursor:pointer;font-size:12px;">
         ▶️ המשך מאיפה שעצר
@@ -971,9 +933,9 @@
     `;
     document.body.appendChild(box);
 
-    const shardSelect = document.getElementById("fvp-shard-select");
-    if (shardSelect) {
-      shardSelect.addEventListener("change", () => updateButtonLabelForSelection());
+    const modeSelect = document.getElementById("fvp-mode-select");
+    if (modeSelect) {
+      modeSelect.addEventListener("change", () => updateButtonLabelForSelection());
     }
     const btn = document.getElementById("fvp-sync-btn");
     if (btn) {
@@ -983,6 +945,7 @@
     if (resumeBtn) {
       resumeBtn.addEventListener("click", () => runAutoPilot(true));
     }
+    updateButtonLabelForSelection();
   }
 
   createFloatingBadge();

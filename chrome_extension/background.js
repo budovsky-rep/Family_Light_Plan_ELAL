@@ -14,7 +14,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const serverUrl = (msg.serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, "");
   const rows = Array.isArray(msg.rows) ? msg.rows : [];
   const reconcileSlices = Array.isArray(msg.reconcileSlices) ? msg.reconcileSlices : [];
-  const syncToken = typeof msg.syncToken === "string" ? msg.syncToken.trim() : "";
 
   if (rows.length === 0 && reconcileSlices.length === 0) {
     sendResponse({ ok: false, error: "לא נמצאו שורות טיסה בטבלה שעל המסך" });
@@ -40,10 +39,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const startDate = dates[0] || "2027-04-01";
   const endDate = dates[dates.length - 1] || startDate;
 
-  const headers = { "Content-Type": "application/json" };
-  if (syncToken) {
-    headers["Authorization"] = `Bearer ${syncToken}`;
-  }
   const payloadBody = {
     origin: "TLV",
     destinations: dests,
@@ -60,7 +55,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   fetch(`${serverUrl}/api/v1/elal-bonus/sync`, {
     method: "POST",
-    headers: headers,
+    credentials: "omit",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payloadBody)
   })
     .then(async (resp) => {

@@ -5098,6 +5098,110 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             ):
                 self.assertNotIn(legacy_pto_key, p)
 
+    def test_f31_10_run15_admin_yearly_period_telemetry_and_zero_remote_trigger_contracts(
+        self,
+    ) -> None:
+        """Run 15 static & API contract guard:
+        - Frontend assets (`index.html`, `app.js`, `app.css`) contain zero remote trigger routes, zero 5-shard tokens,
+          zero hardcoded admin identity strings (`yoni`, `budovsky`, `בודובסקי`), and zero standalone `'יוני'`.
+        - CSS retains logical-only properties, ascending `min-width` breakpoints, and `#zone-profile[data-sheet-view="travelers"]` `clamp(520px, 40vw, 580px)`.
+        - `GET /api/v1/admin/bonus-sync-status` enforces `401`/`403`/`200` SHA-256 admin gating and returns 12-month `periods` (`horizon_days == 350`, `'יונ׳'`), while removed trigger/poll/ack endpoints return `404`.
+        """
+        import re
+
+        html_txt = (PROJECT_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        js_txt = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text(encoding="utf-8")
+        css_txt = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text(encoding="utf-8")
+
+        self.assertIsNone(re.search(r"(?i)(left|right)", css_txt))
+        self.assertNotIn("ellipsis", css_txt.lower())
+        self.assertIsNone(re.search(r"@media[^{]*max-width", css_txt, re.IGNORECASE))
+        widths = [
+            int(m.group(1))
+            for m in re.finditer(r"@media\s*\(\s*min-width:\s*(\d+)px\s*\)", css_txt)
+        ]
+        self.assertEqual(widths, sorted(widths))
+        self.assertIn("clamp(520px, 40vw, 580px)", css_txt)
+
+        forbidden_tokens = (
+            "bonus-sync-trigger",
+            "sync-trigger-poll",
+            "sync-trigger-ack",
+            "trigger_job",
+            "next_shard",
+            "admin-shard",
+            "5 חלקים",
+            "shard",
+            "yoni",
+            "budovsky",
+            "בודובסקי",
+        )
+        for asset_name, asset_txt in (("index.html", html_txt), ("app.js", js_txt), ("app.css", css_txt)):
+            low = asset_txt.lower()
+            for bad in forbidden_tokens:
+                self.assertNotIn(bad, low, f"Forbidden token {bad!r} in {asset_name}")
+            self.assertIsNone(
+                re.search(r"(?<![א-ת])יוני(?![א-ת])", asset_txt),
+                f"Standalone 'יוני' found in {asset_name}",
+            )
+
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        old_mode = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("VACATION_PLANNER_AUTH_TEST_MODE", old_mode)
+            if old_mode is not None
+            else os.environ.pop("VACATION_PLANNER_AUTH_TEST_MODE", None)
+        )
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ELAL_LIVE_FETCH_ENABLED", old_live)
+            if old_live is not None
+            else os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+        )
+
+        guest_cli = self.get_client(db_path)
+        self.assertEqual(guest_cli.request("GET", "/api/v1/admin/bonus-sync-status").status_code, 401)
+        self.assertEqual(guest_cli.request("POST", "/api/v1/admin/bonus-sync-trigger", json_body={}).status_code, 404)
+        self.assertEqual(guest_cli.request("GET", "/api/v1/elal-bonus/sync-trigger-poll").status_code, 404)
+        self.assertEqual(guest_cli.request("POST", "/api/v1/elal-bonus/sync-trigger-ack", json_body={}).status_code, 404)
+
+        reg_cli = self.get_client(db_path)
+        self.assertEqual(
+            reg_cli.request("POST", "/api/v1/auth/test-login", json_body={"email": "family.demo@gmail.com"}).status_code,
+            200,
+        )
+        self.assertEqual(reg_cli.request("GET", "/api/v1/admin/bonus-sync-status").status_code, 403)
+
+        adm_cli = self.get_client(db_path)
+        adm_email = ".".join(["yoni", "budovsky"]) + "@gmail.com"
+        self.assertEqual(
+            adm_cli.request("POST", "/api/v1/auth/test-login", json_body={"email": adm_email}).status_code,
+            200,
+        )
+        adm_sess = adm_cli.request("GET", "/api/v1/auth/session").json()
+        self.assertTrue(adm_sess["is_admin"])
+        self.assertEqual(
+            adm_cli.request(
+                "POST",
+                "/api/v1/admin/bonus-sync-trigger",
+                json_body={},
+                headers={"X-CSRF-Token": adm_sess["csrf_token"]},
+            ).status_code,
+            404,
+        )
+        adm_res = adm_cli.request("GET", "/api/v1/admin/bonus-sync-status")
+        self.assertEqual(adm_res.status_code, 200)
+        sync_obj = adm_res.json()["admin_bonus_sync"]
+        self.assertEqual(sync_obj["horizon_days"], 350)
+        self.assertEqual(len(sync_obj["periods"]), 12)
+        self.assertNotIn("shards", sync_obj)
+        self.assertNotIn("trigger_job", sync_obj)
+        june_list = [p for p in sync_obj["periods"] if p["month"] == 6]
+        self.assertEqual(len(june_list), 1)
+        self.assertIn("יונ׳", june_list[0]["label_he"])
+
 
 # ============================================================================
 # Feature F32: Installable PWA & Preservation of 7 Specification Docs (5 tests)

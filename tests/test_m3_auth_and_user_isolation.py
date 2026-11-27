@@ -2234,7 +2234,10 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                     os.environ["ELAL_LIVE_FETCH_ENABLED"] = old_live
 
     def test_admin_only_bonus_sync_diagnostics_strict_access_control(self) -> None:
-        """Verify admin bonus sync diagnostics are returned ONLY to the admin account (`401` guest, `403` non-admin)."""
+        """Verify admin bonus sync diagnostics are returned ONLY to the admin account (`401` guest, `403` non-admin),
+        follow the Run 15 12-month `periods` contract with zero `shard`/`trigger_job` keys, and all 3 removed trigger
+        endpoints return `404`.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin_sync.db"
             with _EnvContext(
@@ -2271,7 +2274,7 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 self.assertEqual(r_adm.status_code, 403)
                 self.assertEqual(r_adm.headers.get("Cache-Control"), "no-store, private")
 
-                # 3. Admin Gmail user receives is_admin=True + full 5-shard diagnostics on both /session and /admin/bonus-sync-status
+                # 3. Admin Gmail user receives is_admin=True + full 12-month period diagnostics on both /session and /admin/bonus-sync-status
                 a_login = admin_client.post(
                     "/api/v1/auth/test-login", json={"email": "admin.owner@gmail.com"}
                 )
@@ -2280,159 +2283,91 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 self.assertTrue(a_sess["authenticated"])
                 self.assertTrue(a_sess["is_admin"])
                 diag = a_sess["admin_bonus_sync"]
-                self.assertEqual(diag["shard_count"], 5)
-                self.assertEqual(len(diag["shards"]), 5)
+
+                for forbidden_key in (
+                    "shards",
+                    "shard_count",
+                    "fresh_shards_count",
+                    "target_shards_per_day",
+                    "sync_mode_detected",
+                    "trigger_job",
+                ):
+                    self.assertNotIn(forbidden_key, diag)
+                raw_diag_json = json.dumps(diag, ensure_ascii=False)
+                self.assertNotIn("shard", raw_diag_json.lower())
+                self.assertNotIn("5 חלקים", raw_diag_json)
+                self.assertIsNone(re.search(r"(?<![א-ת])יוני(?![א-ת])", raw_diag_json))
+
+                self.assertEqual(diag["horizon_days"], 350)
+                self.assertEqual(diag["sync_source"], "CHROME_EXTENSION_MANUAL")
+                self.assertEqual(diag["sync_mode"], "manual_extension_full_year")
+                self.assertEqual(diag["period_count"], 12)
+                self.assertEqual(diag["total_periods_count"], 12)
+                self.assertEqual(len(diag["periods"]), 12)
+                self.assertEqual(
+                    diag["covered_periods_count"]
+                    + diag["partial_periods_count"]
+                    + diag["empty_periods_count"],
+                    12,
+                )
                 self.assertGreater(diag["total_active_rows"], 0)
-                self.assertIn(diag["health_state"], ("HEALTHY", "DELAYED", "STALE"))
+                self.assertGreaterEqual(diag["covered_periods_count"], 1)
+                self.assertIn(
+                    diag["health_state"],
+                    ("HEALTHY", "PARTIAL", "DELAYED", "STALE", "EMPTY"),
+                )
+                self.assertIn(
+                    diag["overall_status"],
+                    ("fresh", "partial", "delayed", "stale", "empty"),
+                )
+                june_periods = [p for p in diag["periods"] if p["month"] == 6]
+                self.assertEqual(len(june_periods), 1)
+                self.assertIn("יונ׳", june_periods[0]["label_he"])
+                for idx, p in enumerate(diag["periods"], 1):
+                    self.assertEqual(p["period_index"], idx)
+                    self.assertRegex(p["period_key"], r"^\d{4}-\d{2}$")
+                    self.assertIn(p["status"], ("COVERED", "PARTIAL", "EMPTY"))
+                    self.assertIsInstance(p["holidays_he"], list)
+                    self.assertIsInstance(p["holidays_en"], list)
+                    self.assertEqual(p["has_school_holiday"], bool(p["holidays_he"]))
 
                 a_adm = admin_client.get("/api/v1/admin/bonus-sync-status")
                 self.assertEqual(a_adm.status_code, 200)
                 self.assertEqual(a_adm.headers.get("Cache-Control"), "no-store, private")
-                self.assertEqual(len(a_adm.json()["admin_bonus_sync"]["shards"]), 5)
+                adm_diag = a_adm.json()["admin_bonus_sync"]
+                self.assertEqual(len(adm_diag["periods"]), 12)
+                self.assertNotIn("shards", adm_diag)
+                self.assertNotIn("trigger_job", adm_diag)
 
-                # 3b. Remote trigger queue: Guest -> 401, Regular user -> 403, Admin without CSRF -> 403, Admin with CSRF -> QUEUED -> RUNNING -> COMPLETED
-                self.assertEqual(
-                    guest_client.post("/api/v1/admin/bonus-sync-trigger", json={"mode": "NEXT_SHARD"}).status_code,
-                    401,
-                )
-                self.assertEqual(
-                    regular_client.post(
-                        "/api/v1/admin/bonus-sync-trigger",
-                        json={"mode": "NEXT_SHARD"},
-                        headers={"X-CSRF-Token": r_sess["csrf_token"]},
-                    ).status_code,
-                    403,
-                )
-                self.assertEqual(
-                    admin_client.post("/api/v1/admin/bonus-sync-trigger", json={"mode": "NEXT_SHARD"}).status_code,
-                    403,
-                )
-                trig_resp = admin_client.post(
-                    "/api/v1/admin/bonus-sync-trigger",
-                    json={"mode": "NEXT_SHARD"},
-                    headers={"X-CSRF-Token": a_sess["csrf_token"]},
-                )
-                self.assertEqual(trig_resp.status_code, 200)
-                job_id = trig_resp.json()["trigger_job"]["job_id"]
-                self.assertEqual(trig_resp.json()["trigger_job"]["status"], "QUEUED")
+                # 3b. All 3 removed remote trigger/poll/ack endpoints return 404 across guest, regular, and admin
+                for cli, csrf_hdr in (
+                    (guest_client, {}),
+                    (regular_client, {"X-CSRF-Token": r_sess["csrf_token"]}),
+                    (admin_client, {"X-CSRF-Token": a_sess["csrf_token"]}),
+                ):
+                    self.assertEqual(
+                        cli.post(
+                            "/api/v1/admin/bonus-sync-trigger",
+                            json={"mode": "FULL"},
+                            headers=csrf_hdr,
+                        ).status_code,
+                        404,
+                    )
+                    self.assertEqual(
+                        cli.get("/api/v1/elal-bonus/sync-trigger-poll").status_code,
+                        404,
+                    )
+                    self.assertEqual(
+                        cli.post(
+                            "/api/v1/elal-bonus/sync-trigger-ack",
+                            json={"job_id": "none", "status": "COMPLETED"},
+                        ).status_code,
+                        404,
+                    )
 
-                poll_resp = guest_client.get("/api/v1/elal-bonus/sync-trigger-poll")
-                self.assertEqual(poll_resp.status_code, 200)
-                self.assertEqual(poll_resp.json()["trigger_job"]["job_id"], job_id)
-
-                ack_run = guest_client.post(
-                    "/api/v1/elal-bonus/sync-trigger-ack",
-                    json={"job_id": job_id, "status": "RUNNING"},
-                )
-                self.assertEqual(ack_run.status_code, 200)
-                self.assertEqual(ack_run.json()["trigger_job"]["status"], "RUNNING")
-
-                ack_done = guest_client.post(
-                    "/api/v1/elal-bonus/sync-trigger-ack",
-                    json={"job_id": job_id, "status": "COMPLETED", "records_synced": 612},
-                )
-                self.assertEqual(ack_done.status_code, 200)
-                self.assertEqual(ack_done.json()["trigger_job"]["status"], "COMPLETED")
-                self.assertEqual(ack_done.json()["trigger_job"]["records_synced"], 612)
-
-                # 3c. Verify macOS LaunchAgent plist builder & CDP AJAX response parser
-                import plistlib
-                from scripts.sync_elal_to_server import (
-                    DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS,
-                    MAC_LAUNCH_AGENT_LABEL,
-                    _is_transient_dpel_gateway_failure,
-                    build_mac_launch_agent_plist,
-                    parse_cdp_ajax_eval_value,
-                )
-
-                mac_plist = build_mac_launch_agent_plist(
-                    python_exe="/usr/bin/python3",
-                    installed_script_path="/Users/yoni/.local/share/fvp-chrome-sync-profile/sync_elal_to_server.py",
-                    server_url="https://breezyflights.com",
-                    shards_per_day=2,
-                    poll_seconds=60,
-                )
-                self.assertEqual(mac_plist["Label"], MAC_LAUNCH_AGENT_LABEL)
-                self.assertTrue(mac_plist["RunAtLoad"])
-                self.assertTrue(mac_plist["KeepAlive"])
-                self.assertEqual(mac_plist["ProcessType"], "Standard")
-                self.assertIn("--daemon", mac_plist["ProgramArguments"])
-                self.assertIn("--no-local", mac_plist["ProgramArguments"])
-                self.assertIn("2", mac_plist["ProgramArguments"])
-                # Ensure plistlib serializes and parses cleanly
-                raw_plist_xml = plistlib.dumps(mac_plist)
-                self.assertEqual(plistlib.loads(raw_plist_xml)["Label"], MAC_LAUNCH_AGENT_LABEL)
-
-                # Verify stringified JSON 200, null AccumulatedOutput 200, WCF 'd' wrapper, and HTML/error fail-fast
-                self.assertEqual(len(DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS), 43)
-                self.assertNotIn("FLL", DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS)
-                self.assertNotIn("ZRH", DEFAULT_ACTIVE_CALCULATOR_DESTINATIONS)
-
-                parsed_str, st1, err1 = parse_cdp_ajax_eval_value(
-                    {
-                        "ok": True,
-                        "status": 200,
-                        "contentType": "text/plain",
-                        "data": '{"AccumulatedOutput":{"resultSet":[{"Record":{"SegmentRoute":"TLVATH"}}]}}',
-                    }
-                )
-                self.assertEqual(st1, 200)
-                self.assertEqual(err1, "")
-                self.assertIsNotNone(parsed_str)
-                assert parsed_str is not None
-                self.assertIn("resultSet", parsed_str["AccumulatedOutput"])
-
-                parsed_null, st2, err2 = parse_cdp_ajax_eval_value(
-                    {"ok": True, "status": 200, "data": {"AccumulatedOutput": None}}
-                )
-                self.assertEqual(st2, 200)
-                self.assertEqual(err2, "")
-                self.assertEqual(parsed_null, {"AccumulatedOutput": {"resultSet": []}})
-
-                parsed_html, st3, err3 = parse_cdp_ajax_eval_value(
-                    {"ok": True, "status": 200, "data": "<!DOCTYPE html><html><body>Access</body></html>"}
-                )
-                self.assertIsNone(parsed_html)
-                self.assertEqual(st3, 200)
-                self.assertTrue(err3.startswith("html_interstitial_200:"))
-                self.assertFalse(_is_transient_dpel_gateway_failure(st3, err3))
-
-                parsed_err_obj, st4, err4 = parse_cdp_ajax_eval_value(
-                    {"ok": True, "status": 200, "data": {"ErrorCode": "INVALID_AIRPORT", "Airport": "FLL"}}
-                )
-                self.assertIsNone(parsed_err_obj)
-                self.assertEqual(st4, 200)
-                self.assertIn("missing_AccumulatedOutput", err4)
-                self.assertIn("ErrorCode", err4)
-                self.assertFalse(_is_transient_dpel_gateway_failure(st4, err4))
-                # Also verify JSON-stringified envelope from Runtime.evaluate (`resolve(JSON.stringify(obj))`)
-                deep_envelope_json = json.dumps(
-                    {
-                        "ok": True,
-                        "status": 200,
-                        "contentType": "application/json",
-                        "data": {
-                            "AccumulatedOutput": {
-                                "resultSet": [
-                                    {"Record": [{"SegmentRoute": "TLVFCO", "NewAvailability": "2+"}]}
-                                ]
-                            }
-                        },
-                    }
-                )
-                parsed_env, st_env, err_env = parse_cdp_ajax_eval_value(deep_envelope_json)
-                self.assertEqual(st_env, 200)
-                self.assertEqual(err_env, "")
-                self.assertIsNotNone(parsed_env)
-
-                # Closed CDP context / empty dict must NOT be treated as a 502 DPEL gateway retry
-                parsed_closed, st_closed, err_closed = parse_cdp_ajax_eval_value({})
-                self.assertIsNone(parsed_closed)
-                self.assertEqual(err_closed, "cdp_context_closed_or_empty")
-                self.assertFalse(_is_transient_dpel_gateway_failure(st_closed, err_closed))
-                self.assertTrue(_is_transient_dpel_gateway_failure(0, "xhr_timeout"))
-                self.assertTrue(_is_transient_dpel_gateway_failure(502, "Bad Gateway"))
-                self.assertFalse(_is_transient_dpel_gateway_failure(403, "Forbidden"))
+                guest_client.router.repository.close()
+                regular_client.router.repository.close()
+                admin_client.router.repository.close()
 
             # 4. Also verify default built-in admin SHA-256 matches yoni.budovsky@gmail.com without env var
             with _EnvContext(
@@ -2448,6 +2383,507 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 def_sess = def_admin.get("/api/v1/auth/session").json()
                 self.assertTrue(def_sess["is_admin"])
                 self.assertIn("admin_bonus_sync", def_sess)
+                self.assertEqual(len(def_sess["admin_bonus_sync"]["periods"]), 12)
+                def_admin.router.repository.close()
+
+    def test_run15_period_diagnostics_transitions_sync_guide_and_extension_contracts(
+        self,
+    ) -> None:
+        """Verify Run 15 health/period state transitions (`EMPTY` -> `PARTIAL` -> `HEALTHY` -> `DELAYED` -> `STALE`),
+        script deletions, `SYNC_COMMANDS_GUIDE.md` `U+200F` RTL & forbidden-word rules, Chromium V8 syntax compilation
+        (`node --check` if present + CDP `Runtime.compileScript`), extension DOM default `all` mode, and end-to-end
+        simulated full-year upload through `background.js` -> `POST /api/v1/elal-bonus/sync`.
+        """
+        import base64
+        import shutil
+        import signal
+        import socket
+        import struct
+        import subprocess
+        import urllib.request
+
+        repo_root = Path(__file__).resolve().parents[1]
+
+        # 1. Script deletions & repository trigger method removal
+        for deleted_rel in (
+            "scripts/sync_elal_to_server.py",
+            "scripts/install_cloudtop_daily_sync.sh",
+            "scripts/install_mac_daily_sync.sh",
+        ):
+            self.assertFalse(
+                (repo_root / deleted_rel).exists(), f"{deleted_rel} must be deleted"
+            )
+        for removed_method in (
+            "_sync_trigger_path",
+            "get_sync_trigger_state",
+            "enqueue_sync_trigger",
+            "ack_sync_trigger",
+        ):
+            self.assertFalse(hasattr(SQLiteRepository, removed_method))
+
+        # 2. SYNC_COMMANDS_GUIDE.md U+200F RTL & zero forbidden agent/shard terms
+        guide_txt = (repo_root / "SYNC_COMMANDS_GUIDE.md").read_text(encoding="utf-8")
+        for bad_term in (
+            "sync_elal_to_server",
+            "install_cloudtop",
+            "install_mac",
+            "systemd",
+            "systemctl --user",
+            "journalctl --user",
+            "fvp-elal-sync",
+            "launchagent",
+            "launchctl",
+            "com.breezyflights",
+            "shard_state",
+            "fvp-chrome-sync-profile",
+            "elal_sync_api_token",
+            "sync-trigger",
+            "bonus-sync-trigger",
+            "5 חלקים",
+            "shard",
+        ):
+            self.assertNotIn(bad_term.lower(), guide_txt.lower())
+        in_fence = False
+        hebrew_lines_checked = 0
+        for lineno, raw_line in enumerate(guide_txt.splitlines(), 1):
+            s = raw_line.strip()
+            if s.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence or not s or s == "---":
+                continue
+            if re.search(r"[\u0590-\u05FF]", s):
+                hebrew_lines_checked += 1
+                item_body = re.sub(r"^(?:[-*+]\s+|\d+\.\s+)", "", s)
+                self.assertTrue(
+                    item_body.startswith("\u200f"),
+                    f"SYNC_COMMANDS_GUIDE.md:{lineno} missing U+200F prefix",
+                )
+                first_visible = re.sub(
+                    r"^(?:#+\s*)?(?:\d+\.\s*)?[*_`]*", "", item_body[1:]
+                )
+                self.assertIsNone(
+                    re.match(r"^[A-Za-z]", first_visible),
+                    f"SYNC_COMMANDS_GUIDE.md:{lineno} starts with Latin text: {raw_line!r}",
+                )
+        self.assertGreaterEqual(hebrew_lines_checked, 15)
+
+        # 3. Health & monthly period transitions on isolated live-mode SQLite DB
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "run15_transitions.db"
+            with _EnvContext({"ELAL_LIVE_FETCH_ENABLED": "1"}):
+                client = VacationPlannerTestClient(db_path=str(db_path))
+                repo = client.router.repository
+                t0 = datetime(2026, 12, 1, 9, 0, 0, tzinfo=UTC)
+
+                # (a) Empty #live inventory -> EMPTY / empty, 12 EMPTY months
+                d_empty = repo.get_bonus_sync_diagnostics(now_dt=t0)
+                self.assertEqual(d_empty["health_state"], "EMPTY")
+                self.assertEqual(d_empty["overall_status"], "empty")
+                self.assertEqual(d_empty["empty_periods_count"], 12)
+                self.assertEqual(d_empty["covered_periods_count"], 0)
+                # Dec 2026 overlaps Hanukkah MoE vacation -> has_school_holiday True with holiday name
+                dec_p = d_empty["periods"][0]
+                self.assertEqual(dec_p["period_key"], "2026-12")
+                self.assertTrue(dec_p["has_school_holiday"])
+                self.assertGreaterEqual(len(dec_p["holidays_he"]), 1)
+
+                # (b) Insert 1 flight on 1 date / 1 destination -> PARTIAL month & PARTIAL overall health
+                t_fetch_iso = "2026-12-01T08:00:00Z"
+                with repo.connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO elal_bonus_availability (
+                            id, origin_iata, destination_iata, direction, flight_number,
+                            operating_carrier, flight_date, departure_time_local, arrival_time_local,
+                            economy_award_seats, award_zone, taxes_usd_per_pax,
+                            source_url, fetched_at, expires_at
+                        ) VALUES (?, 'TLV', 'FCO', 'OUTBOUND', 'LY381', 'LY', '2026-12-10', '07:15', '10:00',
+                                  2, 'ZONE_B', 48.75, 'https://www.elal.com/rbddataclients/#live', ?, '2026-12-31T08:00:00Z')
+                        """,
+                        ("LY381_2026-12-10", t_fetch_iso),
+                    )
+                d_partial = repo.get_bonus_sync_diagnostics(now_dt=t0)
+                self.assertEqual(d_partial["health_state"], "PARTIAL")
+                self.assertEqual(d_partial["overall_status"], "partial")
+                self.assertEqual(d_partial["covered_periods_count"], 0)
+                self.assertEqual(d_partial["partial_periods_count"], 1)
+                self.assertEqual(d_partial["periods"][0]["status"], "PARTIAL")
+
+                # (c) Populate >=4 distinct dates across >=3 destinations in 2026-12 -> COVERED & HEALTHY (<=72h)
+                rows_dec = []
+                for d_day, dest_code, fl_num in (
+                    ("2026-12-11", "ATH", "LY541"),
+                    ("2026-12-12", "VIE", "LY361"),
+                    ("2026-12-13", "FCO", "LY381"),
+                    ("2026-12-14", "ATH", "LY541"),
+                ):
+                    rows_dec.append(
+                        (
+                            f"{fl_num}_{d_day}",
+                            dest_code,
+                            fl_num,
+                            d_day,
+                            t_fetch_iso,
+                            "2026-12-31T08:00:00Z",
+                        )
+                    )
+                with repo.connection() as conn:
+                    conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO elal_bonus_availability (
+                            id, origin_iata, destination_iata, direction, flight_number,
+                            operating_carrier, flight_date, departure_time_local, arrival_time_local,
+                            economy_award_seats, award_zone, taxes_usd_per_pax,
+                            source_url, fetched_at, expires_at
+                        ) VALUES (?, 'TLV', ?, 'OUTBOUND', ?, 'LY', ?, '07:00', '10:00',
+                                  2, 'ZONE_B', 50.0, 'https://www.elal.com/rbddataclients/#live', ?, ?)
+                        """,
+                        rows_dec,
+                    )
+                d_healthy = repo.get_bonus_sync_diagnostics(now_dt=t0)
+                self.assertEqual(d_healthy["health_state"], "HEALTHY")
+                self.assertEqual(d_healthy["overall_status"], "fresh")
+                self.assertEqual(d_healthy["covered_periods_count"], 1)
+                self.assertEqual(d_healthy["periods"][0]["status"], "COVERED")
+
+                # (d) +100h (72 < age <= 168) -> DELAYED / delayed
+                d_delayed = repo.get_bonus_sync_diagnostics(
+                    now_dt=t0 + timedelta(hours=100)
+                )
+                self.assertEqual(d_delayed["health_state"], "DELAYED")
+                self.assertEqual(d_delayed["overall_status"], "delayed")
+
+                # (e) +200h (> 168h, still unexpired) -> STALE / stale
+                d_stale = repo.get_bonus_sync_diagnostics(
+                    now_dt=t0 + timedelta(hours=200)
+                )
+                self.assertEqual(d_stale["health_state"], "STALE")
+                self.assertEqual(d_stale["overall_status"], "stale")
+
+                # 4. Browser extension syntax check (node --check if available + Chromium V8 CDP Runtime.compileScript),
+                # widget DOM default (`all`), and simulated full-year upload via background.js -> /api/v1/elal-bonus/sync
+                ext_dir = repo_root / "chrome_extension"
+                content_js_path = ext_dir / "content.js"
+                bg_js_path = ext_dir / "background.js"
+                content_js_src = content_js_path.read_text(encoding="utf-8")
+                bg_js_src = bg_js_path.read_text(encoding="utf-8")
+
+                node_bin = shutil.which("node")
+                if node_bin:
+                    for js_p in (content_js_path, bg_js_path):
+                        chk = subprocess.run(
+                            [node_bin, "--check", str(js_p)],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        self.assertEqual(chk.returncode, 0, chk.stderr)
+
+                chrome_bin = Path("/usr/bin/google-chrome")
+                self.assertTrue(chrome_bin.exists(), "/usr/bin/google-chrome is required")
+                short_parent = "/tmp" if len(tempfile.gettempdir()) > 55 else None
+                chrome_udir = tempfile.mkdtemp(prefix="fvp_ext_v8_", dir=short_parent)
+                proc = subprocess.Popen(
+                    [
+                        str(chrome_bin),
+                        "--headless=new",
+                        "--disable-gpu",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-background-networking",
+                        "--disable-extensions",
+                        "--remote-debugging-port=0",
+                        f"--user-data-dir={chrome_udir}",
+                        "about:blank",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                sock: Optional[socket.socket] = None
+                try:
+                    port_file = Path(chrome_udir) / "DevToolsActivePort"
+                    deadline = time.time() + 15.0
+                    while time.time() < deadline and not (
+                        port_file.exists() and port_file.read_text("utf-8").splitlines()
+                    ):
+                        time.sleep(0.05)
+                    self.assertTrue(port_file.exists())
+                    cdp_port = int(port_file.read_text("utf-8").splitlines()[0].strip())
+                    opener = urllib.request.build_opener(
+                        urllib.request.ProxyHandler({})
+                    )
+                    with opener.open(
+                        f"http://127.0.0.1:{cdp_port}/json/list", timeout=5.0
+                    ) as r_list:
+                        targets = json.loads(r_list.read().decode("utf-8"))
+                    ws_url = next(
+                        t["webSocketDebuggerUrl"]
+                        for t in targets
+                        if t.get("type") == "page"
+                    )
+                    ws_path = urllib.parse.urlsplit(ws_url).path
+                    sock = socket.create_connection(("127.0.0.1", cdp_port), timeout=20.0)
+                    ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+                    sock.sendall(
+                        (
+                            f"GET {ws_path} HTTP/1.1\r\nHost: 127.0.0.1:{cdp_port}\r\n"
+                            f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                            f"Sec-WebSocket-Key: {ws_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                        ).encode("ascii")
+                    )
+                    buf = b""
+                    while b"\r\n\r\n" not in buf:
+                        buf += sock.recv(4096)
+                    leftover = bytearray(buf[buf.index(b"\r\n\r\n") + 4 :])
+                    msg_seq = 0
+
+                    def ws_send(obj: dict[str, Any]) -> None:
+                        assert sock is not None
+                        raw_b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                        mask = os.urandom(4)
+                        ln = len(raw_b)
+                        if ln < 126:
+                            hdr = bytes([0x81, 0x80 | ln]) + mask
+                        elif ln < 65536:
+                            hdr = bytes([0x81, 0x80 | 126]) + struct.pack("!H", ln) + mask
+                        else:
+                            hdr = bytes([0x81, 0x80 | 127]) + struct.pack("!Q", ln) + mask
+                        sock.sendall(
+                            hdr + bytes(b ^ mask[i % 4] for i, b in enumerate(raw_b))
+                        )
+
+                    def ws_recv_exact(n: int) -> bytes:
+                        assert sock is not None
+                        while len(leftover) < n:
+                            more = sock.recv(65536)
+                            if not more:
+                                raise EOFError("CDP socket closed")
+                            leftover.extend(more)
+                        out_b = bytes(leftover[:n])
+                        del leftover[:n]
+                        return out_b
+
+                    def ws_recv_msg() -> dict[str, Any]:
+                        fragments: list[bytes] = []
+                        while True:
+                            b0, b1 = ws_recv_exact(2)
+                            fin = bool(b0 & 0x80)
+                            opcode = b0 & 0x0F
+                            masked_flag = bool(b1 & 0x80)
+                            ln = b1 & 0x7F
+                            if ln == 126:
+                                ln = struct.unpack("!H", ws_recv_exact(2))[0]
+                            elif ln == 127:
+                                ln = struct.unpack("!Q", ws_recv_exact(8))[0]
+                            mkey = ws_recv_exact(4) if masked_flag else b""
+                            payload_b = ws_recv_exact(ln)
+                            if masked_flag:
+                                payload_b = bytes(
+                                    b ^ mkey[i % 4] for i, b in enumerate(payload_b)
+                                )
+                            if opcode == 0x9:
+                                continue
+                            fragments.append(payload_b)
+                            if fin:
+                                return json.loads(b"".join(fragments).decode("utf-8"))
+
+                    def handle_binding(ev_msg: dict[str, Any]) -> None:
+                        if ev_msg.get("method") != "Runtime.bindingCalled":
+                            return
+                        p = ev_msg.get("params", {})
+                        if p.get("name") != "__extSyncBridge":
+                            return
+                        req = json.loads(p["payload"])
+                        parsed_u = urllib.parse.urlsplit(req["url"])
+                        st_code, _, resp_b = client.router.dispatch(
+                            req["method"],
+                            parsed_u.path,
+                            json_body=json.loads(req["body"]) if req.get("body") else None,
+                            request_headers={},
+                        )
+                        nonlocal msg_seq
+                        msg_seq += 1
+                        ws_send(
+                            {
+                                "id": msg_seq,
+                                "method": "Runtime.evaluate",
+                                "params": {
+                                    "expression": f"window.__resolveExtFetch({req['id']}, {st_code}, {json.dumps(resp_b)})"
+                                },
+                            }
+                        )
+
+                    def cdp_call(
+                        method: str, params: Optional[dict[str, Any]] = None
+                    ) -> dict[str, Any]:
+                        nonlocal msg_seq
+                        msg_seq += 1
+                        target_id = msg_seq
+                        ws_send({"id": target_id, "method": method, "params": params or {}})
+                        while True:
+                            m = ws_recv_msg()
+                            if m.get("id") == target_id:
+                                return m
+                            handle_binding(m)
+
+                    cdp_call("Runtime.enable")
+                    cdp_call("Runtime.addBinding", {"name": "__extSyncBridge"})
+
+                    # Compile both extension files via V8 Runtime.compileScript
+                    for fname, src in (
+                        ("content.js", content_js_src),
+                        ("background.js", bg_js_src),
+                    ):
+                        comp = cdp_call(
+                            "Runtime.compileScript",
+                            {
+                                "expression": src,
+                                "sourceURL": fname,
+                                "persistScript": False,
+                            },
+                        )
+                        self.assertNotIn(
+                            "exceptionDetails",
+                            comp.get("result", {}),
+                            f"V8 syntax error in {fname}: {comp}",
+                        )
+
+                    # Mount simulated chrome.runtime + fetch bridge, run background.js + content.js,
+                    # verify default mode is 'all' with ['all', 'holidays', 'date'] options only,
+                    # and trigger a full-year batch upload through chrome.runtime.sendMessage -> background.js -> /api/v1/elal-bonus/sync!
+                    setup_expr = """
+                    (() => {
+                      const listeners = [];
+                      let seq = 0;
+                      const pending = new Map();
+                      window.__lastFetchOpts = null;
+                      window.__resolveExtFetch = (id, status, bodyTxt) => {
+                        const p = pending.get(id);
+                        if (!p) return;
+                        pending.delete(id);
+                        p.resolve(new Response(bodyTxt, { status, headers: { 'Content-Type': 'application/json' } }));
+                      };
+                      window.fetch = (url, opts) => {
+                        window.__lastFetchOpts = { url: String(url), credentials: opts && opts.credentials, method: opts && opts.method };
+                        const id = ++seq;
+                        return new Promise((resolve, reject) => {
+                          pending.set(id, { resolve, reject });
+                          window.__extSyncBridge(JSON.stringify({ id, url: String(url), method: (opts && opts.method) || 'POST', body: (opts && opts.body) || null }));
+                        });
+                      };
+                      window.chrome = {
+                        runtime: {
+                          onMessage: { addListener: (fn) => listeners.push(fn) },
+                          sendMessage: (msg, cb) => {
+                            for (const fn of listeners) {
+                              fn(msg, {}, cb);
+                            }
+                          }
+                        }
+                      };
+                      document.body.innerHTML = '<div id="elal-calc-mock"></div>';
+                      return true;
+                    })()
+                    """
+                    cdp_call("Runtime.evaluate", {"expression": setup_expr, "returnByValue": True})
+                    ev_bg = cdp_call("Runtime.evaluate", {"expression": bg_js_src})
+                    self.assertNotIn("exceptionDetails", ev_bg.get("result", {}))
+                    ev_ct = cdp_call("Runtime.evaluate", {"expression": content_js_src})
+                    self.assertNotIn("exceptionDetails", ev_ct.get("result", {}))
+
+                    dom_info = cdp_call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": """(() => {
+                              const modeSel = document.getElementById('fvp-mode-select');
+                              const shardSel = document.getElementById('fvp-shard-select');
+                              const widget = document.getElementById('fvp-sync-widget');
+                              return {
+                                hasWidget: Boolean(widget),
+                                hasOldShardSelect: Boolean(shardSel),
+                                selectedMode: modeSel ? modeSel.value : null,
+                                optionValues: modeSel ? Array.from(modeSel.options).map((o) => o.value) : [],
+                                widgetText: widget ? widget.textContent : ''
+                              };
+                            })()""",
+                            "returnByValue": True,
+                        },
+                    )["result"]["result"]["value"]
+
+                    self.assertTrue(dom_info["hasWidget"])
+                    self.assertFalse(dom_info["hasOldShardSelect"])
+                    self.assertEqual(dom_info["selectedMode"], "all")
+                    self.assertEqual(dom_info["optionValues"], ["all", "holidays", "date"])
+                    self.assertNotIn("5 חלקים", dom_info["widgetText"])
+                    self.assertNotIn("shard", dom_info["widgetText"].lower())
+
+                    # Send simulated full-year rows through chrome.runtime.sendMessage -> background.js -> backend
+                    sim_sync_expr = """
+                    new Promise((resolve) => {
+                      const rows = [];
+                      const months = ['2027-01', '2027-02', '2027-03', '2027-04', '2027-05', '2027-06'];
+                      const dests = ['FCO', 'ATH', 'VIE'];
+                      months.forEach((ym) => {
+                        ['05', '10', '15', '20'].forEach((dd, di) => {
+                          const dest = dests[di % dests.length];
+                          rows.push({
+                            destination_iata: dest,
+                            direction: 'OUTBOUND',
+                            flight_number: 'LY3' + String(10 + di),
+                            flight_date: ym + '-' + dd,
+                            economy_seats: '2+',
+                            premium_seats: 1
+                          });
+                        });
+                      });
+                      window.chrome.runtime.sendMessage(
+                        {
+                          action: 'SYNC_ELAL_ROWS',
+                          serverUrl: 'https://breezyflights.com',
+                          rows: rows,
+                          reconcileSlices: [
+                            { destinations: dests, start_date: '2027-01-01', end_date: '2027-06-30', cabins: ['E', 'A'] }
+                          ]
+                        },
+                        (resp) => resolve({ resp, fetchOpts: window.__lastFetchOpts })
+                      );
+                    })
+                    """
+                    sim_out = cdp_call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": sim_sync_expr,
+                            "awaitPromise": True,
+                            "returnByValue": True,
+                        },
+                    )["result"]["result"]["value"]
+                    self.assertTrue(sim_out["resp"]["ok"], sim_out)
+                    self.assertEqual(sim_out["resp"]["records_synced"], 24)
+                    self.assertEqual(sim_out["fetchOpts"]["credentials"], "omit")
+
+                    post_ext_diag = repo.get_bonus_sync_diagnostics()
+                    self.assertEqual(post_ext_diag["health_state"], "HEALTHY")
+                    self.assertGreaterEqual(post_ext_diag["covered_periods_count"], 6)
+                finally:
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        proc.wait(timeout=3.0)
+                    except Exception:
+                        pass
+                    shutil.rmtree(chrome_udir, ignore_errors=True)
+                repo.close()
 
 
 if __name__ == "__main__":

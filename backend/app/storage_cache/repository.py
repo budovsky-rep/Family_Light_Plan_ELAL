@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -100,7 +101,6 @@ class SQLiteRepository:
         self.db_path: str = resolve_db_path(db_path)
         self._is_memory: bool = self.db_path == ":memory:"
         self._memory_conn: Optional[sqlite3.Connection] = None
-        self._memory_sync_trigger: Optional[dict[str, Any]] = None
         self._lock = threading.RLock()
 
         if not self._is_memory:
@@ -1924,139 +1924,55 @@ class SQLiteRepository:
             "is_legacy_quarantined": bool(int(row["is_legacy_quarantined"] or 0)),
         }
 
-    def _sync_trigger_path(self) -> Optional[Path]:
-        if self._is_memory:
-            return None
-        return Path(f"{self.db_path}.sync_trigger.json")
-
-    def _read_raw_sync_trigger(self) -> Optional[dict[str, Any]]:
-        with self._lock:
-            if self._is_memory:
-                return dict(self._memory_sync_trigger) if self._memory_sync_trigger else None
-            p = self._sync_trigger_path()
-            if p is None or not p.exists():
-                return None
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                return data if isinstance(data, dict) else None
-            except Exception:
-                return None
-
-    def _write_raw_sync_trigger(self, payload: Optional[dict[str, Any]]) -> None:
-        with self._lock:
-            if self._is_memory:
-                self._memory_sync_trigger = dict(payload) if payload else None
-                return
-            p = self._sync_trigger_path()
-            if p is None:
-                return
-            if payload is None:
-                try:
-                    p.unlink(missing_ok=True)
-                except Exception:
-                    pass
-                return
-            p.parent.mkdir(parents=True, exist_ok=True)
-            tmp_p = Path(f"{p}.tmp")
-            tmp_p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            tmp_p.replace(p)
-
-    def get_sync_trigger_state(
-        self, now_dt: Optional[datetime] = None
-    ) -> Optional[dict[str, Any]]:
-        """Return the latest remote admin sync trigger job, auto-expiring stale active jobs."""
-        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
-        job = self._read_raw_sync_trigger()
-        if not job:
-            return None
-        st = str(job.get("status") or "").upper()
-        if st in ("QUEUED", "RUNNING"):
-            ts_str = str(job.get("started_at_utc") or job.get("requested_at_utc") or "")
-            ts_dt = _parse_iso_utc(ts_str)
-            if ts_dt is not None and (ref_now - ts_dt).total_seconds() > 2100:
-                job["status"] = "TIMED_OUT"
-                job["finished_at_utc"] = ref_now.isoformat().replace("+00:00", "Z")
-                job["message"] = "Timed out waiting for sync agent."
-                self._write_raw_sync_trigger(job)
-        return job
-
-    def enqueue_sync_trigger(
-        self, mode: str = "NEXT_SHARD", now_dt: Optional[datetime] = None
-    ) -> Optional[dict[str, Any]]:
-        """Queue (or cancel) an admin-triggered bonus sync job."""
-        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
-        now_iso = ref_now.isoformat().replace("+00:00", "Z")
-        norm_mode = str(mode or "NEXT_SHARD").strip().upper()
-        if norm_mode not in ("NEXT_SHARD", "TWO_SHARDS", "CANCEL"):
-            raise ValueError("Invalid sync trigger mode.")
-
-        with self._lock:
-            cur = self.get_sync_trigger_state(ref_now)
-            if norm_mode == "CANCEL":
-                if cur and str(cur.get("status") or "").upper() == "QUEUED":
-                    cur["status"] = "CANCELLED"
-                    cur["finished_at_utc"] = now_iso
-                    self._write_raw_sync_trigger(cur)
-                return self.get_sync_trigger_state(ref_now)
-
-            if cur and str(cur.get("status") or "").upper() in ("QUEUED", "RUNNING"):
-                return cur
-
-            new_job: dict[str, Any] = {
-                "job_id": str(uuid.uuid4()),
-                "mode": norm_mode,
-                "status": "QUEUED",
-                "requested_at_utc": now_iso,
-                "started_at_utc": None,
-                "finished_at_utc": None,
-                "records_synced": None,
-                "message": None,
-            }
-            self._write_raw_sync_trigger(new_job)
-            return new_job
-
-    def ack_sync_trigger(
-        self,
-        job_id: str,
-        status: str,
-        records_synced: Optional[int] = None,
-        message: Optional[str] = None,
-        now_dt: Optional[datetime] = None,
-    ) -> Optional[dict[str, Any]]:
-        """Update status (`RUNNING`, `COMPLETED`, `FAILED`) for an active sync trigger job."""
-        ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
-        now_iso = ref_now.isoformat().replace("+00:00", "Z")
-        norm_st = str(status or "").strip().upper()
-        if norm_st not in ("RUNNING", "COMPLETED", "FAILED"):
-            raise ValueError("Invalid ack status.")
-        clean_id = str(job_id or "").strip()
-        if not clean_id:
-            raise ValueError("job_id is required.")
-
-        with self._lock:
-            cur = self.get_sync_trigger_state(ref_now)
-            if not cur or str(cur.get("job_id") or "") != clean_id:
-                return cur
-            cur["status"] = norm_st
-            if norm_st == "RUNNING":
-                cur["started_at_utc"] = cur.get("started_at_utc") or now_iso
-            else:
-                cur["finished_at_utc"] = now_iso
-            if records_synced is not None:
-                cur["records_synced"] = max(0, int(records_synced))
-            if message is not None:
-                cur["message"] = str(message)[:240]
-            self._write_raw_sync_trigger(cur)
-            return cur
-
     def get_bonus_sync_diagnostics(
         self, now_dt: Optional[datetime] = None
     ) -> dict[str, Any]:
-        """Compute admin-only El Al bonus flight sync freshness and 5-shard coverage diagnostics."""
+        """Compute admin-only El Al bonus flight sync freshness and 12-month yearly period coverage diagnostics."""
+        he_month_short = [
+            "",
+            "ינו׳",
+            "פבר׳",
+            "מרץ",
+            "אפר׳",
+            "מאי",
+            "יונ׳",
+            "יול׳",
+            "אוג׳",
+            "ספט׳",
+            "אוק׳",
+            "נוב׳",
+            "דצמ׳",
+        ]
+        en_month_short = [
+            "",
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        ]
+
         ref_now = (now_dt or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
         now_iso = ref_now.isoformat().replace("+00:00", "Z")
         anchor_d = ref_now.date()
         anchor_iso = anchor_d.isoformat()
+        horizon_days = 350
+        horizon_end_iso = (anchor_d + timedelta(days=horizon_days - 1)).isoformat()
+
+        total_m_last = (anchor_d.year * 12 + (anchor_d.month - 1)) + 11
+        last_y = total_m_last // 12
+        last_m = (total_m_last % 12) + 1
+        last_period_end_d = (
+            date(last_y + 1, 1, 1) if last_m == 12 else date(last_y, last_m + 1, 1)
+        ) - timedelta(days=1)
+        last_period_end_iso = last_period_end_d.isoformat()
 
         with self.connection() as conn:
             live_rows = conn.execute(
@@ -2083,6 +1999,21 @@ class SQLiteRepository:
                     (now_iso, anchor_iso),
                 ).fetchall()
                 inv_source = "SEEDED" if active_rows else "EMPTY"
+
+            moe_holidays = conn.execute(
+                """
+                SELECT holiday_code,
+                       MIN(holiday_name_he) AS name_he,
+                       MIN(holiday_name_en) AS name_en,
+                       MIN(start_date) AS start_date,
+                       MAX(end_date) AS end_date
+                FROM moe_vacation_windows
+                WHERE end_date >= ? AND start_date <= ?
+                GROUP BY school_year, holiday_code
+                ORDER BY start_date ASC
+                """,
+                (anchor_iso, last_period_end_iso),
+            ).fetchall()
 
         parsed_items: list[tuple[str, str, str, Optional[datetime]]] = []
         dests_all: set[str] = set()
@@ -2122,86 +2053,146 @@ class SQLiteRepository:
                 max(0.0, (ref_now - max_dt).total_seconds() / 3600.0), 1
             )
 
-        shard_count = 5
-        days_per_shard = 70
-        shards: list[dict[str, Any]] = []
-        fresh_shards_count = 0
-        shard_sync_days: set[str] = set()
+        parsed_holidays: list[tuple[str, str, str, str]] = []
+        for h_row in moe_holidays:
+            h_start = str(h_row["start_date"] or "")[:10]
+            h_end = str(h_row["end_date"] or "")[:10]
+            h_he = re.sub(
+                r"(?<![\u05d0-\u05ea])\u05d9\u05d5\u05e0\u05d9(?![\u05d0-\u05ea])",
+                "יונ׳",
+                str(h_row["name_he"] or "").strip(),
+            )
+            h_en = str(h_row["name_en"] or "").strip()
+            if h_start and h_end and (h_he or h_en):
+                parsed_holidays.append((h_start, h_end, h_he, h_en))
 
-        for s_idx in range(shard_count):
-            s_start = anchor_d + timedelta(days=days_per_shard * s_idx)
-            s_end = anchor_d + timedelta(days=days_per_shard * (s_idx + 1) - 1)
-            s_start_iso = s_start.isoformat()
-            s_end_iso = s_end.isoformat()
+        periods: list[dict[str, Any]] = []
+        covered_cnt = 0
+        partial_cnt = 0
+        empty_cnt = 0
 
-            s_rows = [
-                it for it in parsed_items if s_start_iso <= it[0] <= s_end_iso
-            ]
-            s_dests = {it[1] for it in s_rows if it[1] and it[1] != "TLV"}
-            s_fetched = [(it[3], it[2]) for it in s_rows if it[3] is not None]
-            s_latest_utc: Optional[str] = None
-            s_age_h: Optional[float] = None
-            if s_fetched:
-                s_max_dt, s_max_iso = max(s_fetched, key=lambda x: x[0])
-                s_latest_utc = s_max_iso
-                s_age_h = round(
-                    max(0.0, (ref_now - s_max_dt).total_seconds() / 3600.0), 1
+        for idx in range(12):
+            total_m = (anchor_d.year * 12 + (anchor_d.month - 1)) + idx
+            year = total_m // 12
+            month = (total_m % 12) + 1
+            period_key = f"{year:04d}-{month:02d}"
+            month_first = date(year, month, 1)
+            month_last = (
+                date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+            ) - timedelta(days=1)
+            eff_start_d = max(anchor_d, month_first)
+            eff_start = eff_start_d.isoformat()
+            eff_end = month_last.isoformat()
+            active_days = max(1, (month_last - eff_start_d).days + 1)
+
+            p_rows = [it for it in parsed_items if eff_start <= it[0] <= eff_end]
+            rows_count = len(p_rows)
+            destinations_count = len(
+                {it[1] for it in p_rows if it[1] and it[1] != "TLV"}
+            )
+            distinct_dates_count = len({it[0] for it in p_rows if it[0]})
+            p_fetched = [(it[3], it[2]) for it in p_rows if it[3] is not None]
+            p_last_sync_utc: Optional[str] = None
+            p_age_hours: Optional[float] = None
+            if p_fetched:
+                p_max_dt, p_max_iso = max(p_fetched, key=lambda x: x[0])
+                p_last_sync_utc = p_max_iso
+                p_age_hours = round(
+                    max(0.0, (ref_now - p_max_dt).total_seconds() / 3600.0), 1
                 )
-                shard_sync_days.add(s_max_iso[:10])
 
-            if len(s_rows) == 0 or s_age_h is None or s_age_h > 192.0:
-                s_status = "STALE"
-            elif s_age_h <= 132.0:
-                s_status = "FRESH"
-                fresh_shards_count += 1
+            if rows_count == 0:
+                p_status = "EMPTY"
+                empty_cnt += 1
+            elif (
+                active_days <= 3 and rows_count >= 1 and destinations_count >= 1
+            ) or (
+                distinct_dates_count >= min(4, max(1, (active_days + 2) // 4))
+                and destinations_count >= 3
+            ):
+                p_status = "COVERED"
+                covered_cnt += 1
             else:
-                s_status = "DUE"
+                p_status = "PARTIAL"
+                partial_cnt += 1
 
-            shards.append(
+            p_holidays_he: list[str] = []
+            p_holidays_en: list[str] = []
+            for h_start, h_end, h_he, h_en in parsed_holidays:
+                if h_end >= eff_start and h_start <= eff_end:
+                    if h_he and h_he not in p_holidays_he:
+                        p_holidays_he.append(h_he)
+                    if h_en and h_en not in p_holidays_en:
+                        p_holidays_en.append(h_en)
+
+            periods.append(
                 {
-                    "shard_number": s_idx + 1,
-                    "shard_count": shard_count,
-                    "start_date": s_start_iso,
-                    "end_date": s_end_iso,
-                    "rows_count": len(s_rows),
-                    "destinations_count": len(s_dests),
-                    "last_synced_at_utc": s_latest_utc,
-                    "age_hours": s_age_h,
-                    "status": s_status,
+                    "period_index": idx + 1,
+                    "period_key": period_key,
+                    "year": year,
+                    "month": month,
+                    "start_date": eff_start,
+                    "end_date": eff_end,
+                    "label_he": f"{he_month_short[month]} {year}",
+                    "label_en": f"{en_month_short[month]} {year}",
+                    "status": p_status,
+                    "rows_count": rows_count,
+                    "destinations_count": destinations_count,
+                    "distinct_dates_count": distinct_dates_count,
+                    "last_synced_at": p_last_sync_utc,
+                    "last_synced_at_utc": p_last_sync_utc,
+                    "sync_age_hours": p_age_hours,
+                    "has_school_holiday": bool(p_holidays_he),
+                    "holidays_he": p_holidays_he,
+                    "holidays_en": p_holidays_en,
                 }
             )
 
         if total_rows == 0 or last_age_hours is None:
             health_state = "EMPTY"
-            sync_mode = "NONE"
+            overall_status = "empty"
+        elif last_age_hours > 168.0:
+            health_state = "STALE"
+            overall_status = "stale"
+        elif last_age_hours > 72.0:
+            health_state = "DELAYED"
+            overall_status = "delayed"
+        elif covered_cnt == 0:
+            health_state = "PARTIAL"
+            overall_status = "partial"
         else:
-            sync_mode = (
-                "SHARDED_ROTATION"
-                if len(shard_sync_days) >= 2
-                else "FULL_SWEEP_OR_SINGLE_BATCH"
-            )
-            if last_age_hours <= 24.0 and fresh_shards_count >= 4:
-                health_state = "HEALTHY"
-            elif last_age_hours <= 36.0:
-                health_state = "DELAYED"
-            else:
-                health_state = "STALE"
+            health_state = "HEALTHY"
+            overall_status = "fresh"
+
+        min_fdate = min(flight_dates) if flight_dates else None
+        max_fdate = max(flight_dates) if flight_dates else None
 
         return {
             "checked_at_utc": now_iso,
+            "as_of_utc": now_iso,
             "inventory_source": inv_source,
+            "sync_source": "CHROME_EXTENSION_MANUAL",
+            "sync_mode": "manual_extension_full_year",
+            "horizon_days": horizon_days,
+            "horizon_start_date": anchor_iso,
+            "horizon_end_date": horizon_end_iso,
+            "overall_status": overall_status,
             "health_state": health_state,
-            "sync_mode_detected": sync_mode,
-            "target_shards_per_day": 2,
-            "total_active_rows": total_rows,
-            "active_destinations_count": len(dests_all),
-            "min_flight_date": min(flight_dates) if flight_dates else None,
-            "max_flight_date": max(flight_dates) if flight_dates else None,
+            "last_synced_at": last_sync_utc,
             "last_synced_at_utc": last_sync_utc,
             "oldest_synced_at_utc": oldest_sync_utc,
+            "age_hours": last_age_hours,
             "last_sync_age_hours": last_age_hours,
-            "fresh_shards_count": fresh_shards_count,
-            "shard_count": shard_count,
-            "shards": shards,
-            "trigger_job": self.get_sync_trigger_state(ref_now),
+            "total_rows": total_rows,
+            "total_active_rows": total_rows,
+            "destinations_count": len(dests_all),
+            "active_destinations_count": len(dests_all),
+            "min_flight_date": min_fdate,
+            "max_flight_date": max_fdate,
+            "period_count": len(periods),
+            "total_periods_count": len(periods),
+            "covered_periods_count": covered_cnt,
+            "partial_periods_count": partial_cnt,
+            "empty_periods_count": empty_cnt,
+            "periods": periods,
         }

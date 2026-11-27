@@ -1,80 +1,47 @@
-‏# מדריך פקודות ותפעול: סנכרון, לוגים, קלאודטופ ו-PowerShell
+‏# מדריך סנכרון ותפעול: תוסף הדפדפן, בדיקות שרת ו־Git
 
-‏מסמך זה מרכז את כל הפקודות השימושיות לתפעול, בדיקת תקינות בלוגים, הפעלה ידנית/מתוזמנת ושמירת שינויים ב-Git עבור הפרויקט `family_vacation_planner`.
-
----
-
-‏## 1. איך בודקים בלוגים ובשרת שהכול עובד כמו שצריך
-
-‏### א. בדיקת לוגי הטיימר והסנכרון בקלאודטופ (`systemd --user`)
-‏הרץ מתוך **הטרמינל של הקלאודטופ**:
-
-- ‏**בדיקת סטטוס הטיימר ומועד ההרצה הבא** (מציגה מתי הטיימר רץ בפעם האחרונה ומתי ירוץ שוב):
-```bash
-systemctl --user list-timers fvp-elal-sync.timer --no-pager
-```
-
-- ‏**צפייה בלוג המלא של הריצות האחרונות** (מציגה את הפלט המדויק של הסקריפט מתוך `journald`):
-```bash
-journalctl --user -u fvp-elal-sync.service -n 120 --no-pager
-```
-
-- ‏**צפייה בקובץ ההתקדמות והקפיצה של מחזור ה-5 ימים** (מציגה את המצב השמור על הדיסק ב-`shard_state.json`):
-```bash
-cat ~/.local/share/fvp-chrome-sync-profile/shard_state.json
-```
-
-‏#### מה מחפשים בתוך הלוג ומה כל שורה אומרת:
-
-1. ‏**בחירת המנה היומית התקינה:**
-   - ‏תחפש שורה בפורמט:
-     `Selected uniform 5-day rotation shard 2/5: 5 window(s) (2027-02-01 .. 2027-04-12, cycle anchor 2026-11-23).`
-   - ‏המשמעות: הסקריפט חילק את השנה ל-`5` מנות, בחר את החלק הבא בתור, וסורק רק `5` חלונות של שבועיים (`20` בקשות רגועות בלבד).
-
-2. ‏**שליפה תקינה מאל על לכל חלון וקבינה:**
-   - ‏תחפש שורה של הצלחת טעינת הדף:
-     `El Al rbddataclients ready. Checking active calculator airports & running polite sharded scan...`
-   - ‏ולאחריה שורות לכל חלון במחלקות `Economy (E)` ו-`Premium (A)`:
-     `[01/05] Full-Year Window 06/25 (2027-02-01 .. 2027-02-15) | Economy (E): 284 available flight records`
-     `[01/05] Full-Year Window 06/25 (2027-02-01 .. 2027-02-15) | Premium (A): 41 available flight records`
-   - ‏המשמעות: נתוני הטיסות החיות התקבלו מהמחשבון של אל על. (אם בחלון חורפי/רחוק יש `0 available flight records` אך לא הופיעה שגיאה, זה תקין — המשמעות היא שלא נפתחו מושבי בונוס באותם תאריכים והשרת ינקה מושבים ישנים שכבר נמכרו).
-
-3. ‏**דחיפה מוצלחת לשרת הפרודקשן (`GCP`) וניקוי טיסות שאזלו:**
-   - ‏תחפש בסיום:
-     `-> Remote sync batch 1/2 (800 raw -> 391 rows synced)`
-     `Synced 742 merged #live flight rows (reconciled 10 slice(s)) to remote server (https://breezyflights.com).`
-   - ‏המשמעות: המידע נשמר בשרת הפרודקשן והטווחים שנסרקו עודכנו כולל מחיקת מושבי בונוס שירדו ל-`0`.
-
-4. ‏**קידום סמן ההתקדמות למנה הבאה:**
-   - ‏תחפש את השורה האחרונה:
-     `Saved resume state (.../shard_state.json): shard 2/5 complete; next run will resume at shard 3/5.`
-   - ‏בתוך `shard_state.json` השדה `"last_completed_shard"` ממוספר מ-`0` עד `4` (כלומר `0` = מנה `1/5`, `4` = מנה `5/5`), ו-`"completed_at"` מציג תאריך השלמה אחרון לכל מנה.
-
-5. ‏**הודעות תקלה שחשוב לזהות:**
-   - ‏**הגנת קירור פעילה (לא נשלחו בקשות):**
-     `Cooldown guard active: today (...) is before --not-before 2026-11-23. Exiting cleanly with zero network traffic.`
-   - ‏**עצירה בטוחה על חסימת קצב (`Reblaze`):**
-     `Fail-fast abort: https://www.elal.com/rbddataclients/ did not initialize cleanly within 45s (last seen page: title='' ...)`
-     או:
-     `! Fail-fast stop on window [...] ... Aborting remaining requests immediately to avoid rate-limit escalation.`
-     במצב זה הסקריפט עוצר מיד כדי לא להאריך חסימה, והסמן **לא** זז קדימה (בפעם הבאה ינסה שוב את אותו החלק).
-   - ‏**כשל תקשורת לשרת אחרי שהטיסות כבר נמשכו מאל על:**
-     מופיעה שורת `Remote upload failed (...)` ומתחתיה פקודת התאוששות עם `--from-file` שמעלה את הקובץ `~/.local/share/fvp-chrome-sync-profile/last_fetched_snapshot.json` בלי לפנות שוב לאל על.
+‏מסמך זה מרכז את אופן הסנכרון הידני של טיסות הבונוס דרך תוסף הכרום (`chrome_extension`), פקודות לבדיקת תקינות ועדכניות הנתונים בשרת הפרודקשן (`GCP`), ופקודות פריסה ושמירה ב־Git עבור הפרויקט `family_vacation_planner`.
 
 ---
 
-‏### ב. בדיקת זמינות ועדכניות המידע בשרת הפרודקשן (`GCP`)
+‏## 1. סנכרון טיסות בונוס באמצעות תוסף הכרום (הדרך היחידה והמומלצת)
+
+‏### א. טעינה ועדכון של התוסף בדפדפן כרום
+1. ‏פתח בדפדפן כרום את מסך הניהול בכתובת `chrome://extensions`.
+2. ‏ודא שמצב מפתחים (`Developer mode`) מופעל בפינה העליונה.
+3. ‏לחץ על טעינת תוסף לא ארוז (`Load unpacked`) ובחר את התיקייה `chrome_extension` מתוך תיקיית הפרויקט המקומית.
+4. ‏לאחר כל משיכת עדכוני קוד מהמאגר (`git pull`), חזור אל `chrome://extensions` ולחץ על סמל הרענון (`↻`) בכרטיס של התוסף כדי לטעון את הגרסה העדכנית.
+
+‏### ב. הרצת סנכרון שנה מלאה (ברירת המחדל)
+1. ‏גלוש בדפדפן כרום אל עמוד מחשבון הבונוס של אל על בכתובת `https://www.elal.com/rbddataclients/` והמתן לטעינה מלאה של העמוד.
+2. ‏בחלונית הסנכרון הצפה בתחתית המסך, המצב שנבחר כברירת מחדל הוא **🌍 כל השנה המלאה (`350` יום)** — סריקה מלאה של `25` חלונות רציפים בני שבועיים לכל היעדים במחלקות תיירים (`E`) ופרימיום (`A`).
+3. ‏לחץ על הכפתור הירוק **🌍 סנכרן שנה מלאה בקצב בטוח** והשאר את הלשונית פתוחה:
+   - ‏התוסף עובד בקצב מבוקר ורגוע, כולל הפסקות התרעננות אוטומטיות של `45` שניות כל `5` חלונות והגנת פיצול אוטומטית מול שגיאות שער זמניות (`502`/`503`/`504`).
+   - ‏בסיום כל חלון של שבועיים, הטיסות החדשות נשלחות מיד אל השרת (`https://breezyflights.com/api/v1/elal-bonus/sync`) ומושבים שאזלו מתעדכנים אוטומטית ל־`0`.
+   - ‏ניתן לעצור בכל רגע בלחיצה על **⏹️ עצור סנכרון בטוח** ולהמשיך בדיוק מאותו חלון בלחיצה על **▶️ המשך מאיפה שעצר**.
+
+‏### ג. מצבי סנכרון ממוקדים נוספים בתוסף
+- ‏**🏖️ כל חגי וחופשות השנה:** סורק `16` חלונות בני שבועיים סביב מועדי החגים וחופשות משרד החינוך עם הפסקות התרעננות קצרות (כ־`6` דקות סה"כ).
+- ‏**🎯 תאריך ספציפי:** בוחרים תאריך התחלה בתיבת התאריך ומסנכרנים חלון ממוקד של `14` ימים לכל היעדים תוך כ־`15` שניות.
+- ‏**סנכרון פסיבי אוטומטי:** כל חיפוש ידני שתבצע ישירות בטבלה של מחשבון אל על נקלט אוטומטית על ידי התוסף ומועלה ברקע לשרת.
+
+---
+
+‏## 2. בדיקת תקינות ועדכניות הנתונים בשרת הפרודקשן (`GCP`)
+
+- ‏**חיווי סנכרון מנהלי באתר:** התחבר לאתר `https://breezyflights.com` עם חשבון האדמין שלך — בראש אזור התוצאות (ובתפריט החשבון העליון) מוצגים סטטוס הסנכרון הכללי, מועד הסנכרון האחרון ופריסת הכיסוי של `12` חודשי השנה, כולל כפתור **↻ בדיקת סטטוס חיה**.
+
 - ‏**בדיקת תקינות השרת (`Health Check`):** הרץ מכל טרמינל כדי לוודא שהאתר והמסד זמינים ומחזירים `status: ok`:
 ```bash
 curl -s "https://breezyflights.com/api/v1/health" | python3 -m json.tool
 ```
 
-- ‏**בדיקת טיסות חיות ליעד ולתאריך לדוגמה דרך ה-API:** הרץ מכל טרמינל כדי לראות שהשרת מחזיר טיסות אמיתיות לרומא באפריל `2027` עם תאריך משיכה (`fetched_at`) ותוקף (`expires_at`):
+- ‏**בדיקת זמינות טיסות בונוס דרך ה־API:** הרץ מכל טרמינל כדי לראות שהשרת מחזיר טיסות שמורות לרומא באפריל `2027` עם תאריך משיכה (`fetched_at`) ותוקף (`expires_at`):
 ```bash
 curl -s "https://breezyflights.com/api/v1/elal-bonus/availability?destination=FCO&start_date=2027-04-10&end_date=2027-04-20" | python3 -m json.tool | head -n 50
 ```
 
-- ‏**בדיקה ישירה של המסד ולוג השרת ב-GCP VM** — הרץ מתוך **Google Cloud Shell** כדי לראות כמה שורות חיות (`#live`) שמורות כרגע, מה טווח התאריכים ומתי בוצעה הכתיבה האחרונה, ולוודא שהשירות רץ ללא שגיאות:
+- ‏**בדיקה ישירה של מסד הנתונים ולוג השרת ב־GCP VM:** הרץ מתוך חלון הענן של `Google Cloud Shell` כדי לראות כמה שורות חיות (`#live`) שמורות כרגע, מה טווח התאריכים ומתי בוצעה הכתיבה האחרונה, ולוודא ששירות האתר רץ ללא שגיאות:
 ```bash
 gcloud compute ssh family-vacation-planner-vm \
   --project=family-trip-planner-514920 \
@@ -84,100 +51,9 @@ gcloud compute ssh family-vacation-planner-vm \
 
 ---
 
-‏## 2. איך מריצים ידנית את סקריפט הסנכרון
+‏## 3. פריסת עדכוני קוד לשרת הפרודקשן ב־GCP
 
-‏### א. ממחשב אישי (`Mac` / `Windows` — מבחוץ ללא צורך בתיקיית הקוד)
-- ‏**הרצת המנה היומית הרגועה (`5` חלונות, חלון כרום גלוי, מעלה ישירות לשרת):**
-  - ‏בטרמינל של **macOS**:
-```bash
-curl -fsSL https://breezyflights.com/sync_elal_to_server.py -o sync_elal_to_server.py && python3 sync_elal_to_server.py --no-local
-```
-  - ‏ב-**PowerShell ב-Windows** (שימוש ב-`curl.exe` כדי להוריד את הסקריפט ולהריץ):
-```powershell
-curl.exe -fsSL https://breezyflights.com/sync_elal_to_server.py -o sync_elal_to_server.py; python sync_elal_to_server.py --no-local
-```
-
-- ‏**הרצה ידנית מהירה לתאריך ספציפי בלבד (`4` בקשות סה"כ — הכי בטוח כשרוצים לבדוק מועד מסוים מיד):**
-```bash
-python3 sync_elal_to_server.py --no-local --target-date 2027-04-18
-```
-
-- ‏**דיבאג ושמירת תוצאות לקובץ מקומי:**
-```bash
-python3 sync_elal_to_server.py --no-local --target-date 2027-04-18 --save-json /tmp/elal_debug.json
-```
-
-- ‏**שחזור / העלאה מקובץ גיבוי אם הייתה תקלה בהעלאה לשרת (אפס בקשות לאל על):**
-```bash
-python3 sync_elal_to_server.py --no-local --from-file ~/.local/share/fvp-chrome-sync-profile/last_fetched_snapshot.json
-```
-
-‏### ב. מתוך תיקיית הפרויקט בקלאודטופ
-‏הרץ מתוך `/usr/local/google/home/yonibudovsky/family_vacation_planner`:
-
-- ‏**הרצת המנה הבאה בתור עכשיו ידנית (בלי לחכות לשעה המתוזמנת):**
-```bash
-python3 scripts/sync_elal_to_server.py --shard-count 5 --shard-index auto
-```
-
-- ‏**דחיפה של שורות חיות תקפות שכבר קיימות במסד המקומי לשרת הפרודקשן (אפס פניות לאל על):**
-```bash
-python3 scripts/sync_elal_to_server.py --push-local-db
-```
-
----
-
-‏## 3. איך מתקינים, בודקים ועוצרים את סוכן הסנכרון הקבוע ב־Mac (`2` חלקים ביום + הפעלה מחלון האדמין)
-
-‏### א. התקנה והפעלה על ה־Mac שלך (`macOS LaunchAgent` — מומלץ)
-‏הרץ פעם אחת בטרמינל של ה־**Mac** שלך (מתוך תיקיית הפרויקט אחרי `git pull`, או עם קובץ `sync_elal_to_server.py` יחיד):
-
-- ‏**התקנה והפעלה אוטומטית ברקע (`2` חלקים ביום + האזנה לכפתור "הפעל עכשיו" מחלון האדמין באתר)**:
-```bash
-python3 scripts/sync_elal_to_server.py --install-mac-agent --shards-per-day 2
-```
-‏*(אם הורדת את `sync_elal_to_server.py` ישירות ללא תיקיית הפרויקט, הרץ: `python3 sync_elal_to_server.py --install-mac-agent --shards-per-day 2`)*
-
-- ‏**צפייה בלוג החי של סוכן ה־Mac**:
-```bash
-tail -n 80 -f ~/.local/share/fvp-chrome-sync-profile/mac_sync_agent.log
-```
-
-- ‏**בדיקה שסוכן ה־Mac רץ ב־`launchctl`**:
-```bash
-launchctl print gui/$(id -u)/com.breezyflights.elal-sync | head -n 25
-```
-
-- ‏**עצירה והסרה של סוכן ה־Mac (במידת הצורך)**:
-```bash
-python3 ~/.local/share/fvp-chrome-sync-profile/sync_elal_to_server.py --uninstall-mac-agent
-```
-
-‏### ב. חלופה לקלאודטופ (`Linux systemd`)
-‏כל הפקודות כאן מיועדות להרצה מתוך **הטרמינל של הקלאודטופ** (`/usr/local/google/home/yonibudovsky/family_vacation_planner`):
-
-- ‏**התקנה והפעלה של סוכן ה־Watchdog הקבוע** (מריץ אוטומטית `2` חלקים ביום — כל `~11.5` שעות עם השלמה אוטומטית אם היה עיכוב, ומאזין כל `60` שניות לכפתור **"▶️ הפעל סנכרון מנה עכשיו"** מחלון האדמין באתר):
-```bash
-bash scripts/install_cloudtop_daily_sync.sh https://breezyflights.com 2
-```
-
-- ‏**בדיקת סטטוס ולוג חי של סוכן הסנכרון בקלאודטופ**:
-```bash
-systemctl --user status fvp-elal-sync-agent.service --no-pager
-journalctl --user -u fvp-elal-sync-agent.service -n 80 --no-pager
-```
-
-- ‏**עצירה זמנית של הסוכן בקלאודטופ**:
-```bash
-systemctl --user disable --now fvp-elal-sync-agent.service
-```
-
-- ‏**הפעלה מחדש של הסוכן לאחר עצירה או עדכון קוד**:
-```bash
-systemctl --user restart fvp-elal-sync-agent.service
-```
-
-- ‏**עדכון שרת הפרודקשן ב-GCP לאחר שינויי קוד** — הרץ מתוך **Google Cloud Shell** כדי ששרת האתר ימשוך מהמאגר וייטען מחדש:
+‏לאחר דחיפת שינויי קוד לענף הראשי (`main`), הרץ מתוך `Google Cloud Shell` כדי ששרת הפרודקשן ימשוך את הגרסה העדכנית וייטען מחדש:
 ```bash
 gcloud compute ssh family-vacation-planner-vm \
   --project=family-trip-planner-514920 \
@@ -187,9 +63,9 @@ gcloud compute ssh family-vacation-planner-vm \
 
 ---
 
-‏## 4. איך עושים קומיט ודחיפה ב-PowerShell (`Windows`)
+‏## 4. שמירת שינויים ודחיפה ב־PowerShell (`Windows`)
 
-‏הרץ מתוך חלון **PowerShell** בתיקיית הפרויקט המקומית שלך:
+‏הרץ מתוך חלון המסוף של `PowerShell` בתיקיית הפרויקט המקומית שלך:
 
 1. ‏**מעבר לתיקיית הפרויקט ובדיקת מצב הקבצים:**
 ```powershell
@@ -202,7 +78,7 @@ git status
 ```powershell
 git add path\to\file1.py path\to\file2.js
 ```
-   - ‏או סימון כל השינויים במאגר **תוך החרגה של תיקיית `.agents`** (אם קיימת במחשב שלך — לעולם לא לדחוף אותה):
+   - ‏או סימון כל השינויים במאגר **תוך החרגה של תיקיית `.agents`** (לעולם לא לדחוף אותה):
 ```powershell
 git add --all -- ':!.agents'
 ```
@@ -212,13 +88,13 @@ git add --all -- ':!.agents'
 git status
 ```
 
-4. ‏**ביצוע הקומיט ודחיפה אל GitHub (`origin main`):**
+4. ‏**ביצוע הקומיט ודחיפה אל המאגר המרוחק (`origin main`):**
 ```powershell
 git commit -m "Describe your change in English or Hebrew"
 git push origin main
 ```
 
-5. ‏**שליפת עדכונים מהענף הראשי לפני שמתחילים לעבוד (אופציונלי ומומלץ):**
+5. ‏**שליפת עדכונים מהענף הראשי לפני שמתחילים לעבוד (מומלץ):**
 ```powershell
 git pull --rebase origin main
 ```

@@ -6259,9 +6259,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(browser.js_errors(), [])
 
     def test_scenario_29_admin_only_bonus_sync_telemetry_visibility_and_isolation_e2e(self) -> None:
-        """Scenario 29: Real Headless-Chrome verification that `#admin-bonus-sync-panel` is 100% hidden/empty for guests
-        and regular Gmail users, appears ONLY when the admin account signs in, displays 5-shard diagnostics + live refresh
-        in `he` & `en` on Desktop (`1440x900`) and Mobile (`390x844`), and disappears immediately upon sign-out.
+        """Scenario 29: Real Headless-Chrome verification that `#admin-bonus-sync-panel` and `#auth-admin-sync-mini`
+        are 100% hidden/empty for guests (`401`) and regular Gmail users (`403`), removed remote trigger routes return `404`,
+        and signed-in admin sessions render overall sync status + 12-period yearly horizon coverage + `#auth-admin-sync-mini`
+        + live refresh + collapse/expand 12-pip sparkline with zero overflow across `1440x900`, `390x844`, and `360x800`
+        in both `he` (`RTL`) and `en` (`LTR`), scrubbing cleanly upon sign-out.
         """
         db_path, _repo = self.make_isolated_env(auto_seed=True)
         old_mode = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
@@ -6284,7 +6286,12 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         browser.set_viewport(1440, 900)
         browser.mount()
 
-        # 1. Guest state: zero admin DOM content, hidden slot & hidden mini badge
+        # 1. Guest state: 401 on status, 404 on all 3 removed trigger routes, zero admin DOM content
+        self.assertEqual(client.request("GET", "/api/v1/admin/bonus-sync-status").status_code, 401)
+        self.assertEqual(client.request("POST", "/api/v1/admin/bonus-sync-trigger", json_body={}).status_code, 404)
+        self.assertEqual(client.request("GET", "/api/v1/elal-bonus/sync-trigger-poll").status_code, 404)
+        self.assertEqual(client.request("POST", "/api/v1/elal-bonus/sync-trigger-ack", json_body={}).status_code, 404)
+
         guest_check = browser.eval(
             """(() => {
               const slot = document.getElementById('admin-bonus-sync-slot');
@@ -6304,17 +6311,34 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(guest_check["miniHtml"], "")
         self.assertFalse(guest_check["panelExists"])
 
-        # 2. Regular non-admin user signs in -> still 100% hidden & empty!
+        # 2. Regular non-admin user signs in -> 403 on status, 0 admin_bonus_sync in session, 100% hidden & empty DOM!
         r_login = client.request("POST", "/api/v1/auth/test-login", json_body={"email": "visitor.user@gmail.com"})
         self.assertEqual(r_login.status_code, 200)
+        r_sess = client.request("GET", "/api/v1/auth/session").json()
+        self.assertFalse(r_sess["is_admin"])
+        self.assertNotIn("admin_bonus_sync", r_sess)
+        self.assertEqual(client.request("GET", "/api/v1/admin/bonus-sync-status").status_code, 403)
+        self.assertEqual(
+            client.request(
+                "POST",
+                "/api/v1/admin/bonus-sync-trigger",
+                json_body={},
+                headers={"X-CSRF-Token": r_sess["csrf_token"]},
+            ).status_code,
+            404,
+        )
+
         browser.mount()
         non_admin_check = browser.eval(
             """(() => {
               const slot = document.getElementById('admin-bonus-sync-slot');
+              const mini = document.getElementById('auth-admin-sync-mini');
               return {
                 authedEmail: document.getElementById('header-account-email').textContent.trim(),
                 slotHidden: slot.hasAttribute('hidden') && getComputedStyle(slot).display === 'none',
                 slotHtml: slot.innerHTML,
+                miniHidden: mini.hasAttribute('hidden') && getComputedStyle(mini).display === 'none',
+                miniHtml: mini.innerHTML,
                 panelExists: Boolean(document.getElementById('admin-bonus-sync-panel'))
               };
             })()"""
@@ -6322,78 +6346,183 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(non_admin_check["authedEmail"], "visitor.user@gmail.com")
         self.assertTrue(non_admin_check["slotHidden"])
         self.assertEqual(non_admin_check["slotHtml"], "")
+        self.assertTrue(non_admin_check["miniHidden"])
+        self.assertEqual(non_admin_check["miniHtml"], "")
         self.assertFalse(non_admin_check["panelExists"])
 
+        browser.call("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True})
+        browser.pump(80)
+        first_card_y = browser.eval("(() => { const c = document.querySelector('.proposal-card'); return c ? c.getBoundingClientRect().top : 0; })()")
+        self.assertLess(first_card_y, 900)
+
         # Sign out regular user via real header button
+        browser.set_viewport(1440, 900)
+        browser.pump(80)
         browser.real_click("#btn-header-signout")
         browser.settle()
 
-        # 3. Admin signs in -> telemetry bar appears with 5 shards, expands cleanly, refreshes live, works on mobile & EN, and clears on sign-out!
+        # 3. Admin signs in -> Flight-Deck 12-Period Horizon Matrix opens expanded by default with zero shard/trigger controls!
         admin_email = ".".join(["yoni", "budovsky"]) + "@gmail.com"
         a_login = client.request("POST", "/api/v1/auth/test-login", json_body={"email": admin_email})
         self.assertEqual(a_login.status_code, 200)
+        browser.set_viewport(1440, 900)
         browser.mount()
 
-        admin_closed = browser.eval(
+        admin_open = browser.eval(
             """(() => {
               const panel = document.getElementById('admin-bonus-sync-panel');
-              const shardCards = document.querySelectorAll('[data-admin-shard]');
+              const grid = document.getElementById('admin-periods-grid');
+              const periodCells = document.querySelectorAll('[data-admin-period]');
+              const monoEls = Array.from(panel ? panel.querySelectorAll('.num, .admin-sync-mono, .admin-period-rows, .admin-period-yr') : []);
+              const hebrewInMono = monoEls.filter((el) => /[\\u0590-\\u05FF]/.test(el.textContent || '')).map((el) => el.textContent);
+              const holTitles = Array.from(panel ? panel.querySelectorAll('.admin-period-holiday') : []).map((el) => el.getAttribute('title') || '');
               return {
                 visible: Boolean(panel && getComputedStyle(panel).display !== 'none'),
                 isOpen: Boolean(panel && panel.open),
-                shardCount: shardCards.length,
+                periodCount: periodCells.length,
+                shardCount: document.querySelectorAll('[data-admin-shard]').length,
+                hasTriggerBtn: Boolean(document.getElementById('btn-trigger-admin-sync')),
+                hasQuickTriggerBtn: Boolean(document.getElementById('btn-quick-trigger-admin-sync')),
+                hasCancelBtn: Boolean(document.getElementById('btn-cancel-admin-sync')),
+                hasJobBanner: Boolean(document.getElementById('admin-sync-job-banner')),
+                hasRefreshBtn: Boolean(document.getElementById('btn-refresh-admin-sync')),
+                colsCount: grid ? getComputedStyle(grid).gridTemplateColumns.trim().split(/\\s+/).length : 0,
+                sparkHiddenWhenOpen: panel ? getComputedStyle(panel.querySelector('.admin-horizon-spark')).display === 'none' : false,
+                hebrewInMono,
+                holTitles,
                 txt: panel ? panel.textContent : '',
+                html: panel ? panel.innerHTML : '',
                 scrollOk: document.documentElement.scrollWidth <= document.documentElement.clientWidth
               };
             })()"""
         )
-        self.assertTrue(admin_closed["visible"])
-        self.assertFalse(admin_closed["isOpen"])
-        self.assertEqual(admin_closed["shardCount"], 5)
-        self.assertIn("אדמין", admin_closed["txt"])
-        self.assertIn("ריצה אחרונה:", admin_closed["txt"])
-        self.assertTrue(admin_closed["scrollOk"])
+        self.assertTrue(admin_open["visible"])
+        self.assertTrue(admin_open["isOpen"])
+        self.assertEqual(admin_open["periodCount"], 12)
+        self.assertEqual(admin_open["shardCount"], 0)
+        self.assertFalse(admin_open["hasTriggerBtn"])
+        self.assertFalse(admin_open["hasQuickTriggerBtn"])
+        self.assertFalse(admin_open["hasCancelBtn"])
+        self.assertFalse(admin_open["hasJobBanner"])
+        self.assertTrue(admin_open["hasRefreshBtn"])
+        self.assertEqual(admin_open["colsCount"], 12)
+        self.assertTrue(admin_open["sparkHiddenWhenOpen"])
+        self.assertEqual(admin_open["hebrewInMono"], [])
+        self.assertGreaterEqual(len(admin_open["holTitles"]), 1)
+        self.assertTrue(any("חופשות" in t for t in admin_open["holTitles"]))
+        self.assertIn("אדמין", admin_open["txt"])
+        self.assertIn("סנכרון אחרון:", admin_open["txt"])
+        self.assertIn("/12", admin_open["txt"])
+        self.assertNotIn("חלקים", admin_open["txt"])
+        self.assertNotIn("shard", admin_open["txt"].lower())
+        self.assertIsNone(re.search(r"(?<![א-ת])יוני(?![א-ת])", admin_open["html"]))
+        self.assertTrue(admin_open["scrollOk"])
 
-        # Expand 5-shard drawer & click Live Sync Check + Remote Trigger + Cancel
-        browser.real_click("#admin-bonus-sync-panel > summary")
+        # Open header account popover -> verify #auth-admin-sync-mini boarding readout, then close popover
+        browser.real_click("#btn-header-account")
         browser.pump(80)
-        self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
+        mini_state = browser.eval(
+            """(() => {
+              const mini = document.getElementById('auth-admin-sync-mini');
+              return {
+                visible: Boolean(mini && !mini.hasAttribute('hidden') && getComputedStyle(mini).display !== 'none'),
+                txt: mini ? mini.textContent : '',
+                noOverflow: mini ? mini.scrollWidth <= mini.clientWidth + 1 : false
+              };
+            })()"""
+        )
+        self.assertTrue(mini_state["visible"])
+        self.assertIn("/12", mini_state["txt"])
+        self.assertTrue(mini_state["noOverflow"])
+        browser.real_click("#btn-header-account")
+        browser.pump(80)
+
+        # Live refresh button + collapse/expand 12-pip radar sparkline
         browser.real_click("#btn-refresh-admin-sync")
         browser.settle()
         self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
-        browser.real_click("#btn-trigger-admin-sync")
-        browser.settle()
-        self.assertEqual(
-            browser.eval("document.getElementById('admin-sync-job-banner').getAttribute('data-job-status')"),
-            "QUEUED",
+        self.assertEqual(browser.eval("document.querySelectorAll('[data-admin-period]').length"), 12)
+
+        browser.real_click("#admin-bonus-sync-panel > summary")
+        browser.pump(80)
+        collapsed_state = browser.eval(
+            """(() => {
+              const panel = document.getElementById('admin-bonus-sync-panel');
+              const spark = panel.querySelector('.admin-horizon-spark');
+              return {
+                isOpen: panel.open,
+                sparkVisible: getComputedStyle(spark).display !== 'none',
+                pipCount: spark.querySelectorAll('.admin-horizon-pip').length
+              };
+            })()"""
         )
-        browser.real_click("#btn-cancel-admin-sync")
-        browser.settle()
-        self.assertFalse(browser.eval("Boolean(document.getElementById('admin-sync-job-banner'))"))
+        self.assertFalse(collapsed_state["isOpen"])
+        self.assertTrue(collapsed_state["sparkVisible"])
+        self.assertEqual(collapsed_state["pipCount"], 12)
 
-        # Mobile 390x844 + English locale check -> zero horizontal overflow
-        browser.call("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True})
+        browser.real_click("#admin-bonus-sync-panel > summary")
         browser.pump(80)
-        self.assertTrue(browser.eval("document.documentElement.scrollWidth <= document.documentElement.clientWidth"))
-        browser.real_click("#btn-toggle-locale")
-        browser.pump(80)
-        self.assertIn("Admin", browser.eval("document.getElementById('admin-bonus-sync-panel').textContent"))
-        self.assertTrue(browser.eval("document.documentElement.scrollWidth <= document.documentElement.clientWidth"))
+        self.assertTrue(browser.eval("document.getElementById('admin-bonus-sync-panel').open"))
 
-        # Sign out -> admin telemetry immediately purged & hidden!
+        # Verify 1440x900, 390x844, and 360x800 in both he (RTL) and en (LTR) for zero overflow & column rhythm
+        for loc_idx in range(2):
+            if loc_idx == 1:
+                browser.set_viewport(1440, 900)
+                browser.pump(80)
+                browser.real_click("#btn-toggle-locale")
+                browser.pump(100)
+                self.assertIn("Admin", browser.eval("document.getElementById('admin-bonus-sync-panel').textContent"))
+
+            for vw, vh, is_mob, expected_cols in (
+                (1440, 900, False, 12),
+                (390, 844, True, 3),
+                (360, 800, True, 3),
+            ):
+                browser.call(
+                    "Emulation.setDeviceMetricsOverride",
+                    {"width": vw, "height": vh, "deviceScaleFactor": 2, "mobile": is_mob},
+                )
+                browser.pump(80)
+                vp_check = browser.eval(
+                    """(() => {
+                      const grid = document.getElementById('admin-periods-grid');
+                      const cells = Array.from(document.querySelectorAll('.admin-period-cell'));
+                      const hdr = document.getElementById('app-header');
+                      return {
+                        docOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+                        cols: grid ? getComputedStyle(grid).gridTemplateColumns.trim().split(/\\s+/).length : 0,
+                        cellOverflow: cells.some((c) => c.scrollWidth > c.clientWidth + 1),
+                        headerH: hdr ? hdr.getBoundingClientRect().height : 0
+                      };
+                    })()"""
+                )
+                self.assertFalse(vp_check["docOverflow"], f"Doc overflow at {vw}x{vh} loc={loc_idx}")
+                self.assertEqual(vp_check["cols"], expected_cols, f"Cols mismatch at {vw}x{vh} loc={loc_idx}")
+                self.assertFalse(vp_check["cellOverflow"], f"Cell overflow at {vw}x{vh} loc={loc_idx}")
+                if vw == 360:
+                    self.assertLessEqual(vp_check["headerH"], 68.0)
+
+        # Restore desktop viewport & sign out -> admin telemetry immediately purged & hidden!
+        browser.set_viewport(1440, 900)
+        browser.pump(80)
         browser.real_click("#btn-header-signout")
         browser.settle()
         after_signout = browser.eval(
             """(() => {
               const slot = document.getElementById('admin-bonus-sync-slot');
+              const mini = document.getElementById('auth-admin-sync-mini');
               return {
-                hidden: slot.hasAttribute('hidden') && getComputedStyle(slot).display === 'none',
-                html: slot.innerHTML
+                slotHidden: slot.hasAttribute('hidden') && getComputedStyle(slot).display === 'none',
+                slotHtml: slot.innerHTML,
+                miniHidden: mini.hasAttribute('hidden') && getComputedStyle(mini).display === 'none',
+                miniHtml: mini.innerHTML
               };
             })()"""
         )
-        self.assertTrue(after_signout["hidden"])
-        self.assertEqual(after_signout["html"], "")
+        self.assertTrue(after_signout["slotHidden"])
+        self.assertEqual(after_signout["slotHtml"], "")
+        self.assertTrue(after_signout["miniHidden"])
+        self.assertEqual(after_signout["miniHtml"], "")
         self.assertEqual(browser.js_errors(), [])
 
 

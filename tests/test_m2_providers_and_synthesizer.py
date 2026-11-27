@@ -2553,54 +2553,22 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
         self,
     ) -> None:
         """27. Verify:
-        (a) Uniform 5-day sharding (`build_sharded_rolling_windows`) partitions 350 days into 5 drift-free daily shards of 5 windows each.
+        (a) Obsolete sync-agent scripts (`scripts/sync_elal_to_server.py`) are removed from the repository.
         (b) Batch-scoped `reconcile_slices` removes sold-out (`0` seat) flights and updates reduced seat counts (`2+` -> `1`) while leaving unscanned destinations/cabins untouched.
-        (c) `ELAL_SYNC_API_TOKEN` enforces `401` on unauthorized sync attempts and accepts valid `Bearer` tokens.
+        (c) `POST /api/v1/elal-bonus/sync` remains open for browser-extension `rbd_payload` and `RECONCILED_EMPTY_SLICE` uploads (`200`) even when a legacy `ELAL_SYNC_API_TOKEN` env var is present.
         """
-        from datetime import timedelta
+        import json
         import os
+        import shutil
         import tempfile
         from backend.app.main import VacationPlannerTestClient
-        from scripts.sync_elal_to_server import (
-            _save_shard_state,
-            build_sharded_rolling_windows,
-            build_single_target_date_window,
-            resolve_sharded_plan,
-        )
 
-        # (a) Persistent resume state continues cleanly from where it stopped across outages,
-        # never skipping intermediate shards even if the machine was off for 5+ days.
-        tmp_state_dir = tempfile.mkdtemp(prefix="fvp_shard_state_")
-        try:
-            st_path = Path(tmp_state_dir) / "shard_state.json"
-            day0 = date(2026, 11, 23)
-            w0, idx0, tot0, anc0 = resolve_sharded_plan(st_path, today_override=day0)
-            self.assertEqual((idx0, tot0, anc0, len(w0)), (0, 5, day0, 5))
-            _save_shard_state(st_path, anc0, tot0, idx0)
+        repo_root = Path(__file__).resolve().parents[1]
+        self.assertFalse((repo_root / "scripts" / "sync_elal_to_server.py").exists())
+        self.assertFalse((repo_root / "scripts" / "install_cloudtop_daily_sync.sh").exists())
+        self.assertFalse((repo_root / "scripts" / "install_mac_daily_sync.sh").exists())
 
-            # Machine offline for 5 days (now day0 + 5 days): must resume at shard 1 (NOT repeat shard 0!),
-            # preserving cycle anchor so windows 6..10 are covered without gaps.
-            day5 = day0 + timedelta(days=5)
-            w1, idx1, tot1, anc1 = resolve_sharded_plan(st_path, today_override=day5)
-            self.assertEqual((idx1, tot1, anc1, len(w1)), (1, 5, day0, 5))
-            self.assertEqual(w1[0]["local_start"], (day0 + timedelta(days=5 * 14)).isoformat())
-
-            # Complete shards 1, 2, 3, 4; verify wrap-around back to shard 0 advances cycle_anchor to today!
-            for s_idx in (1, 2, 3, 4):
-                _save_shard_state(st_path, anc1, 5, s_idx)
-            day10 = day0 + timedelta(days=10)
-            w_wrap, idx_wrap, _, anc_wrap = resolve_sharded_plan(st_path, today_override=day10)
-            self.assertEqual((idx_wrap, anc_wrap, len(w_wrap)), (0, day10, 5))
-        finally:
-            import shutil
-            shutil.rmtree(tmp_state_dir, ignore_errors=True)
-
-        single_w = build_single_target_date_window("2027-04-18")
-        self.assertEqual(len(single_w), 1)
-        self.assertEqual(single_w[0]["local_start"], "2027-04-18")
-        self.assertEqual(single_w[0]["local_end"], "2027-05-02")
-
-        # (b) & (c) Sold-out reconciliation + optional Bearer token auth
+        # (b) & (c) Sold-out reconciliation + open browser-extension sync endpoint
         old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
         old_tok = os.environ.get("ELAL_SYNC_API_TOKEN")
         tmp_dir = tempfile.mkdtemp(prefix="fvp_reconcile_test_")
@@ -2727,20 +2695,40 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
             self.assertEqual(len(cached_ath), 1)
             self.assertEqual(cached_ath[0].economy_award_seats, 2)
 
-            # (c) Enable ELAL_SYNC_API_TOKEN and verify 401 vs 200
-            os.environ["ELAL_SYNC_API_TOKEN"] = "secret-sync-token-123"
-            st_401, _, _ = client.router.dispatch(
-                "POST",
-                "/api/v1/elal-bonus/sync",
-                json_body={"destinations": ["FCO"]},
-                request_headers={},
-            )
-            self.assertEqual(st_401, 401)
-            st_200, _, _ = client.router.dispatch(
+            # (c) Even if a legacy ELAL_SYNC_API_TOKEN env var is set, browser-extension uploads
+            # without Authorization / sync_token succeed with 200 for both payload and empty-slice reconciliation!
+            os.environ["ELAL_SYNC_API_TOKEN"] = "stale-legacy-token-ignored"
+            st_payload, _, raw_payload_body = client.router.dispatch(
                 "POST",
                 "/api/v1/elal-bonus/sync",
                 json_body={
+                    "origin": "TLV",
                     "destinations": ["FCO"],
+                    "start_date": "2027-05-09",
+                    "end_date": "2027-05-20",
+                    "rbd_payload": [
+                        {
+                            "destination_iata": "FCO",
+                            "direction": "OUTBOUND",
+                            "flight_number": "LY381",
+                            "flight_date": "2027-05-10",
+                            "economy_seats": "2+",
+                        }
+                    ],
+                },
+                request_headers={},
+            )
+            self.assertEqual(st_payload, 200)
+            self.assertEqual(json.loads(raw_payload_body)["live_fetch_status"], "IMPORTED_LIVE_PAYLOAD")
+
+            st_empty, _, raw_empty_body = client.router.dispatch(
+                "POST",
+                "/api/v1/elal-bonus/sync",
+                json_body={
+                    "origin": "TLV",
+                    "destinations": ["FCO"],
+                    "start_date": "2027-05-09",
+                    "end_date": "2027-05-20",
                     "reconcile_slices": [
                         {
                             "destinations": ["FCO"],
@@ -2750,9 +2738,12 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                         }
                     ],
                 },
-                request_headers={"authorization": "Bearer secret-sync-token-123"},
+                request_headers={},
             )
-            self.assertEqual(st_200, 200)
+            self.assertEqual(st_empty, 200)
+            empty_json = json.loads(raw_empty_body)
+            self.assertEqual(empty_json["live_fetch_status"], "RECONCILED_EMPTY_SLICE")
+            self.assertEqual(empty_json["records_synced"], 0)
             client.router.repository.close()
         finally:
             if old_live is None:
@@ -2763,7 +2754,6 @@ class TestM2ProvidersAndSynthesizer(unittest.TestCase):
                 os.environ.pop("ELAL_SYNC_API_TOKEN", None)
             else:
                 os.environ["ELAL_SYNC_API_TOKEN"] = old_tok
-            import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_run10_r2_multi_select_destinations_aliases_and_11plus_non_flagship_offline(

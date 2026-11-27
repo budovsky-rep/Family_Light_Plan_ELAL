@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "El Al Bonus Sync -> Family Vacation Planner",
-  "version": "2.1.0",
-  "description": "Safely scans El Al rbddataclients (Daily Shard, Specific Date, Holidays, or Full Year) across all 45 destinations and syncs to breezyflights.com.",
+  "version": "2.2.0",
+  "description": "Safely scans El Al rbddataclients (Full Year default, Holidays, or Specific Date) across all supported destinations and syncs to breezyflights.com.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://www.elal.com/*",
