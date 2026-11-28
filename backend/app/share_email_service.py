@@ -268,6 +268,7 @@ class ShareEmailService:
             "merged_holidays_text": _clean_single_line(raw_plan.get("merged_holidays_text"), 180),
             "party_summary": _clean_single_line(raw_plan.get("party_summary"), 140),
             "booking_url": _safe_http_url(raw_plan.get("booking_url")),
+            "single_adult_booking_url": _safe_http_url(raw_plan.get("single_adult_booking_url")),
             "app_url": _safe_http_url(raw_plan.get("app_url")) or "https://breezyflights.com",
         }
 
@@ -328,9 +329,16 @@ class ShareEmailService:
                 lines.append(f"התאמה לחופשת בי\"ס: {plan['school_fit_summary']}")
             if plan["climate_summary"]:
                 lines.append(f"אקלים צפוי: {plan['climate_summary']}")
+            lines.append("")
+            lines.append("מדריך הזמנה באל על (לפני שלוחצים על הקישור):")
+            lines.append("1. עוברים ל-Google Flights, בוחרים את טיסות אל על המוצגות מעלה וממשיכים לאתר אל על.")
+            lines.append("2. באתר אל על מתחברים קודם לחשבון המתמיד — ורק אז רואים את זמינות כרטיסי הבונוס.")
+            lines.append("3. מעל 2 נוסעים? אם לא רואים בונוס, בדקו קודם לנוסע 1 והעלו בהדרגה (ייתכן שיש רק 1–2 כרטיסי בונוס).")
             if plan["booking_url"]:
                 lines.append("")
                 lines.append(f"לבדיקה והזמנה (Google Flights / אל על): {plan['booking_url']}")
+            if plan["single_adult_booking_url"] and plan["single_adult_booking_url"] != plan["booking_url"]:
+                lines.append(f"בדיקה מהירה לנוסע 1 בלבד: {plan['single_adult_booking_url']}")
             lines.append(f"תוכנן באמצעות breezyflights: {plan['app_url']}")
         else:
             lines.append(f"Shared vacation plan from {s_name} ({sender_email})")
@@ -360,9 +368,16 @@ class ShareEmailService:
                 lines.append(f"School Fit: {plan['school_fit_summary']}")
             if plan["climate_summary"]:
                 lines.append(f"Climate: {plan['climate_summary']}")
+            lines.append("")
+            lines.append("EL AL Booking Guide (before you click):")
+            lines.append("1. Open Google Flights, pick the EL AL flights listed above, and continue to elal.com.")
+            lines.append("2. Sign in to your Matmid account on elal.com first — award seats only appear after login.")
+            lines.append("3. Searching for 3+ passengers? Check 1 passenger first and scale up, as only 1–2 award seats may be open.")
             if plan["booking_url"]:
                 lines.append("")
                 lines.append(f"Check & book (Google Flights / EL AL): {plan['booking_url']}")
+            if plan["single_adult_booking_url"] and plan["single_adult_booking_url"] != plan["booking_url"]:
+                lines.append(f"Quick 1-adult availability check: {plan['single_adult_booking_url']}")
             lines.append(f"Planned with breezyflights: {plan['app_url']}")
 
         plain_body = "\n".join(lines)
@@ -409,14 +424,57 @@ class ShareEmailService:
                 f"<strong>{esc(note_title)}:</strong> {esc(note).replace(chr(10), '<br/>')}</div>"
             )
 
+        border_accent_side = "border-right" if is_he else "border-left"
+        if is_he:
+            guide_title = "ℹ️ מדריך הזמנה באל על — לפני שממשיכים"
+            guide_steps = [
+                ("1. עוברים ל-Google Flights:", "בוחרים את טיסות אל על המוצגות מעלה וממשיכים משם לאתר אל על (elal.com)."),
+                ("2. מתחברים קודם לחשבון המתמיד:", "באתר אל על יש לבצע התחברות (Login) ורק לאחר מכן רואים את זמינות כרטיסי הבונוס."),
+                ("3. טיפ חשוב למעל 2 נוסעים:", "אם בוחרים יותר מ-2 נוסעים ולא רואים בונוס, כדאי לבדוק קודם לנוסע 1 ולהעלות בהדרגה — כי ייתכן שיש רק 1–2 מושבי בונוס פנויים."),
+            ]
+        else:
+            guide_title = "ℹ️ EL AL Booking Guide — Before You Book"
+            guide_steps = [
+                ("1. Start on Google Flights:", "Select the EL AL flights listed above and click through to elal.com."),
+                ("2. Sign in to Matmid on elal.com:", "You must log in to your Matmid account first before award seat availability appears."),
+                ("3. Tip for 3+ passengers:", "If no bonus seats show for a larger group, check 1 passenger first and scale up — only 1–2 award seats may be open."),
+            ]
+
+        guide_items_html = "".join(
+            f'<div style="margin:0 0 6px 0;font-size:13px;line-height:1.5;color:#1E293B;text-align:{align};">'
+            f'<strong style="color:#0B3B8C;">{esc(step_head)}</strong> {esc(step_body)}</div>'
+            for step_head, step_body in guide_steps
+        )
+        booking_guide_html = (
+            f'<div style="margin:18px 0 14px 0;padding:13px 15px;background:#EFF6FF;border:1px solid #BFDBFE;'
+            f'{border_accent_side}:4px solid #0B3B8C;border-radius:10px;text-align:{align};">'
+            f'<div style="margin:0 0 8px 0;font-size:14px;font-weight:800;color:#0B3B8C;text-align:{align};">{esc(guide_title)}</div>'
+            f"{guide_items_html}"
+            f"</div>"
+        )
+
         cta_html = ""
         if plan["booking_url"]:
             cta_text = "✈️ בדיקת זמינות והזמנת טיסת אל על" if is_he else "✈️ Check availability & book EL AL flight"
+            single_link_html = ""
+            if plan["single_adult_booking_url"] and plan["single_adult_booking_url"] != plan["booking_url"]:
+                single_text = (
+                    "🔍 בדיקה מהירה לנוסע 1 בלבד (לזיהוי מדויק של מושבי בונוס)"
+                    if is_he
+                    else "🔍 Quick 1-adult availability check (to count exact bonus seats)"
+                )
+                single_link_html = (
+                    f'<div style="margin-top:10px;">'
+                    f'<a href="{esc(plan["single_adult_booking_url"])}" '
+                    f'style="color:#0B3B8C;font-size:13px;font-weight:700;text-decoration:underline;">{esc(single_text)}</a>'
+                    f"</div>"
+                )
             cta_html = (
-                f'<div style="margin:20px 0 8px 0;text-align:center;">'
+                f'<div style="margin:14px 0 8px 0;text-align:center;">'
                 f'<a href="{esc(plan["booking_url"])}" '
                 f'style="display:inline-block;padding:12px 22px;background:#0B3B8C;color:#FFFFFF;'
                 f'text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">{esc(cta_text)}</a>'
+                f"{single_link_html}"
                 f"</div>"
             )
 
@@ -447,6 +505,7 @@ class ShareEmailService:
       <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px;border:1px solid #E2E8F0;border-radius:10px;">
         <tbody>{rows_html}</tbody>
       </table>
+      {booking_guide_html}
       {cta_html}
     </div>
     <div style="background:#F8FAFC;padding:12px 22px;border-top:1px solid #E2E8F0;font-size:12px;color:#64748B;text-align:{align};">

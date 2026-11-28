@@ -7980,19 +7980,24 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               open: document.getElementById('share-plan-modal')?.classList.contains('is-open'),
               hasGate: Boolean(document.getElementById('share-plan-guest-gate')),
               toVal: (document.getElementById('input-share-email-to') || {}).value || '',
-              waHref: document.getElementById('btn-share-whatsapp')?.getAttribute('href') || '',
+              waText: (document.getElementById('btn-share-whatsapp') || {}).textContent || '',
+              dlPdfText: (document.getElementById('btn-share-download-pdf') || {}).textContent || '',
               overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
             }))()"""
         )
         self.assertTrue(authed_open["open"])
         self.assertFalse(authed_open["hasGate"])
         self.assertEqual(authed_open["toVal"], "traveler.share@gmail.com")
-        self.assertTrue(authed_open["waHref"].startswith("https://wa.me/?text="))
+        self.assertIn("PDF", authed_open["waText"])
+        self.assertIn("וואטסאפ", authed_open["waText"])
+        self.assertIn("PDF", authed_open["dlPdfText"])
         self.assertFalse(authed_open["overflow"])
 
-        # Add partner email + personal note -> verify WhatsApp link updates and Email POST succeeds
+        # Add partner email + personal note -> generate branded WhatsApp PDF & send server email
         browser.eval(
             """(() => {
+              window.__fvpOpenedUrls = [];
+              window.open = (u) => { window.__fvpOpenedUrls.push(String(u || '')); return null; };
               const toEl = document.getElementById('input-share-email-to');
               toEl.value = 'traveler.share@gmail.com, partner.trip@gmail.com';
               toEl.dispatchEvent(new Event('input', { bubbles: true }));
@@ -8001,8 +8006,20 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               noteEl.dispatchEvent(new Event('input', { bubbles: true }));
             })()"""
         )
-        wa_after_note = browser.eval("decodeURIComponent(document.getElementById('btn-share-whatsapp').getAttribute('href'))")
-        self.assertIn("בואי נזמין את הטיסה הזו!", wa_after_note)
+        browser.real_click("#btn-share-whatsapp", after_ms=220)
+        pdf_meta = browser.eval(
+            """(() => ({
+              meta: window.__fvpLastSharePdfMeta || null,
+              notice: (document.getElementById('share-pdf-notice') || {}).textContent || '',
+              openedUrls: window.__fvpOpenedUrls || []
+            }))()"""
+        )
+        self.assertIsNotNone(pdf_meta["meta"])
+        self.assertTrue(pdf_meta["meta"]["header"].startswith("%PDF-1.4"))
+        self.assertGreater(pdf_meta["meta"]["size"], 15000)
+        self.assertTrue(pdf_meta["meta"]["filename"].endswith(".pdf"))
+        self.assertIn("PDF", pdf_meta["notice"])
+        self.assertTrue(any(u.startswith("https://wa.me/?text=") for u in pdf_meta["openedUrls"]))
 
         browser.fetch_log.clear()
         browser.real_click("#btn-share-send-email", after_ms=200)
@@ -8019,6 +8036,11 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertEqual(len(outbox), 1)
         self.assertEqual(outbox[0]["recipients"], ["traveler.share@gmail.com", "partner.trip@gmail.com"])
         self.assertIn('dir="rtl"', outbox[0]["html_body"])
+        self.assertIn("מדריך הזמנה באל על", outbox[0]["html_body"])
+        self.assertLess(
+            outbox[0]["html_body"].index("מדריך הזמנה באל על"),
+            outbox[0]["html_body"].index("בדיקת זמינות והזמנת טיסת אל על"),
+        )
         self.assertIn("בואי נזמין את הטיסה הזו!", outbox[0]["plain_body"])
 
         # Mobile 360x800 check with modal open -> zero horizontal overflow

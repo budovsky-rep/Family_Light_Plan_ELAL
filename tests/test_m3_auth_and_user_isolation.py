@@ -2996,18 +2996,31 @@ class TestShareVacationPlanEmailAPI(unittest.TestCase):
                 )
                 outbox = client.router.share_email_service.get_test_outbox()
                 self.assertEqual(len(outbox), 1)
-                self.assertIn('dir="rtl"', outbox[0]["html_body"])
-                self.assertNotIn("<script>", outbox[0]["html_body"])
-                self.assertIn("&lt;script&gt;", outbox[0]["html_body"])
+                he_html = outbox[0]["html_body"]
+                self.assertIn('dir="rtl"', he_html)
+                self.assertNotIn("<script>", he_html)
+                self.assertIn("&lt;script&gt;", he_html)
+                self.assertIn("מדריך הזמנה באל על", he_html)
+                self.assertLess(
+                    he_html.index("מדריך הזמנה באל על"),
+                    he_html.index("בדיקת זמינות והזמנת טיסת אל על"),
+                )
+                self.assertIn("מדריך הזמנה באל על", outbox[0]["plain_body"])
 
-                # 5. English LTR template
+                # 5. English LTR template (booking guide above CTA)
                 r_en = client.post(
                     "/api/v1/share/email",
                     json={"locale": "en", "plan": self._sample_plan()},
                     headers={"X-CSRF-Token": csrf},
                 )
                 self.assertEqual(r_en.status_code, 200)
-                self.assertIn('dir="ltr"', client.router.share_email_service.get_test_outbox()[-1]["html_body"])
+                en_html = client.router.share_email_service.get_test_outbox()[-1]["html_body"]
+                self.assertIn('dir="ltr"', en_html)
+                self.assertIn("EL AL Booking Guide", en_html)
+                self.assertLess(
+                    en_html.index("EL AL Booking Guide"),
+                    en_html.index("Check availability &amp; book EL AL flight"),
+                )
 
                 # 6. Validation: header injection, bad email, >3 recipients -> 422
                 for bad_recips in (

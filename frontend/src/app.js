@@ -1088,6 +1088,9 @@
     sharePlanFallbackGmailUrl: '',
     sharePlanRecipientValue: '',
     sharePlanNoteValue: '',
+    sharePlanPdfBusy: false,
+    sharePlanPdfNoticeHe: '',
+    sharePlanPdfNoticeEn: '',
     sharePlanCopyDone: false,
     visibleRenderableProposals: [],
     lastActiveMobileZone: 'zone-search',
@@ -4048,12 +4051,14 @@
       const seatsNum = Number(seats || 0);
       let seatsTxt = '';
       if (seatsNum >= 1) {
-        const sLabel = isTwoPlus && seatsNum >= 2 ? '2+' : String(seatsNum);
+        const sLabel = isTwoPlus && seatsNum >= 2 ? '\u20662+\u2069' : `\u2066${seatsNum}\u2069`;
         seatsTxt = isHe ? `${sLabel} מושבי בונוס` : `${sLabel} bonus seats`;
       } else {
         seatsTxt = isHe ? 'כרטיס מסחרי' : 'Commercial fare';
       }
-      return [fn && fn !== 'LY_CASH' ? fn : '', times, seatsTxt].filter(Boolean).join(' · ');
+      const codeAndTimes = [fn && fn !== 'LY_CASH' ? fn : '', times].filter(Boolean).join(' · ');
+      const isolatedFlight = codeAndTimes ? `\u2066${codeAndTimes}\u2069` : '';
+      return [isolatedFlight, seatsTxt].filter(Boolean).join(' · ');
     };
     const dirInfo = resolveBonusDirectionInfo(it);
     const bonusSummary =
@@ -4065,18 +4070,20 @@
             ? (isHe ? 'בונוס בחזור בלבד' : 'Bonus return only')
             : (isHe ? 'טיסות אל על מסחריות' : 'EL AL commercial flights');
 
-    const minPtsNum = Number(it.min_points_per_single_award_ticket || 0);
-    const minPtsScope = String(it.min_points_per_single_award_ticket_scope || 'round_trip');
+    const rawMinPts = it.min_points_per_bonus_ticket ?? it.min_points_per_single_award_ticket ?? 0;
+    const minPtsNum = Number(rawMinPts || 0);
+    const rawBasis = String(it.min_points_basis || it.min_points_per_single_award_ticket_scope || 'ROUND_TRIP').trim().toUpperCase();
+    const isRoundTripPts = rawBasis === 'ROUND_TRIP' || dirInfo.coverage === 'BOTH_DIRECTIONS';
     let minPointsText = '';
     if (minPtsNum > 0) {
       const fmtPts = minPtsNum.toLocaleString('en-US');
-      if (minPtsScope === 'round_trip') {
+      if (isRoundTripPts) {
         minPointsText = isHe
-          ? `החל מ-${fmtPts} נק׳ לכרטיס בונוס אחד (הלוך ושוב)`
+          ? `החל מ-\u2066${fmtPts}\u2069 נק׳ לכרטיס בונוס אחד (הלוך ושוב)`
           : `From ${fmtPts} pts per bonus ticket (round trip)`;
       } else {
         minPointsText = isHe
-          ? `החל מ-${fmtPts} נק׳ לכרטיס בונוס אחד (כיוון אחד)`
+          ? `החל מ-\u2066${fmtPts}\u2069 נק׳ לכרטיס בונוס אחד (כיוון אחד)`
           : `From ${fmtPts} pts per bonus ticket (one way)`;
       }
     }
@@ -4104,13 +4111,15 @@
     let workdaysSummary = '';
     if (wdCost !== null && !Number.isNaN(wdCost)) {
       const costStr = Number.isInteger(wdCost) ? String(wdCost) : wdCost.toFixed(1).replace(/\.0$/, '');
+      const dayUnitHe = wdCost === 1 ? 'יום חופש מהעבודה' : 'ימי חופש מהעבודה';
+      const dayUnitEn = wdCost === 1 ? 'workday off' : 'workdays off';
       if (isWpCard && wdRatio !== null && wdSaved !== null) {
         const savedStr = Number.isInteger(wdSaved) ? String(wdSaved) : wdSaved.toFixed(1).replace(/\.0$/, '');
         workdaysSummary = isHe
-          ? `${costStr} ימי חופש מהעבודה (נחסכו ${savedStr} ימים · יחס ×${wdRatio.toFixed(1)})`
-          : `${costStr} workdays off (${savedStr} saved · ×${wdRatio.toFixed(1)} leverage)`;
+          ? `${costStr} ${dayUnitHe} (נחסכו ${savedStr} ימים · יחס \u2066×${wdRatio.toFixed(1)}\u2069)`
+          : `${costStr} ${dayUnitEn} (${savedStr} saved · ×${wdRatio.toFixed(1)} leverage)`;
       } else {
-        workdaysSummary = isHe ? `${costStr} ימי חופש מהעבודה` : `${costStr} workdays off`;
+        workdaysSummary = isHe ? `${costStr} ${dayUnitHe}` : `${costStr} ${dayUnitEn}`;
       }
     }
 
@@ -4124,13 +4133,16 @@
     }
 
     const wm = p.weather_metrics || {};
+    const highRaw = wm.avg_day_high_c ?? wm.avg_max_temp_c ?? wm.avg_high_c;
+    const lowRaw = wm.avg_night_low_c ?? wm.avg_min_temp_c ?? wm.avg_low_c;
     let climateSummary = '';
-    if (wm.avg_high_c !== undefined && wm.avg_low_c !== undefined) {
-      const hi = Math.round(Number(wm.avg_high_c));
-      const lo = Math.round(Number(wm.avg_low_c));
-      const wScore = wm.overall_weather_suitability_score !== undefined ? Math.round(Number(wm.overall_weather_suitability_score)) : null;
+    if (highRaw !== undefined && lowRaw !== undefined) {
+      const hi = Math.round(Number(highRaw));
+      const lo = Math.round(Number(lowRaw));
+      const wScoreRaw = p.weather_suitability_score ?? wm.overall_weather_suitability_score;
+      const wScore = wScoreRaw !== undefined && wScoreRaw !== null ? Math.round(Number(wScoreRaw)) : null;
       climateSummary = isHe
-        ? `${hi}°/${lo}°C${wScore !== null ? ` · אקלים ${wScore}/100` : ''}`
+        ? `\u2066${hi}°/${lo}°C\u2069${wScore !== null ? ` · אקלים \u2066${wScore}/100\u2069` : ''}`
         : `${hi}°/${lo}°C${wScore !== null ? ` · Climate ${wScore}/100` : ''}`;
     }
 
@@ -4146,6 +4158,7 @@
       .join(' + ');
 
     const bookingUrl = resolveElAlBookingUrl(it) || '';
+    const singleAdultBookingUrl = resolveElAlSingleAdultGoogleFlightsUrl(it) || '';
     const appUrl =
       typeof window !== 'undefined' &&
       window.location &&
@@ -4162,6 +4175,8 @@
       trip_nights: Number(it.trip_nights || 1),
       outbound_flight: fmtLeg(outLeg, it.outbound_bonus_seats, it.outbound_bonus_seats_is_two_plus),
       return_flight: fmtLeg(inLeg, it.inbound_bonus_seats, it.inbound_bonus_seats_is_two_plus),
+      outbound_has_bonus: Number(it.outbound_bonus_seats || 0) >= 1,
+      inbound_has_bonus: Number(it.inbound_bonus_seats || 0) >= 1,
       bonus_summary: bonusSummary,
       min_points_text: minPointsText,
       workdays_summary: workdaysSummary,
@@ -4170,48 +4185,725 @@
       merged_holidays_text: mergedHolidaysText,
       party_summary: partySummary,
       booking_url: bookingUrl,
+      single_adult_booking_url: singleAdultBookingUrl,
       app_url: appUrl
     };
   }
 
-  function buildSharePlainText(plan, personalNote, isHe) {
+  function buildWhatsAppCaption(plan, personalNote, isHe) {
     const note = String(personalNote || '').trim();
-    const lines = [];
+    const nightsLbl = isHe ? `${plan.trip_nights} לילות` : `${plan.trip_nights} nights`;
+    const parts = [];
     if (isHe) {
-      lines.push(`✈️ תוכנית חופשה ב${plan.destination_name} (${plan.origin_iata} ⇄ ${plan.destination_iata})`);
-      lines.push(`📅 ${plan.departure_date} עד ${plan.return_date} (${plan.trip_nights} לילות)`);
-      if (note) lines.push(`💬 ${note}`);
-      if (plan.party_summary) lines.push(`👥 ${plan.party_summary}`);
-      if (plan.merged_holidays_text) lines.push(`🌉 חגים בחלון: ${plan.merged_holidays_text}`);
-      if (plan.bonus_summary) lines.push(`🎫 ${plan.bonus_summary}${plan.min_points_text ? ` · ${plan.min_points_text}` : ''}`);
-      if (plan.outbound_flight) lines.push(`🛫 הלוך: ${plan.outbound_flight}`);
-      if (plan.return_flight) lines.push(`🛬 חזור: ${plan.return_flight}`);
-      if (plan.workdays_summary) lines.push(`💼 חופשת עבודה: ${plan.workdays_summary}`);
-      if (plan.school_fit_summary) lines.push(`🏫 התאמה לחופשת בי"ס: ${plan.school_fit_summary}`);
-      if (plan.climate_summary) lines.push(`☀️ אקלים: ${plan.climate_summary}`);
-      if (plan.booking_url) lines.push(`🔗 לבדיקה והזמנה באל על: ${plan.booking_url}`);
-      lines.push(`תוכנן ב-breezyflights (${plan.app_url})`);
+      parts.push(`✈️ תוכנית חופשה ב${plan.destination_name} (${plan.origin_iata} ⇄ ${plan.destination_iata}) · ${plan.departure_date}–${plan.return_date} (${nightsLbl})`);
+      if (note) parts.push(`💬 ${note}`);
+      parts.push('📄 מצורף קובץ ה-PDF המעוצב עם כל פרטי הטיסות ומדריך ההזמנה מ-breezyflights.');
     } else {
-      lines.push(`✈️ Vacation Plan to ${plan.destination_name} (${plan.origin_iata} ⇄ ${plan.destination_iata})`);
-      lines.push(`📅 ${plan.departure_date} to ${plan.return_date} (${plan.trip_nights} nights)`);
-      if (note) lines.push(`💬 ${note}`);
-      if (plan.party_summary) lines.push(`👥 ${plan.party_summary}`);
-      if (plan.merged_holidays_text) lines.push(`🌉 Holidays: ${plan.merged_holidays_text}`);
-      if (plan.bonus_summary) lines.push(`🎫 ${plan.bonus_summary}${plan.min_points_text ? ` · ${plan.min_points_text}` : ''}`);
-      if (plan.outbound_flight) lines.push(`🛫 Outbound: ${plan.outbound_flight}`);
-      if (plan.return_flight) lines.push(`🛬 Return: ${plan.return_flight}`);
-      if (plan.workdays_summary) lines.push(`💼 Workdays Off: ${plan.workdays_summary}`);
-      if (plan.school_fit_summary) lines.push(`🏫 School Fit: ${plan.school_fit_summary}`);
-      if (plan.climate_summary) lines.push(`☀️ Climate: ${plan.climate_summary}`);
-      if (plan.booking_url) lines.push(`🔗 Check & book with EL AL: ${plan.booking_url}`);
-      lines.push(`Planned on breezyflights (${plan.app_url})`);
+      parts.push(`✈️ Vacation Plan to ${plan.destination_name} (${plan.origin_iata} ⇄ ${plan.destination_iata}) · ${plan.departure_date}–${plan.return_date} (${nightsLbl})`);
+      if (note) parts.push(`💬 ${note}`);
+      parts.push('📄 Attached is the styled PDF brochure with full flight details & EL AL booking guide from breezyflights.');
     }
-    return lines.join('\n');
+    return parts.join('\n');
   }
 
-  function buildWhatsAppShareUrl(plan, personalNote, isHe) {
-    const text = buildSharePlainText(plan, personalNote, isHe);
-    return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  function buildSinglePagePdfBytes(jpegBytes, imgW, imgH, linkRectPx, linkUrl) {
+    const enc = new TextEncoder();
+    const chunks = [];
+    let byteLen = 0;
+    const pushU8 = (u8) => {
+      chunks.push(u8);
+      byteLen += u8.length;
+    };
+    const pushStr = (s) => pushU8(enc.encode(s));
+
+    const pageW = 595.28;
+    const pageH = Math.round((imgH / imgW) * pageW * 100) / 100;
+    const hasLink = Boolean(linkRectPx && linkUrl && /^https?:\/\//i.test(linkUrl));
+
+    // PDF header + binary marker
+    pushStr('%PDF-1.4\n');
+    pushU8(new Uint8Array([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]));
+
+    const offsets = [0];
+
+    // 1: Catalog
+    offsets.push(byteLen);
+    pushStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+    // 2: Pages
+    offsets.push(byteLen);
+    pushStr('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+
+    // 3: Page
+    offsets.push(byteLen);
+    const annotsClause = hasLink ? ' /Annots [6 0 R]' : '';
+    pushStr(
+      `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW.toFixed(2)} ${pageH.toFixed(2)}] ` +
+        `/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R${annotsClause} >>\nendobj\n`
+    );
+
+    // 4: Image XObject (/DCTDecode)
+    offsets.push(byteLen);
+    pushStr(
+      `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${imgW} /Height ${imgH} ` +
+        `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`
+    );
+    pushU8(jpegBytes);
+    pushStr('\nendstream\nendobj\n');
+
+    // 5: Content Stream
+    const streamStr = `q\n${pageW.toFixed(2)} 0 0 ${pageH.toFixed(2)} 0 0 cm\n/Im0 Do\nQ\n`;
+    const streamBytes = enc.encode(streamStr);
+    offsets.push(byteLen);
+    pushStr(`5 0 obj\n<< /Length ${streamBytes.length} >>\nstream\n`);
+    pushU8(streamBytes);
+    pushStr('endstream\nendobj\n');
+
+    // 6: Optional clickable URI link annotation over booking CTA button
+    if (hasLink) {
+      const scale = pageW / imgW;
+      const lx1 = (linkRectPx.x * scale).toFixed(2);
+      const lx2 = ((linkRectPx.x + linkRectPx.w) * scale).toFixed(2);
+      const ly2 = (pageH - linkRectPx.y * scale).toFixed(2);
+      const ly1 = (pageH - (linkRectPx.y + linkRectPx.h) * scale).toFixed(2);
+      const escapedUri = String(linkUrl)
+        .replace(/\\/g, '\\\\')
+        .replace(/\(/g, '\\(')
+        .replace(/\)/g, '\\)');
+      offsets.push(byteLen);
+      pushStr(
+        `6 0 obj\n<< /Type /Annot /Subtype /Link /Rect [${lx1} ${ly1} ${lx2} ${ly2}] ` +
+          `/Border [0 0 0] /A << /S /URI /URI (${escapedUri}) >> >>\nendobj\n`
+      );
+    }
+
+    const xrefOffset = byteLen;
+    const objCount = offsets.length;
+    pushStr(`xref\n0 ${objCount}\n`);
+    pushStr('0000000000 65535 f \n');
+    for (let i = 1; i < objCount; i += 1) {
+      pushStr(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`);
+    }
+    pushStr(`trailer\n<< /Size ${objCount} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+    const out = new Uint8Array(byteLen);
+    let pos = 0;
+    for (const c of chunks) {
+      out.set(c, pos);
+      pos += c.length;
+    }
+    return out;
+  }
+
+  function generateVacationPlanPdfArtifact(plan, personalNote, isHe) {
+    const W = 1080;
+    const outerPad = 32;
+    const cardX = outerPad;
+    const cardW = W - outerPad * 2;
+    const pad = 34;
+    const innerW = cardW - pad * 2;
+    const fontFamily = "'Heebo', 'Rubik', 'Assistant', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif";
+
+    const measureCanvas = document.createElement('canvas');
+    measureCanvas.width = W;
+    measureCanvas.height = 100;
+    const mCtx = measureCanvas.getContext('2d');
+
+    const wrapTextLines = (ctx, text, maxW, fontSpec) => {
+      const clean = String(text || '').trim();
+      if (!clean) return [];
+      ctx.font = fontSpec;
+      const paragraphs = clean.split(/\n+/);
+      const allLines = [];
+      for (const para of paragraphs) {
+        const words = para.trim().split(/\s+/).filter(Boolean);
+        if (words.length === 0) continue;
+        let line = words[0];
+        for (let i = 1; i < words.length; i += 1) {
+          const candidate = `${line} ${words[i]}`;
+          if (ctx.measureText(candidate).width <= maxW) {
+            line = candidate;
+          } else {
+            allLines.push(line);
+            line = words[i];
+          }
+        }
+        allLines.push(line);
+      }
+      return allLines;
+    };
+
+    const noteClean = String(personalNote || '').trim();
+    const noteFont = `600 20px ${fontFamily}`;
+    const noteLines = noteClean ? wrapTextLines(mCtx, noteClean, innerW - 44, noteFont) : [];
+
+    const metricCards = [];
+    if (plan.party_summary) {
+      metricCards.push({ icon: '👥', label: isHe ? 'הרכב נוסעים' : 'Travelers', value: plan.party_summary, tone: 'neutral' });
+    }
+    if (plan.workdays_summary) {
+      metricCards.push({ icon: '💼', label: isHe ? 'חופשת עבודה' : 'Workdays Off', value: plan.workdays_summary, tone: 'pine' });
+    }
+    if (plan.school_fit_summary) {
+      metricCards.push({ icon: '🏫', label: isHe ? 'התאמה לחופשת בי"ס' : 'School Fit', value: plan.school_fit_summary, tone: 'azure' });
+    }
+    if (plan.merged_holidays_text) {
+      metricCards.push({ icon: '🌉', label: isHe ? 'חגים בחלון' : 'Holidays', value: plan.merged_holidays_text, tone: 'brass' });
+    }
+    if (plan.climate_summary) {
+      metricCards.push({ icon: '☀️', label: isHe ? 'אקלים צפוי' : 'Climate', value: plan.climate_summary, tone: 'neutral' });
+    }
+
+    const guideSteps = isHe
+      ? [
+          '1. עוברים ל-Google Flights, בוחרים את טיסות אל על המוצגות מעלה וממשיכים משם לאתר אל על (elal.com).',
+          '2. באתר אל על יש להתחבר קודם לחשבון המתמיד (Login) — ורק לאחר ההתחברות רואים את זמינות כרטיסי הבונוס.',
+          '3. טיפ חשוב במעל 2 נוסעים: אם לא רואים בונוס, בדקו קודם עבור נוסע 1 והעלו בהדרגה (ייתכן שיש רק 1–2 כרטיסים).'
+        ]
+      : [
+          '1. Open Google Flights, pick the EL AL flights shown above, and click through to elal.com.',
+          '2. Sign in to your Matmid account on elal.com first — award seats only appear after login.',
+          '3. Tip for 3+ passengers: check 1 passenger first and scale up to see exact bonus seat inventory.'
+        ];
+    const guideBodyFont = `500 18px ${fontFamily}`;
+    const wrappedGuideSteps = guideSteps.map((s) => wrapTextLines(mCtx, s, innerW - 44, guideBodyFont));
+    const guideTotalLines = wrappedGuideSteps.reduce((acc, arr) => acc + arr.length, 0);
+
+    // Compute exact dynamic height so there is zero clipping and zero blank tail
+    const headerH = 200;
+    const noteBoxH = noteLines.length > 0 ? 44 + noteLines.length * 28 + 18 : 0;
+    const bonusRowH = plan.min_points_text ? 92 : 52;
+    const flightsBoxH = 140;
+    const metricRows = Math.ceil(metricCards.length / 2);
+    const metricsSectionH = metricRows > 0 ? metricRows * 96 + (metricRows - 1) * 14 + 22 : 0;
+    const tearLineH = 44;
+    const guideBoxH = 58 + guideTotalLines * 26 + guideSteps.length * 10 + 18;
+    const ctaBoxH = plan.booking_url ? 82 : 0;
+    const footerH = 62;
+    const cardH =
+      headerH +
+      24 +
+      noteBoxH +
+      bonusRowH +
+      flightsBoxH +
+      22 +
+      metricsSectionH +
+      tearLineH +
+      guideBoxH +
+      (ctaBoxH ? 18 + ctaBoxH : 0) +
+      20 +
+      footerH;
+    const H = cardH + outerPad * 2;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+
+    const drawRoundedRect = (x, y, w, h, r) => {
+      const rad = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + rad, y);
+      ctx.lineTo(x + w - rad, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+      ctx.lineTo(x + w, y + h - rad);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+      ctx.lineTo(x + rad, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+      ctx.lineTo(x, y + rad);
+      ctx.quadraticCurveTo(x, y, x + rad, y);
+      ctx.closePath();
+    };
+
+    const drawTopRoundedRect = (x, y, w, h, r) => {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x, y + h);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    };
+
+    const drawBottomRoundedRect = (x, y, w, h, r) => {
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.closePath();
+    };
+
+    // 1. Outer background & main boarding-pass card
+    ctx.fillStyle = '#EEF3F8';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(11, 31, 58, 0.14)';
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 10;
+    drawRoundedRect(cardX, outerPad, cardW, cardH, 26);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.restore();
+
+    drawRoundedRect(cardX, outerPad, cardW, cardH, 26);
+    ctx.strokeStyle = '#CBD5E1';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const startX = isHe ? cardX + cardW - pad : cardX + pad;
+    const endX = isHe ? cardX + pad : cardX + cardW - pad;
+    const setAlignedText = (alignStart) => {
+      ctx.direction = isHe ? 'rtl' : 'ltr';
+      if (alignStart) {
+        ctx.textAlign = isHe ? 'right' : 'left';
+      } else {
+        ctx.textAlign = isHe ? 'left' : 'right';
+      }
+    };
+
+    // 2. Flight-Deck Navy Header
+    let y = outerPad;
+    const hdrGrad = ctx.createLinearGradient(cardX, y, cardX + cardW, y + headerH);
+    hdrGrad.addColorStop(0, '#0B1F3A');
+    hdrGrad.addColorStop(1, '#14386B');
+    drawTopRoundedRect(cardX, y, cardW, headerH, 26);
+    ctx.fillStyle = hdrGrad;
+    ctx.fill();
+
+    // Subtle brass accent line under header
+    ctx.fillStyle = '#F59E0B';
+    ctx.fillRect(cardX, y + headerH - 5, cardW, 5);
+
+    ctx.textBaseline = 'top';
+    setAlignedText(true);
+    ctx.fillStyle = '#FCD34D';
+    ctx.font = `800 24px ${fontFamily}`;
+    ctx.fillText('breezyflights', startX, y + 26);
+
+    setAlignedText(false);
+    ctx.fillStyle = '#CBD5E1';
+    ctx.font = `600 17px ${fontFamily}`;
+    ctx.fillText(
+      isHe ? 'תוכנית חופשה וכרטיסי בונוס באל על' : 'EL AL Award Vacation Plan',
+      endX,
+      y + 30
+    );
+
+    setAlignedText(true);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `800 40px ${fontFamily}`;
+    const routeHeadline = `${plan.destination_name}  ·  ${plan.origin_iata} ⇄ ${plan.destination_iata}`;
+    ctx.fillText(routeHeadline, startX, y + 70);
+
+    // Date & nights pill inside header
+    const nightsLbl = isHe ? `${plan.trip_nights} לילות` : `${plan.trip_nights} nights`;
+    const datePillText = `📅  ${plan.departure_date} → ${plan.return_date}  ·  ${nightsLbl}`;
+    ctx.font = `700 20px ${fontFamily}`;
+    const dpW = Math.min(innerW, ctx.measureText(datePillText).width + 38);
+    const dpX = isHe ? startX - dpW : startX;
+    const dpY = y + 132;
+    drawRoundedRect(dpX, dpY, dpW, 42, 21);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(252, 211, 77, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(datePillText, isHe ? dpX + dpW - 19 : dpX + 19, dpY + 10);
+
+    y += headerH + 24;
+
+    // 3. Optional Personal Note Callout
+    if (noteLines.length > 0) {
+      const nH = 38 + noteLines.length * 28;
+      drawRoundedRect(cardX + pad, y, innerW, nH, 14);
+      ctx.fillStyle = '#FFFBEB';
+      ctx.fill();
+      ctx.strokeStyle = '#FDE68A';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Accent bar on inline-start edge
+      const barX = isHe ? cardX + pad + innerW - 6 : cardX + pad;
+      ctx.fillStyle = '#D97706';
+      ctx.fillRect(barX, y + 8, 6, nH - 16);
+
+      setAlignedText(true);
+      ctx.fillStyle = '#92400E';
+      ctx.font = `800 17px ${fontFamily}`;
+      ctx.fillText(isHe ? '💬 הערה אישית:' : '💬 Personal note:', isHe ? startX - 18 : startX + 18, y + 12);
+      ctx.fillStyle = '#78350F';
+      ctx.font = noteFont;
+      noteLines.forEach((ln, idx) => {
+        ctx.fillText(ln, isHe ? startX - 18 : startX + 18, y + 36 + idx * 28);
+      });
+      y += nH + 18;
+    }
+
+    // 4. Bonus status + Matmid points badges
+    setAlignedText(true);
+    ctx.font = `800 19px ${fontFamily}`;
+    const bonusBadgeTxt = `●  ${plan.bonus_summary || (isHe ? 'טיסות אל על' : 'EL AL Flights')}`;
+    const bbW = Math.min(innerW, ctx.measureText(bonusBadgeTxt).width + 34);
+    const bbX = isHe ? startX - bbW : startX;
+    drawRoundedRect(bbX, y, bbW, 38, 19);
+    ctx.fillStyle = '#ECFDF5';
+    ctx.fill();
+    ctx.strokeStyle = '#86EFAC';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#065F46';
+    ctx.fillText(bonusBadgeTxt, isHe ? bbX + bbW - 17 : bbX + 17, y + 9);
+
+    if (plan.min_points_text) {
+      y += 46;
+      ctx.font = `700 18px ${fontFamily}`;
+      const ptsTxt = `🎫  ${plan.min_points_text}`;
+      const ptW = Math.min(innerW, ctx.measureText(ptsTxt).width + 32);
+      const ptX = isHe ? startX - ptW : startX;
+      drawRoundedRect(ptX, y, ptW, 36, 12);
+      ctx.fillStyle = '#FFFBEB';
+      ctx.fill();
+      ctx.strokeStyle = '#FCD34D';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#92400E';
+      ctx.fillText(ptsTxt, isHe ? ptX + ptW - 16 : ptX + 16, y + 8);
+      y += 46;
+    } else {
+      y += 52;
+    }
+
+    // 5. Two-column Outbound & Return Flight Coupons
+    const colGap = 18;
+    const colW = (innerW - colGap) / 2;
+    const drawFlightCoupon = (xPos, titleStr, detailStr, hasBonus) => {
+      drawRoundedRect(xPos, y, colW, flightsBoxH, 16);
+      ctx.fillStyle = hasBonus ? '#F0FDF4' : '#F8FAFC';
+      ctx.fill();
+      ctx.strokeStyle = hasBonus ? '#86EFAC' : '#CBD5E1';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      const cStartX = isHe ? xPos + colW - 20 : xPos + 20;
+      setAlignedText(true);
+      ctx.fillStyle = hasBonus ? '#0D7A5F' : '#475569';
+      ctx.font = `800 19px ${fontFamily}`;
+      ctx.fillText(titleStr, cStartX, y + 18);
+
+      const detailLines = wrapTextLines(
+        ctx,
+        detailStr || (isHe ? 'פרטי טיסה זמינים בקישור ההזמנה' : 'Flight details via booking link'),
+        colW - 40,
+        `700 20px ${fontFamily}`
+      );
+      ctx.fillStyle = '#0B1F3A';
+      ctx.font = `700 20px ${fontFamily}`;
+      detailLines.slice(0, 3).forEach((ln, idx) => {
+        ctx.fillText(ln, cStartX, y + 54 + idx * 28);
+      });
+    };
+
+    const outColX = isHe ? cardX + pad + colW + colGap : cardX + pad;
+    const inColX = isHe ? cardX + pad : cardX + pad + colW + colGap;
+    drawFlightCoupon(
+      outColX,
+      isHe ? `🛫 טיסת הלוך · ${plan.departure_date}` : `🛫 Outbound · ${plan.departure_date}`,
+      plan.outbound_flight,
+      plan.outbound_has_bonus
+    );
+    drawFlightCoupon(
+      inColX,
+      isHe ? `🛬 טיסת חזור · ${plan.return_date}` : `🛬 Return · ${plan.return_date}`,
+      plan.return_flight,
+      plan.inbound_has_bonus
+    );
+    y += flightsBoxH + 22;
+
+    // 6. Trip Metrics 2-Column Grid
+    if (metricCards.length > 0) {
+      const mGap = 14;
+      const mW = (innerW - mGap) / 2;
+      const mH = 96;
+      const toneStyles = {
+        pine: { bg: '#ECFDF5', border: '#A7F3D0', label: '#0D7A5F' },
+        azure: { bg: '#EFF6FF', border: '#BFDBFE', label: '#0B3B8C' },
+        brass: { bg: '#FFFBEB', border: '#FDE68A', label: '#B45309' },
+        neutral: { bg: '#F8FAFC', border: '#CBD5E1', label: '#475569' }
+      };
+      metricCards.forEach((mc, idx) => {
+        const rowIdx = Math.floor(idx / 2);
+        const isFirstInRow = idx % 2 === 0;
+        const isLastAlone = idx === metricCards.length - 1 && isFirstInRow;
+        const tileW = isLastAlone ? innerW : mW;
+        const tileX = isLastAlone
+          ? cardX + pad
+          : isHe
+            ? (isFirstInRow ? cardX + pad + mW + mGap : cardX + pad)
+            : (isFirstInRow ? cardX + pad : cardX + pad + mW + mGap);
+        const tileY = y + rowIdx * (mH + mGap);
+        const ts = toneStyles[mc.tone] || toneStyles.neutral;
+
+        drawRoundedRect(tileX, tileY, tileW, mH, 14);
+        ctx.fillStyle = ts.bg;
+        ctx.fill();
+        ctx.strokeStyle = ts.border;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        const tx = isHe ? tileX + tileW - 18 : tileX + 18;
+        setAlignedText(true);
+        ctx.fillStyle = ts.label;
+        ctx.font = `700 17px ${fontFamily}`;
+        ctx.fillText(`${mc.icon} ${mc.label}`, tx, tileY + 14);
+
+        const valLines = wrapTextLines(ctx, mc.value, tileW - 36, `700 19px ${fontFamily}`);
+        ctx.fillStyle = '#0B1F3A';
+        ctx.font = `700 19px ${fontFamily}`;
+        valLines.slice(0, 2).forEach((ln, li) => {
+          ctx.fillText(ln, tx, tileY + 44 + li * 24);
+        });
+      });
+      y += metricsSectionH;
+    }
+
+    // 7. Perforated Boarding-Pass Tear Line + Semicircular Notches
+    const tearY = y + tearLineH / 2;
+    ctx.save();
+    ctx.setLineDash([10, 8]);
+    ctx.strokeStyle = '#CBD5E1';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cardX + 24, tearY);
+    ctx.lineTo(cardX + cardW - 24, tearY);
+    ctx.stroke();
+    ctx.restore();
+
+    // Side ticket notches
+    for (const notchX of [cardX, cardX + cardW]) {
+      ctx.beginPath();
+      ctx.arc(notchX, tearY, 16, 0, Math.PI * 2);
+      ctx.fillStyle = '#EEF3F8';
+      ctx.fill();
+      ctx.strokeStyle = '#CBD5E1';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    y += tearLineH;
+
+    // 8. 3-Step EL AL Booking Guide Card
+    drawRoundedRect(cardX + pad, y, innerW, guideBoxH, 16);
+    ctx.fillStyle = '#EFF6FF';
+    ctx.fill();
+    ctx.strokeStyle = '#BFDBFE';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    const gBarX = isHe ? cardX + pad + innerW - 6 : cardX + pad;
+    ctx.fillStyle = '#0B3B8C';
+    ctx.fillRect(gBarX, y + 10, 6, guideBoxH - 20);
+
+    const gTextX = isHe ? startX - 20 : startX + 20;
+    setAlignedText(true);
+    ctx.fillStyle = '#0B3B8C';
+    ctx.font = `800 20px ${fontFamily}`;
+    ctx.fillText(
+      isHe ? 'ℹ️ מדריך הזמנה באל על — לפני שממשיכים' : 'ℹ️ EL AL Booking Guide — Before You Book',
+      gTextX,
+      y + 18
+    );
+
+    let gy = y + 52;
+    ctx.fillStyle = '#1E293B';
+    ctx.font = guideBodyFont;
+    wrappedGuideSteps.forEach((stepLines) => {
+      stepLines.forEach((ln) => {
+        ctx.fillText(ln, gTextX, gy);
+        gy += 26;
+      });
+      gy += 10;
+    });
+    y += guideBoxH;
+
+    // 9. Clickable Navy Booking CTA Button (linked in PDF /Annot)
+    let ctaRect = null;
+    if (plan.booking_url) {
+      y += 18;
+      const ctaH = 66;
+      ctaRect = { x: cardX + pad, y, w: innerW, h: ctaH };
+      const ctaGrad = ctx.createLinearGradient(ctaRect.x, ctaRect.y, ctaRect.x, ctaRect.y + ctaH);
+      ctaGrad.addColorStop(0, '#1347A6');
+      ctaGrad.addColorStop(1, '#0B3B8C');
+      drawRoundedRect(ctaRect.x, ctaRect.y, ctaRect.w, ctaH, 16);
+      ctx.fillStyle = ctaGrad;
+      ctx.fill();
+
+      ctx.direction = isHe ? 'rtl' : 'ltr';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = `800 22px ${fontFamily}`;
+      ctx.fillText(
+        isHe
+          ? '✈️ לחצו כאן לבדיקת זמינות והזמנת טיסת אל על ↗'
+          : '✈️ Click here to check availability & book EL AL flight ↗',
+        ctaRect.x + ctaRect.w / 2,
+        ctaRect.y + ctaH / 2
+      );
+      y += ctaBoxH;
+    }
+
+    // 10. Branded Footer
+    y += 20;
+    const footerY = outerPad + cardH - footerH;
+    drawBottomRoundedRect(cardX, footerY, cardW, footerH, 26);
+    ctx.fillStyle = '#F8FAFC';
+    ctx.fill();
+    ctx.strokeStyle = '#E2E8F0';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cardX, footerY);
+    ctx.lineTo(cardX + cardW, footerY);
+    ctx.stroke();
+
+    ctx.direction = isHe ? 'rtl' : 'ltr';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#64748B';
+    ctx.font = `600 16px ${fontFamily}`;
+    ctx.fillText(
+      isHe
+        ? 'תוכנן באמצעות breezyflights.com  ·  אפליקציית תכנון חופשות עצמאית שאינה שייכת לאל על'
+        : 'Planned with breezyflights.com  ·  Independent vacation planner not affiliated with EL AL',
+      W / 2,
+      footerY + footerH / 2
+    );
+
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.94);
+    const b64 = dataUrl.split(',')[1] || '';
+    const binStr = atob(b64);
+    const jpegBytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i += 1) {
+      jpegBytes[i] = binStr.charCodeAt(i);
+    }
+
+    const pdfBytes = buildSinglePagePdfBytes(jpegBytes, W, H, ctaRect, plan.booking_url);
+    const safeDest = String(plan.destination_iata || 'TRIP').replace(/[^A-Z0-9_-]/gi, '');
+    const safeDep = String(plan.departure_date || 'plan').replace(/[^0-9-]/g, '');
+    const filename = `breezyflights_${safeDest}_${safeDep}.pdf`;
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    let file = null;
+    try {
+      file = new File([blob], filename, { type: 'application/pdf' });
+    } catch (_fileErr) {
+      file = null;
+    }
+    if (typeof window !== 'undefined') {
+      window.__fvpLastSharePdfMeta = {
+        filename,
+        size: pdfBytes.length,
+        header: String.fromCharCode(...pdfBytes.slice(0, 8)),
+        width: W,
+        height: H
+      };
+      window.__fvpLastSharePdfBytes = pdfBytes;
+    }
+    return { file, blob, filename, pdfBytes };
+  }
+
+  function triggerPdfDownload(blob, filename) {
+    if (!blob || typeof document === 'undefined' || typeof URL === 'undefined') return;
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(objUrl);
+      } catch (_ignore) {
+        // Ignore revoke errors
+      }
+    }, 4000);
+  }
+
+  async function handleShareWhatsAppPdf() {
+    if (!state.sharePlanProposal || state.sharePlanPdfBusy) return;
+    const isHe = state.locale === 'he';
+    const noteEl = document.getElementById('input-share-email-note');
+    const noteVal = noteEl ? String(noteEl.value || '').trim() : state.sharePlanNoteValue;
+    state.sharePlanNoteValue = noteVal;
+    state.sharePlanPdfBusy = true;
+    state.sharePlanPdfNoticeHe = '';
+    state.sharePlanPdfNoticeEn = '';
+    renderSharePlanModalContent();
+
+    try {
+      const plan = buildSharePlanPayload(state.sharePlanProposal);
+      const pdfArt = generateVacationPlanPdfArtifact(plan, noteVal, isHe);
+      const caption = buildWhatsAppCaption(plan, noteVal, isHe);
+      const canNativeFileShare =
+        Boolean(pdfArt.file) &&
+        typeof navigator !== 'undefined' &&
+        typeof navigator.canShare === 'function' &&
+        typeof navigator.share === 'function' &&
+        navigator.canShare({ files: [pdfArt.file] });
+
+      if (canNativeFileShare) {
+        try {
+          await navigator.share({
+            files: [pdfArt.file],
+            title: isHe ? `תוכנית חופשה ב${plan.destination_name}` : `Vacation Plan to ${plan.destination_name}`,
+            text: caption
+          });
+          state.sharePlanPdfNoticeHe = '✓ קובץ ה-PDF שותף בהצלחה!';
+          state.sharePlanPdfNoticeEn = '✓ Branded PDF shared successfully!';
+          return;
+        } catch (shareErr) {
+          if (shareErr && shareErr.name === 'AbortError') {
+            return;
+          }
+          // Fall through to download + WhatsApp Web handoff
+        }
+      }
+
+      // Desktop / fallback: download branded PDF & open WhatsApp with short intro caption
+      triggerPdfDownload(pdfArt.blob, pdfArt.filename);
+      const waUrl = `https://wa.me/?text=${encodeURIComponent(caption)}`;
+      if (typeof window !== 'undefined' && typeof window.open === 'function') {
+        window.open(waUrl, '_blank', 'noopener,noreferrer');
+      }
+      state.sharePlanPdfNoticeHe = `✓ קובץ ה-PDF המעוצב הורד (${pdfArt.filename}) — גררו או צרפו אותו לצ׳אט בוואטסאפ!`;
+      state.sharePlanPdfNoticeEn = `✓ Branded PDF downloaded (${pdfArt.filename}) — attach or drag it into your WhatsApp chat!`;
+    } finally {
+      state.sharePlanPdfBusy = false;
+      if (state.isSharePlanOpen) {
+        renderSharePlanModalContent();
+      }
+    }
+  }
+
+  function handleDownloadSharePdf() {
+    if (!state.sharePlanProposal || state.sharePlanPdfBusy) return;
+    const isHe = state.locale === 'he';
+    const noteEl = document.getElementById('input-share-email-note');
+    const noteVal = noteEl ? String(noteEl.value || '').trim() : state.sharePlanNoteValue;
+    state.sharePlanNoteValue = noteVal;
+    const plan = buildSharePlanPayload(state.sharePlanProposal);
+    const pdfArt = generateVacationPlanPdfArtifact(plan, noteVal, isHe);
+    triggerPdfDownload(pdfArt.blob, pdfArt.filename);
+    state.sharePlanPdfNoticeHe = `✓ קובץ ה-PDF הורד (${pdfArt.filename})`;
+    state.sharePlanPdfNoticeEn = `✓ PDF downloaded (${pdfArt.filename})`;
+    renderSharePlanModalContent();
   }
 
   function renderSharePlanModalContent() {
@@ -4282,7 +4974,10 @@
     const userEmail = String(state.auth.user.email || '');
     const recipientVal = state.sharePlanRecipientValue || userEmail;
     const noteVal = state.sharePlanNoteValue || '';
-    const waUrl = buildWhatsAppShareUrl(plan, noteVal, isHe);
+    const pdfNoticeText = isHe ? state.sharePlanPdfNoticeHe : state.sharePlanPdfNoticeEn;
+    const pdfNoticeHtml = pdfNoticeText
+      ? `<div class="share-pdf-notice" id="share-pdf-notice" role="status">${escapeHtml(pdfNoticeText)}</div>`
+      : '';
     const statusText = isHe ? state.sharePlanStatusHe : state.sharePlanStatusEn;
     let statusHtml = '';
     if (statusText) {
@@ -4305,22 +5000,31 @@
       </span>
       ${summaryHtml}
       <div class="share-quick-channels">
-        <a
+        <button
+          type="button"
           class="btn-share-whatsapp"
           id="btn-share-whatsapp"
-          href="${escapeHtml(waUrl)}"
-          target="_blank"
-          rel="noopener noreferrer"
+          ${state.sharePlanPdfBusy ? 'disabled' : ''}
         >
           <span aria-hidden="true">💬</span>
-          <span>${isHe ? 'שתף בוואטסאפ' : 'Share on WhatsApp'}</span>
-        </a>
-        <button type="button" class="btn-share-copy" id="btn-share-copy">
-          <span aria-hidden="true">${state.sharePlanCopyDone ? '✓' : '📋'}</span>
-          <span>${state.sharePlanCopyDone ? (isHe ? 'הועתק!' : 'Copied!') : (isHe ? 'העתק תוכנית' : 'Copy plan')}</span>
+          <span>${
+            state.sharePlanPdfBusy
+              ? (isHe ? 'יוצר PDF...' : 'Creating PDF...')
+              : (isHe ? 'שתף PDF בוואטסאפ' : 'Share PDF on WhatsApp')
+          }</span>
+        </button>
+        <button
+          type="button"
+          class="btn-share-copy"
+          id="btn-share-download-pdf"
+          ${state.sharePlanPdfBusy ? 'disabled' : ''}
+        >
+          <span aria-hidden="true">📄</span>
+          <span>${isHe ? 'הורד PDF מעוצב' : 'Download PDF'}</span>
         </button>
       </div>
-      <div class="share-email-divider">${isHe ? 'או שלח אוטומטית במייל' : 'Or email automatically'}</div>
+      ${pdfNoticeHtml}
+      <div class="share-email-divider">${isHe ? 'או שלח אוטומטית במייל (כולל מדריך הזמנה)' : 'Or email automatically (includes booking guide)'}</div>
       <form class="share-email-form" id="share-email-form" novalidate>
         <div class="share-email-field">
           <label for="input-share-email-to">${isHe ? 'נמענים במייל (עד 3 כתובות):' : 'Email recipients (up to 3):'}</label>
@@ -4396,6 +5100,9 @@
     state.sharePlanStatusHe = '';
     state.sharePlanStatusEn = '';
     state.sharePlanFallbackGmailUrl = '';
+    state.sharePlanPdfBusy = false;
+    state.sharePlanPdfNoticeHe = '';
+    state.sharePlanPdfNoticeEn = '';
     state.sharePlanCopyDone = false;
     state.sharePlanNoteValue = '';
     state.sharePlanRecipientValue =
@@ -6981,26 +7688,12 @@
           startGoogleSignIn();
           return;
         }
-        if (t.closest('#btn-share-copy') && state.sharePlanProposal) {
-          const isHe = state.locale === 'he';
-          const plan = buildSharePlanPayload(state.sharePlanProposal);
-          const noteEl = document.getElementById('input-share-email-note');
-          const noteVal = noteEl ? String(noteEl.value || '').trim() : state.sharePlanNoteValue;
-          const plainText = buildSharePlainText(plan, noteVal, isHe);
-          try {
-            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-              await navigator.clipboard.writeText(plainText);
-            }
-          } catch (_clipErr) {
-            // Ignore clipboard permission errors in restricted contexts
-          }
-          state.sharePlanCopyDone = true;
-          renderSharePlanModalContent();
-          setTimeout(() => {
-            if (!state.isSharePlanOpen) return;
-            state.sharePlanCopyDone = false;
-            renderSharePlanModalContent();
-          }, 2200);
+        if (t.closest('#btn-share-whatsapp') && state.sharePlanProposal) {
+          await handleShareWhatsAppPdf();
+          return;
+        }
+        if (t.closest('#btn-share-download-pdf') && state.sharePlanProposal) {
+          handleDownloadSharePdf();
           return;
         }
       });
@@ -7010,13 +7703,8 @@
         if (!t) return;
         if (t.id === 'input-share-email-to') {
           state.sharePlanRecipientValue = String(t.value || '');
-        } else if (t.id === 'input-share-email-note' && state.sharePlanProposal) {
+        } else if (t.id === 'input-share-email-note') {
           state.sharePlanNoteValue = String(t.value || '');
-          const waBtn = document.getElementById('btn-share-whatsapp');
-          if (waBtn) {
-            const plan = buildSharePlanPayload(state.sharePlanProposal);
-            waBtn.setAttribute('href', buildWhatsAppShareUrl(plan, state.sharePlanNoteValue, state.locale === 'he'));
-          }
         }
       });
 
