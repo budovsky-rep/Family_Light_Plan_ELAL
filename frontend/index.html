@@ -583,7 +583,6 @@
             <h2 id="zone-profile-title">פרופיל משפחה, גילאי ילדים ויתרת מתמיד</h2>
           </div>
           <div class="zone-actions-row">
-            <button type="button" class="btn-secondary btn-compact-action" id="btn-save-profile" hidden style="display: none;" data-he="💾 שמור ועדכן" data-en="💾 Save &amp; Refresh">💾 שמור ועדכן</button>
             <button type="button" class="btn-secondary btn-compact-action profile-sheet-close-btn" id="btn-close-profile-sheet" aria-label="סגור" data-he="✕ סגור" data-en="✕ Close">✕ סגור</button>
           </div>
         </div>
@@ -751,6 +750,35 @@
         >אל תציג לי שוב את ההסבר במכשיר זה</span>
       </label>
     </footer>
+  </section>
+
+  <!-- Share Vacation Plan Modal (Desktop >=768px) / Bottom Sheet (Mobile <768px) -->
+  <div class="share-plan-backdrop" id="share-plan-backdrop" hidden style="display: none;"></div>
+  <section
+    class="share-plan-modal"
+    id="share-plan-modal"
+    aria-labelledby="share-plan-title"
+    data-aria-he="שיתוף תוכנית חופשה במייל או בוואטסאפ"
+    data-aria-en="Share vacation plan via Email or WhatsApp"
+    hidden
+    style="display: none;"
+  >
+    <div class="share-plan-sheet-handle" aria-hidden="true"></div>
+    <header class="share-plan-header">
+      <div class="share-plan-title-wrap">
+        <span class="share-plan-eyebrow" id="share-plan-eyebrow" data-he="שיתוף תוכנית חופשה" data-en="Share Vacation Plan">שיתוף תוכנית חופשה</span>
+        <h2 class="share-plan-title" id="share-plan-title" data-he="שיתוף במייל או בוואטסאפ" data-en="Share via Email or WhatsApp">שיתוף במייל או בוואטסאפ</h2>
+      </div>
+      <button
+        type="button"
+        class="share-plan-close"
+        id="btn-close-share-plan"
+        aria-label="סגירת חלון השיתוף"
+        data-aria-he="סגירת חלון השיתוף"
+        data-aria-en="Close share dialog"
+      >✕</button>
+    </header>
+    <div class="share-plan-body" id="share-plan-body"></div>
   </section>
 
   <!-- Thumb-Ergonomic Mobile Bottom Navigation Dock (Hidden on Desktop `>=1024px`) -->

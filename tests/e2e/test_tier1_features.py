@@ -4877,7 +4877,6 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "btn-open-profile-sheet",
             "profile-save-error",
             "profile-save-feedback",
-            "btn-save-profile",
             "btn-close-profile-sheet",
             "btn-apply-profile-sheet",
             "profile-sheet-backdrop",
@@ -4885,6 +4884,7 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         ):
             self.assertIn(req_id, by_id, f"Missing #{req_id}")
             self.assertEqual(html.count(f'id="{req_id}"'), 1)
+        self.assertNotIn("btn-save-profile", by_id)
 
         # 3. Auth lives EXCLUSIVELY inside `#app-header` -> `#header-auth-wrap` (never inside `#zone-profile` or `.sidebar-column`)
         for auth_child in (
@@ -4915,8 +4915,8 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
         self.assertEqual(edit_btn["attrs"].get("data-aria-en"), "Edit travelers")
         self.assertEqual(edit_btn["attrs"].get("aria-label"), edit_btn["attrs"].get("data-aria-he"))
 
-        # 5. Travelers editor (`#zone-profile`) keeps save button & save error/feedback inside `#zone-profile`
-        for prof_child in ("btn-save-profile", "profile-save-error", "profile-save-feedback"):
+        # 5. Travelers editor (`#zone-profile`) keeps unified apply/save CTA & save error/feedback inside `#zone-profile`
+        for prof_child in ("btn-apply-profile-sheet", "profile-save-error", "profile-save-feedback"):
             self.assertTrue(inside(by_id[prof_child], "zone-profile"), prof_child)
             self.assertFalse(inside(by_id[prof_child], "profile-auth-card"), prof_child)
         self.assertEqual(by_id["profile-save-error"]["attrs"].get("role"), "alert")

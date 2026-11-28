@@ -1079,6 +1079,16 @@
     isAuthPopoverOpen: false,
     isBookingHandoffOpen: false,
     bookingHandoffProposal: null,
+    isSharePlanOpen: false,
+    sharePlanProposal: null,
+    sharePlanEmailSending: false,
+    sharePlanStatusType: null,
+    sharePlanStatusHe: '',
+    sharePlanStatusEn: '',
+    sharePlanFallbackGmailUrl: '',
+    sharePlanRecipientValue: '',
+    sharePlanNoteValue: '',
+    sharePlanCopyDone: false,
     visibleRenderableProposals: [],
     lastActiveMobileZone: 'zone-search',
     isDestPickerOpen: false,
@@ -1089,6 +1099,7 @@
       authenticated: false,
       isAdmin: false,
       oauthConfigured: false,
+      emailShareConfigured: false,
       testMode: false,
       csrfToken: null,
       user: null
@@ -1175,6 +1186,8 @@
   ];
   let bookingHandoffOpenerEl = null;
   let bookingHandoffScrollbarPx = 0;
+  let sharePlanOpenerEl = null;
+  let sharePlanScrollbarPx = 0;
 
   function isBookingHandoffSuppressed() {
     try {
@@ -1203,7 +1216,12 @@
   function syncBodyScrollLock() {
     document.body.classList.toggle(
       'is-sheet-locked',
-      Boolean(state.isCalendarVisible || state.isProfileSheetOpen || state.isBookingHandoffOpen)
+      Boolean(
+        state.isCalendarVisible ||
+          state.isProfileSheetOpen ||
+          state.isBookingHandoffOpen ||
+          state.isSharePlanOpen
+      )
     );
   }
 
@@ -1228,6 +1246,9 @@
     if (willOpen && !wasOpen) {
       if (state.isBookingHandoffOpen) {
         closeBookingHandoffModal({ restoreFocus: false });
+      }
+      if (state.isSharePlanOpen) {
+        closeSharePlanModal({ restoreFocus: false });
       }
       if (state.isProfileSheetOpen) {
         setProfileSheetOpen(false, { restoreFocus: false });
@@ -1279,7 +1300,11 @@
       if (!el) return;
       if (willOpen) {
         el.setAttribute('inert', '');
-      } else if (state.profileSheetView !== 'travelers' && !state.isBookingHandoffOpen) {
+      } else if (
+        state.profileSheetView !== 'travelers' &&
+        !state.isBookingHandoffOpen &&
+        !state.isSharePlanOpen
+      ) {
         el.removeAttribute('inert');
       }
     });
@@ -1397,6 +1422,9 @@
     if (willOpen && state.isBookingHandoffOpen) {
       closeBookingHandoffModal({ restoreFocus: false });
     }
+    if (willOpen && state.isSharePlanOpen) {
+      closeSharePlanModal({ restoreFocus: false });
+    }
     if (willOpen && state.isProfileSheetOpen) {
       setProfileSheetOpen(false, { restoreFocus: false });
     }
@@ -1490,7 +1518,7 @@
   // A sheet opened below 1180px must not survive at desktop width, and a desktop modal window must not survive below it
   function closeProfileSheetOnBreakpointCross() {
     if (typeof window === 'undefined') return;
-    if ((state.isCalendarVisible || state.isBookingHandoffOpen) && !state.isProfileSheetOpen) return;
+    if ((state.isCalendarVisible || state.isBookingHandoffOpen || state.isSharePlanOpen) && !state.isProfileSheetOpen) return;
     if (!state.isProfileSheetOpen && !document.body.classList.contains('is-sheet-locked')) return;
     const isSheetViewport = window.innerWidth < 1180;
     const openedAsDesktopView = state.profileSheetView !== null;
@@ -1504,6 +1532,9 @@
     const willOpen = Boolean(open);
     if (willOpen && state.isBookingHandoffOpen) {
       closeBookingHandoffModal({ restoreFocus: false });
+    }
+    if (willOpen && state.isSharePlanOpen) {
+      closeSharePlanModal({ restoreFocus: false });
     }
     if (willOpen && state.isAuthPopoverOpen) {
       setAuthPopoverOpen(false, { restoreFocus: false });
@@ -3145,24 +3176,29 @@
       }
     });
 
-    const btnSaveProfile = document.getElementById('btn-save-profile');
-    if (btnSaveProfile) {
-      if (isAuthed) {
-        const heSave = '💾 שמור ועדכן';
-        const enSave = '💾 Save & Refresh';
-        btnSaveProfile.setAttribute('data-he', heSave);
-        btnSaveProfile.setAttribute('data-en', enSave);
-        btnSaveProfile.textContent = isHe ? heSave : enSave;
-        btnSaveProfile.removeAttribute('hidden');
-        btnSaveProfile.style.display = 'inline-flex';
-      } else {
-        btnSaveProfile.setAttribute('hidden', '');
-        btnSaveProfile.style.display = 'none';
-      }
-    }
-
     renderProfileSaveError();
     renderAdminBonusSync();
+    syncApplyProfileButtonLabel();
+  }
+
+  function syncApplyProfileButtonLabel() {
+    const btnApplyProfile = document.getElementById('btn-apply-profile-sheet');
+    if (!btnApplyProfile) return;
+    const isHe = state.locale === 'he';
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const isAuthed = Boolean(state.auth && state.auth.authenticated);
+    let heLbl;
+    let enLbl;
+    if (isAuthed) {
+      heLbl = isWp ? '✓ שמור ועדכן הרכב נוסעים' : '✓ שמור ועדכן הרכב משפחה';
+      enLbl = isWp ? '✓ Save & Apply Travelers' : '✓ Save & Apply Family';
+    } else {
+      heLbl = isWp ? '✓ עדכן הרכב נוסעים והצג חופשות' : '✓ עדכן הרכב משפחה והצג חופשות';
+      enLbl = isWp ? '✓ Apply Travelers & Show Vacations' : '✓ Apply Family & Show Vacations';
+    }
+    btnApplyProfile.setAttribute('data-he', heLbl);
+    btnApplyProfile.setAttribute('data-en', enLbl);
+    btnApplyProfile.textContent = isHe ? heLbl : enLbl;
   }
 
   function renderProfileControls() {
@@ -3868,6 +3904,9 @@
   function openBookingHandoffModal(proposal, opts) {
     if (!proposal) return;
     const options = opts || {};
+    if (state.isSharePlanOpen) {
+      closeSharePlanModal({ restoreFocus: false });
+    }
     if (state.isCalendarVisible) {
       setCalendarVisibility(false, { restoreFocus: false });
     }
@@ -3966,12 +4005,12 @@
     BOOKING_HANDOFF_INERT_SELECTORS.forEach((sel) => {
       const el = document.querySelector(sel);
       if (!el) return;
-      if (state.profileSheetView !== 'travelers' && !state.isCalendarVisible) {
+      if (state.profileSheetView !== 'travelers' && !state.isCalendarVisible && !state.isSharePlanOpen) {
         el.removeAttribute('inert');
       }
     });
 
-    if (bookingHandoffScrollbarPx > 0 && state.profileSheetView !== 'travelers') {
+    if (bookingHandoffScrollbarPx > 0 && state.profileSheetView !== 'travelers' && !state.isSharePlanOpen) {
       document.body.style.removeProperty('padding-inline-start');
       document.body.style.removeProperty('padding-inline-end');
     }
@@ -3988,6 +4027,556 @@
       }
     }
     bookingHandoffOpenerEl = null;
+  }
+
+  function buildSharePlanPayload(proposal) {
+    const p = proposal || {};
+    const it = p.itinerary || {};
+    const isHe = state.locale === 'he';
+    const destName = isHe
+      ? (it.destination_city_he || it.destination_city_en || it.destination_iata || '')
+      : (it.destination_city_en || it.destination_city || it.destination_iata || '');
+    const originIata = String(it.origin_iata || 'TLV').toUpperCase();
+    const destIata = String(it.destination_iata || '').toUpperCase();
+    const outLeg = Array.isArray(it.outbound_legs) && it.outbound_legs[0] ? it.outbound_legs[0] : {};
+    const inLeg = Array.isArray(it.inbound_legs) && it.inbound_legs[0] ? it.inbound_legs[0] : {};
+    const fmtLeg = (leg, seats, isTwoPlus) => {
+      const fn = String(leg.flight_number || '').trim();
+      const depT = String(leg.departure_time_local || '').trim();
+      const arrT = String(leg.arrival_time_local || '').trim();
+      const times = depT && arrT ? `${depT}–${arrT}` : '';
+      const seatsNum = Number(seats || 0);
+      let seatsTxt = '';
+      if (seatsNum >= 1) {
+        const sLabel = isTwoPlus && seatsNum >= 2 ? '2+' : String(seatsNum);
+        seatsTxt = isHe ? `${sLabel} מושבי בונוס` : `${sLabel} bonus seats`;
+      } else {
+        seatsTxt = isHe ? 'כרטיס מסחרי' : 'Commercial fare';
+      }
+      return [fn && fn !== 'LY_CASH' ? fn : '', times, seatsTxt].filter(Boolean).join(' · ');
+    };
+    const dirInfo = resolveBonusDirectionInfo(it);
+    const bonusSummary =
+      dirInfo.coverage === 'BOTH_DIRECTIONS'
+        ? (isHe ? 'בונוס בשני הכיוונים' : 'Bonus seats in both directions')
+        : dirInfo.coverage === 'OUTBOUND_ONLY'
+          ? (isHe ? 'בונוס בהלוך בלבד' : 'Bonus outbound only')
+          : dirInfo.coverage === 'INBOUND_ONLY'
+            ? (isHe ? 'בונוס בחזור בלבד' : 'Bonus return only')
+            : (isHe ? 'טיסות אל על מסחריות' : 'EL AL commercial flights');
+
+    const minPtsNum = Number(it.min_points_per_single_award_ticket || 0);
+    const minPtsScope = String(it.min_points_per_single_award_ticket_scope || 'round_trip');
+    let minPointsText = '';
+    if (minPtsNum > 0) {
+      const fmtPts = minPtsNum.toLocaleString('en-US');
+      if (minPtsScope === 'round_trip') {
+        minPointsText = isHe
+          ? `החל מ-${fmtPts} נק׳ לכרטיס בונוס אחד (הלוך ושוב)`
+          : `From ${fmtPts} pts per bonus ticket (round trip)`;
+      } else {
+        minPointsText = isHe
+          ? `החל מ-${fmtPts} נק׳ לכרטיס בונוס אחד (כיוון אחד)`
+          : `From ${fmtPts} pts per bonus ticket (one way)`;
+      }
+    }
+
+    const activeProf = state.lastSearchProfile || state.profile;
+    const isWpCard = isWorkplaceModeProfile(activeProf);
+    const adultsCnt = Math.max(1, Number((activeProf && activeProf.adults_count) || 2));
+    const kidsCnt = Array.isArray(activeProf && activeProf.children) ? activeProf.children.length : 0;
+    const partySummary = isHe
+      ? `${adultsCnt} מבוגרים${kidsCnt > 0 ? ` · ${kidsCnt} ילדים` : ' · ללא ילדים'}`
+      : `${adultsCnt} Adults${kidsCnt > 0 ? ` · ${kidsCnt} Kids` : ' · No kids'}`;
+
+    const wdCost =
+      p.workplace_vacation_days_cost !== undefined && p.workplace_vacation_days_cost !== null
+        ? Number(p.workplace_vacation_days_cost)
+        : null;
+    const wdSaved =
+      p.workdays_saved_count !== undefined && p.workdays_saved_count !== null
+        ? Number(p.workdays_saved_count)
+        : null;
+    const wdRatio =
+      p.workday_efficiency_ratio !== undefined && p.workday_efficiency_ratio !== null
+        ? Number(p.workday_efficiency_ratio)
+        : null;
+    let workdaysSummary = '';
+    if (wdCost !== null && !Number.isNaN(wdCost)) {
+      const costStr = Number.isInteger(wdCost) ? String(wdCost) : wdCost.toFixed(1).replace(/\.0$/, '');
+      if (isWpCard && wdRatio !== null && wdSaved !== null) {
+        const savedStr = Number.isInteger(wdSaved) ? String(wdSaved) : wdSaved.toFixed(1).replace(/\.0$/, '');
+        workdaysSummary = isHe
+          ? `${costStr} ימי חופש מהעבודה (נחסכו ${savedStr} ימים · יחס ×${wdRatio.toFixed(1)})`
+          : `${costStr} workdays off (${savedStr} saved · ×${wdRatio.toFixed(1)} leverage)`;
+      } else {
+        workdaysSummary = isHe ? `${costStr} ימי חופש מהעבודה` : `${costStr} workdays off`;
+      }
+    }
+
+    let schoolFitSummary = '';
+    if (!isWpCard && p.vacation_window && p.vacation_window.holiday_alignment_score !== undefined) {
+      const hasScore = Number(p.vacation_window.holiday_alignment_score || 0).toFixed(1);
+      const missed = Number(p.vacation_window.total_school_days_missed_across_children || 0);
+      schoolFitSummary = isHe
+        ? `${hasScore}/100 (${missed} חיסורים)`
+        : `${hasScore}/100 (${missed} missed days)`;
+    }
+
+    const wm = p.weather_metrics || {};
+    let climateSummary = '';
+    if (wm.avg_high_c !== undefined && wm.avg_low_c !== undefined) {
+      const hi = Math.round(Number(wm.avg_high_c));
+      const lo = Math.round(Number(wm.avg_low_c));
+      const wScore = wm.overall_weather_suitability_score !== undefined ? Math.round(Number(wm.overall_weather_suitability_score)) : null;
+      climateSummary = isHe
+        ? `${hi}°/${lo}°C${wScore !== null ? ` · אקלים ${wScore}/100` : ''}`
+        : `${hi}°/${lo}°C${wScore !== null ? ` · Climate ${wScore}/100` : ''}`;
+    }
+
+    const mergedRaw =
+      isWpCard && Array.isArray(p.merged_holidays) && p.merged_holidays.length > 0
+        ? p.merged_holidays
+        : (isWpCard && it.departure_date && it.return_date
+            ? detectMergedWorkplaceHolidaysClient(it.departure_date, it.return_date)
+            : []);
+    const mergedHolidaysText = mergedRaw
+      .map((m) => (isHe ? (m.short_name_he || m.name_he) : (m.short_name_en || m.name_en)))
+      .filter(Boolean)
+      .join(' + ');
+
+    const bookingUrl = resolveElAlBookingUrl(it) || '';
+    const appUrl =
+      typeof window !== 'undefined' &&
+      window.location &&
+      /^https?:\/\//i.test(String(window.location.origin || ''))
+        ? window.location.origin
+        : 'https://breezyflights.com';
+
+    return {
+      destination_name: destName,
+      origin_iata: originIata,
+      destination_iata: destIata,
+      departure_date: String(it.departure_date || ''),
+      return_date: String(it.return_date || ''),
+      trip_nights: Number(it.trip_nights || 1),
+      outbound_flight: fmtLeg(outLeg, it.outbound_bonus_seats, it.outbound_bonus_seats_is_two_plus),
+      return_flight: fmtLeg(inLeg, it.inbound_bonus_seats, it.inbound_bonus_seats_is_two_plus),
+      bonus_summary: bonusSummary,
+      min_points_text: minPointsText,
+      workdays_summary: workdaysSummary,
+      school_fit_summary: schoolFitSummary,
+      climate_summary: climateSummary,
+      merged_holidays_text: mergedHolidaysText,
+      party_summary: partySummary,
+      booking_url: bookingUrl,
+      app_url: appUrl
+    };
+  }
+
+  function buildSharePlainText(plan, personalNote, isHe) {
+    const note = String(personalNote || '').trim();
+    const lines = [];
+    if (isHe) {
+      lines.push(`✈️ תוכנית חופשה ב${plan.destination_name} (${plan.origin_iata} ⇄ ${plan.destination_iata})`);
+      lines.push(`📅 ${plan.departure_date} עד ${plan.return_date} (${plan.trip_nights} לילות)`);
+      if (note) lines.push(`💬 ${note}`);
+      if (plan.party_summary) lines.push(`👥 ${plan.party_summary}`);
+      if (plan.merged_holidays_text) lines.push(`🌉 חגים בחלון: ${plan.merged_holidays_text}`);
+      if (plan.bonus_summary) lines.push(`🎫 ${plan.bonus_summary}${plan.min_points_text ? ` · ${plan.min_points_text}` : ''}`);
+      if (plan.outbound_flight) lines.push(`🛫 הלוך: ${plan.outbound_flight}`);
+      if (plan.return_flight) lines.push(`🛬 חזור: ${plan.return_flight}`);
+      if (plan.workdays_summary) lines.push(`💼 חופשת עבודה: ${plan.workdays_summary}`);
+      if (plan.school_fit_summary) lines.push(`🏫 התאמה לחופשת בי"ס: ${plan.school_fit_summary}`);
+      if (plan.climate_summary) lines.push(`☀️ אקלים: ${plan.climate_summary}`);
+      if (plan.booking_url) lines.push(`🔗 לבדיקה והזמנה באל על: ${plan.booking_url}`);
+      lines.push(`תוכנן ב-breezyflights (${plan.app_url})`);
+    } else {
+      lines.push(`✈️ Vacation Plan to ${plan.destination_name} (${plan.origin_iata} ⇄ ${plan.destination_iata})`);
+      lines.push(`📅 ${plan.departure_date} to ${plan.return_date} (${plan.trip_nights} nights)`);
+      if (note) lines.push(`💬 ${note}`);
+      if (plan.party_summary) lines.push(`👥 ${plan.party_summary}`);
+      if (plan.merged_holidays_text) lines.push(`🌉 Holidays: ${plan.merged_holidays_text}`);
+      if (plan.bonus_summary) lines.push(`🎫 ${plan.bonus_summary}${plan.min_points_text ? ` · ${plan.min_points_text}` : ''}`);
+      if (plan.outbound_flight) lines.push(`🛫 Outbound: ${plan.outbound_flight}`);
+      if (plan.return_flight) lines.push(`🛬 Return: ${plan.return_flight}`);
+      if (plan.workdays_summary) lines.push(`💼 Workdays Off: ${plan.workdays_summary}`);
+      if (plan.school_fit_summary) lines.push(`🏫 School Fit: ${plan.school_fit_summary}`);
+      if (plan.climate_summary) lines.push(`☀️ Climate: ${plan.climate_summary}`);
+      if (plan.booking_url) lines.push(`🔗 Check & book with EL AL: ${plan.booking_url}`);
+      lines.push(`Planned on breezyflights (${plan.app_url})`);
+    }
+    return lines.join('\n');
+  }
+
+  function buildWhatsAppShareUrl(plan, personalNote, isHe) {
+    const text = buildSharePlainText(plan, personalNote, isHe);
+    return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  }
+
+  function renderSharePlanModalContent() {
+    const bodyEl = document.getElementById('share-plan-body');
+    const eyebrowEl = document.getElementById('share-plan-eyebrow');
+    const titleEl = document.getElementById('share-plan-title');
+    const closeBtn = document.getElementById('btn-close-share-plan');
+    if (!bodyEl || !state.sharePlanProposal) return;
+
+    const isHe = state.locale === 'he';
+    const isAuthed = Boolean(state.auth && state.auth.authenticated && state.auth.user);
+    const plan = buildSharePlanPayload(state.sharePlanProposal);
+
+    if (eyebrowEl) {
+      eyebrowEl.textContent = isHe ? 'שיתוף תוכנית חופשה' : 'Share Vacation Plan';
+    }
+    if (titleEl) {
+      titleEl.textContent = isHe
+        ? `שתף את החופשה ב${plan.destination_name}`
+        : `Share your ${plan.destination_name} trip`;
+    }
+    if (closeBtn) {
+      closeBtn.setAttribute('aria-label', isHe ? 'סגירת חלון השיתוף' : 'Close share dialog');
+    }
+
+    const summaryChips = [];
+    if (plan.bonus_summary) summaryChips.push(`🎫 ${plan.bonus_summary}`);
+    if (plan.workdays_summary) summaryChips.push(`💼 ${plan.workdays_summary}`);
+    if (plan.school_fit_summary) summaryChips.push(`🏫 ${plan.school_fit_summary}`);
+    if (plan.merged_holidays_text) summaryChips.push(`🌉 ${plan.merged_holidays_text}`);
+    if (plan.climate_summary) summaryChips.push(`☀️ ${plan.climate_summary}`);
+
+    const summaryHtml = `
+      <div class="share-plan-summary-card">
+        <div class="share-plan-summary-head">
+          <span class="share-plan-dest-title">${escapeHtml(plan.destination_name)} · <span dir="ltr">${escapeHtml(plan.origin_iata)} ⇄ ${escapeHtml(plan.destination_iata)}</span></span>
+          <span class="share-plan-dates-pill"><span dir="ltr">${escapeHtml(plan.departure_date)} → ${escapeHtml(plan.return_date)}</span> · ${escapeHtml(plan.trip_nights)} ${isHe ? 'לילות' : 'nights'}</span>
+        </div>
+        <div class="share-plan-summary-meta">
+          ${summaryChips.map((chip) => `<span class="share-plan-meta-chip">${escapeHtml(chip)}</span>`).join('')}
+        </div>
+      </div>
+    `;
+
+    if (!isAuthed) {
+      bodyEl.innerHTML = `
+        ${summaryHtml}
+        <div class="share-plan-guest-gate" id="share-plan-guest-gate">
+          <p class="share-plan-guest-title">
+            ${isHe ? '🔒 שיתוף במייל ובוואטסאפ זמין למשתמשים מחוברים עם Google' : '🔒 Email & WhatsApp sharing is available for signed-in Google users'}
+          </p>
+          <p class="share-plan-guest-copy">
+            ${
+              isHe
+                ? 'התחברו בחשבון ה-Gmail שלכם כדי לשלוח את תוכנית החופשה המלאה אוטומטית במייל או לשתף אותה בוואטסאפ בלחיצה אחת. הנתונים שהזנתם יישמרו אוטומטית.'
+                : 'Sign in with your Gmail account to email this complete vacation plan automatically or share it to WhatsApp in one click. Your current inputs will be preserved.'
+            }
+          </p>
+          <button type="button" class="btn-share-google-signin" id="btn-share-google-signin">
+            <span aria-hidden="true">G</span>
+            <span>${isHe ? 'התחברות עם Google כדי לשתף' : 'Sign in with Google to share'}</span>
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    const userEmail = String(state.auth.user.email || '');
+    const recipientVal = state.sharePlanRecipientValue || userEmail;
+    const noteVal = state.sharePlanNoteValue || '';
+    const waUrl = buildWhatsAppShareUrl(plan, noteVal, isHe);
+    const statusText = isHe ? state.sharePlanStatusHe : state.sharePlanStatusEn;
+    let statusHtml = '';
+    if (statusText) {
+      const statusCls = state.sharePlanStatusType === 'success' ? 'is-success' : 'is-error';
+      const fallbackHtml = state.sharePlanFallbackGmailUrl
+        ? `<a class="share-gmail-fallback-link" id="link-share-gmail-fallback" href="${escapeHtml(state.sharePlanFallbackGmailUrl)}" target="_blank" rel="noopener noreferrer">✉️ ${isHe ? 'פתיחה ישירה ב-Gmail Compose' : 'Open directly in Gmail Compose'} ↗</a>`
+        : '';
+      statusHtml = `
+        <div class="share-email-status ${statusCls}" id="share-email-status" role="${state.sharePlanStatusType === 'success' ? 'status' : 'alert'}">
+          <span>${escapeHtml(statusText)}</span>
+          ${fallbackHtml}
+        </div>
+      `;
+    }
+
+    bodyEl.innerHTML = `
+      <span class="share-plan-sender-badge">
+        <span aria-hidden="true">✓</span>
+        <span>${isHe ? 'מחובר עם Google:' : 'Signed in with Google:'} <strong dir="ltr">${escapeHtml(userEmail)}</strong></span>
+      </span>
+      ${summaryHtml}
+      <div class="share-quick-channels">
+        <a
+          class="btn-share-whatsapp"
+          id="btn-share-whatsapp"
+          href="${escapeHtml(waUrl)}"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <span aria-hidden="true">💬</span>
+          <span>${isHe ? 'שתף בוואטסאפ' : 'Share on WhatsApp'}</span>
+        </a>
+        <button type="button" class="btn-share-copy" id="btn-share-copy">
+          <span aria-hidden="true">${state.sharePlanCopyDone ? '✓' : '📋'}</span>
+          <span>${state.sharePlanCopyDone ? (isHe ? 'הועתק!' : 'Copied!') : (isHe ? 'העתק תוכנית' : 'Copy plan')}</span>
+        </button>
+      </div>
+      <div class="share-email-divider">${isHe ? 'או שלח אוטומטית במייל' : 'Or email automatically'}</div>
+      <form class="share-email-form" id="share-email-form" novalidate>
+        <div class="share-email-field">
+          <label for="input-share-email-to">${isHe ? 'נמענים במייל (עד 3 כתובות):' : 'Email recipients (up to 3):'}</label>
+          <input
+            type="text"
+            id="input-share-email-to"
+            dir="ltr"
+            value="${escapeHtml(recipientVal)}"
+            placeholder="name@gmail.com"
+            autocomplete="email"
+          />
+          <span class="share-email-hint">
+            ${
+              isHe
+                ? 'ברירת מחדל: ה-Gmail שלך. אפשר להחליף או להוסיף כתובות (למשל של בן/בת זוג) מופרדות בפסיק.'
+                : 'Defaults to your Gmail address. You can replace it or add comma-separated emails.'
+            }
+          </span>
+        </div>
+        <div class="share-email-field">
+          <label for="input-share-email-note">${isHe ? 'הערה אישית (אופציונלי):' : 'Personal note (optional):'}</label>
+          <textarea
+            id="input-share-email-note"
+            maxlength="300"
+            placeholder="${isHe ? 'לדוגמה: מה דעתך על הטיול הזה?' : 'e.g., What do you think about this trip?'}"
+          >${escapeHtml(noteVal)}</textarea>
+        </div>
+        <button type="submit" class="btn-share-send-email" id="btn-share-send-email" ${state.sharePlanEmailSending ? 'disabled' : ''}>
+          <span aria-hidden="true">✉️</span>
+          <span>${
+            state.sharePlanEmailSending
+              ? (isHe ? 'שולח מייל...' : 'Sending email...')
+              : (isHe ? 'שלח תוכנית במייל' : 'Send Plan by Email')
+          }</span>
+        </button>
+        ${statusHtml}
+      </form>
+    `;
+  }
+
+  function openSharePlanModal(proposal, opts) {
+    if (!proposal) return;
+    const options = opts || {};
+    if (state.isBookingHandoffOpen) {
+      closeBookingHandoffModal({ restoreFocus: false });
+    }
+    if (state.isCalendarVisible) {
+      setCalendarVisibility(false, { restoreFocus: false });
+    }
+    if (state.isProfileSheetOpen) {
+      setProfileSheetOpen(false, { restoreFocus: false });
+    }
+    if (state.isAuthPopoverOpen) {
+      setAuthPopoverOpen(false, { restoreFocus: false });
+    }
+    if (state.isDestPickerOpen) {
+      setDestPickerOpen(false);
+    }
+    clearOpenKpiTooltips();
+
+    const wasOpen = Boolean(state.isSharePlanOpen);
+    const pageScrollbarPx =
+      typeof window !== 'undefined' && window.innerWidth >= 768
+        ? (document.body.classList.contains('is-sheet-locked')
+            ? sharePlanScrollbarPx
+            : Math.max(0, window.innerWidth - document.documentElement.clientWidth))
+        : 0;
+
+    state.isSharePlanOpen = true;
+    state.sharePlanProposal = proposal;
+    state.sharePlanEmailSending = false;
+    state.sharePlanStatusType = null;
+    state.sharePlanStatusHe = '';
+    state.sharePlanStatusEn = '';
+    state.sharePlanFallbackGmailUrl = '';
+    state.sharePlanCopyDone = false;
+    state.sharePlanNoteValue = '';
+    state.sharePlanRecipientValue =
+      state.auth && state.auth.authenticated && state.auth.user && state.auth.user.email
+        ? String(state.auth.user.email)
+        : '';
+
+    if (!wasOpen) {
+      const activeEl = document.activeElement;
+      sharePlanOpenerEl =
+        options.opener || (activeEl && activeEl !== document.body ? activeEl : null);
+    }
+
+    renderSharePlanModalContent();
+
+    const backdrop = document.getElementById('share-plan-backdrop');
+    const modal = document.getElementById('share-plan-modal');
+    if (backdrop) {
+      backdrop.removeAttribute('hidden');
+      backdrop.style.display = 'block';
+    }
+    if (modal) {
+      modal.removeAttribute('hidden');
+      modal.style.display = 'flex';
+      modal.classList.add('is-open');
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+    }
+
+    BOOKING_HANDOFF_INERT_SELECTORS.forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.setAttribute('inert', '');
+    });
+
+    syncBodyScrollLock();
+    sharePlanScrollbarPx = pageScrollbarPx;
+    if (sharePlanScrollbarPx > 0) {
+      const scrollbarSide =
+        getComputedStyle(document.documentElement).direction === 'rtl'
+          ? 'padding-inline-start'
+          : 'padding-inline-end';
+      document.body.style.setProperty(scrollbarSide, `${sharePlanScrollbarPx}px`);
+    }
+
+    const closeBtn = document.getElementById('btn-close-share-plan');
+    if (closeBtn && options.focusContent !== false) {
+      setTimeout(() => {
+        if (!state.isSharePlanOpen) return;
+        closeBtn.focus();
+      }, 40);
+    }
+  }
+
+  function closeSharePlanModal(opts) {
+    const options = opts || {};
+    const wasOpen = Boolean(state.isSharePlanOpen);
+    state.isSharePlanOpen = false;
+    state.sharePlanProposal = null;
+    state.sharePlanEmailSending = false;
+
+    const backdrop = document.getElementById('share-plan-backdrop');
+    const modal = document.getElementById('share-plan-modal');
+    if (modal) {
+      modal.setAttribute('hidden', '');
+      modal.style.display = 'none';
+      modal.classList.remove('is-open');
+      modal.removeAttribute('role');
+      modal.removeAttribute('aria-modal');
+    }
+    if (backdrop) {
+      backdrop.setAttribute('hidden', '');
+      backdrop.style.display = 'none';
+    }
+
+    BOOKING_HANDOFF_INERT_SELECTORS.forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      if (
+        state.profileSheetView !== 'travelers' &&
+        !state.isCalendarVisible &&
+        !state.isBookingHandoffOpen
+      ) {
+        el.removeAttribute('inert');
+      }
+    });
+
+    if (sharePlanScrollbarPx > 0 && state.profileSheetView !== 'travelers' && !state.isBookingHandoffOpen) {
+      document.body.style.removeProperty('padding-inline-start');
+      document.body.style.removeProperty('padding-inline-end');
+    }
+    sharePlanScrollbarPx = 0;
+
+    syncBodyScrollLock();
+
+    if (wasOpen && options.restoreFocus !== false) {
+      const activeEl = document.activeElement;
+      const focusWasInside =
+        !activeEl || activeEl === document.body || Boolean(modal && modal.contains(activeEl));
+      if (focusWasInside && sharePlanOpenerEl && document.contains(sharePlanOpenerEl)) {
+        sharePlanOpenerEl.focus();
+      }
+    }
+    sharePlanOpenerEl = null;
+  }
+
+  async function submitSharePlanEmail() {
+    if (!state.sharePlanProposal || state.sharePlanEmailSending) return;
+    if (!state.auth || !state.auth.authenticated) {
+      startGoogleSignIn();
+      return;
+    }
+    const toInput = document.getElementById('input-share-email-to');
+    const noteInput = document.getElementById('input-share-email-note');
+    const rawRecipients = toInput ? String(toInput.value || '').trim() : state.sharePlanRecipientValue;
+    const personalNote = noteInput ? String(noteInput.value || '').trim() : state.sharePlanNoteValue;
+    state.sharePlanRecipientValue = rawRecipients;
+    state.sharePlanNoteValue = personalNote;
+    state.sharePlanEmailSending = true;
+    state.sharePlanStatusType = null;
+    state.sharePlanStatusHe = '';
+    state.sharePlanStatusEn = '';
+    state.sharePlanFallbackGmailUrl = '';
+    renderSharePlanModalContent();
+
+    try {
+      const plan = buildSharePlanPayload(state.sharePlanProposal);
+      const resp = await apiSend('POST', '/api/v1/share/email', {
+        recipients: rawRecipients || (state.auth.user && state.auth.user.email) || '',
+        locale: state.locale,
+        personal_note: personalNote,
+        plan
+      });
+      const recipsText = Array.isArray(resp.recipients) ? resp.recipients.join(', ') : rawRecipients;
+      state.sharePlanStatusType = 'success';
+      state.sharePlanStatusHe = `✓ תוכנית החופשה נשלחה בהצלחה אל ${recipsText}`;
+      state.sharePlanStatusEn = `✓ Vacation plan emailed successfully to ${recipsText}`;
+      state.sharePlanFallbackGmailUrl = '';
+    } catch (err) {
+      if (err && err.status === 401) {
+        await handleSignOut();
+        renderSharePlanModalContent();
+        return;
+      }
+      let payload = {};
+      if (err && err.bodyText) {
+        try {
+          payload = JSON.parse(err.bodyText) || {};
+        } catch (_parseErr) {
+          payload = {};
+        }
+      }
+      const errCode = String(payload.error || '');
+      state.sharePlanStatusType = 'error';
+      state.sharePlanFallbackGmailUrl = String(payload.fallback_gmail_compose_url || '');
+      if (errCode === 'email_not_configured') {
+        state.sharePlanStatusHe =
+          'שליחת מייל אוטומטית מהשרת עדיין לא הוגדרה (נדרש SMTP). בינתיים אפשר לפתוח ישירות ב-Gmail Compose:';
+        state.sharePlanStatusEn =
+          'Automatic server email delivery is not configured yet (SMTP required). You can open it directly in Gmail Compose instead:';
+      } else if (errCode === 'invalid_recipient' || errCode === 'too_many_recipients') {
+        state.sharePlanStatusHe =
+          'בדקו שכתובת המייל תקינה (עד 3 כתובות מופרדות בפסיק).';
+        state.sharePlanStatusEn =
+          'Please enter valid recipient email addresses (up to 3, comma-separated).';
+      } else if (errCode === 'rate_limit_exceeded') {
+        state.sharePlanStatusHe =
+          'הגעת למגבלת שליחת המיילים השעתית. נסו שוב מאוחר יותר או שתפו בוואטסאפ.';
+        state.sharePlanStatusEn =
+          'Hourly email share limit reached. Please try again later or share via WhatsApp.';
+      } else {
+        state.sharePlanStatusHe =
+          'לא ניתן היה לשלוח את המייל כרגע. ניתן לנסות שוב או לשתף דרך וואטסאפ.';
+        state.sharePlanStatusEn =
+          'Could not send email right now. Please retry or share via WhatsApp.';
+      }
+    } finally {
+      state.sharePlanEmailSending = false;
+      if (state.isSharePlanOpen) {
+        renderSharePlanModalContent();
+      }
+    }
   }
 
   function resolveBonusDirectionInfo(itineraryObj) {
@@ -4933,6 +5522,12 @@
               </a>
             `
           : '';
+        const sharePlanBtnHtml = `
+              <button type="button" class="btn-share-plan" data-share-plan-trigger="true" data-proposal-idx="${idx}" aria-haspopup="dialog" aria-controls="share-plan-modal" aria-label="${isHe ? 'שיתוף תוכנית החופשה במייל או בוואטסאפ' : 'Share vacation plan via Email or WhatsApp'}" title="${isHe ? 'שתף תוכנית חופשה במייל או בוואטסאפ' : 'Share vacation plan via Email or WhatsApp'}">
+                <span class="btn-share-plan-icon" aria-hidden="true">📤</span>
+                <span class="btn-share-plan-label">${isHe ? 'שתף' : 'Share'}</span>
+              </button>
+            `;
         const bookingGuideBtnHtml = elalBookUrl
           ? `
               <button type="button" class="btn-booking-guide" data-booking-guide-trigger="true" data-proposal-idx="${idx}" aria-haspopup="dialog" aria-controls="booking-handoff-modal" aria-label="${isHe ? 'פתיחת מדריך ההזמנה ופרטי הטיסות' : 'Open booking guide and flight details'}" title="${isHe ? 'פתיחת מדריך ההזמנה ופרטי הטיסות' : 'Open booking guide and flight details'}">
@@ -4995,7 +5590,10 @@
                       <span class="proposal-route-pair"><span class="route-pair-origin" dir="ltr">${escapeHtml(it.origin_iata || 'TLV')}</span> <span aria-hidden="true">⇄</span> <span class="route-pair-dest" dir="ltr">${escapeHtml(it.destination_iata)}</span></span>
                       ${topStyleChipHtml}
                     </div>
-                    ${bookingGuideBtnHtml}
+                    <div class="proposal-header-actions">
+                      ${sharePlanBtnHtml}
+                      ${bookingGuideBtnHtml}
+                    </div>
                   </div>
                 </div>
 
@@ -5248,12 +5846,7 @@
             : '👶 Children & MoE Frameworks (Optional in Manual Dates)');
     }
 
-    const btnApplyProfile = document.getElementById('btn-apply-profile-sheet');
-    if (btnApplyProfile) {
-      btnApplyProfile.textContent = isWp
-        ? (isHe ? '✓ עדכן הרכב נוסעים והצג חופשות' : '✓ Apply Travelers & Show Vacations')
-        : (isHe ? '✓ עדכן הרכב משפחה והצג חופשות' : '✓ Apply Family & Show Vacations');
-    }
+    syncApplyProfileButtonLabel();
 
     const authDeleteConfirmText = document.getElementById('auth-delete-confirm-text');
     if (authDeleteConfirmText) {
@@ -5333,6 +5926,9 @@
     renderProposals();
     if (state.isBookingHandoffOpen && state.bookingHandoffProposal) {
       renderBookingHandoffModalContent();
+    }
+    if (state.isSharePlanOpen && state.sharePlanProposal) {
+      renderSharePlanModalContent();
     }
   }
 
@@ -5661,6 +6257,7 @@
           authenticated: true,
           isAdmin: Boolean(sess.is_admin),
           oauthConfigured: Boolean(sess.oauth_configured),
+          emailShareConfigured: Boolean(sess.email_share_configured),
           testMode: Boolean(sess.test_mode),
           csrfToken: sess.csrf_token || null,
           user: sess.user
@@ -6215,12 +6812,68 @@
     if (btnApplyProfileSheet) {
       btnApplyProfileSheet.addEventListener('click', async () => {
         syncProfileStateFromDom();
+        state.validationErrorHe = null;
+        state.validationErrorEn = null;
+        state.profileSaveErrorHe = null;
+        state.profileSaveErrorEn = null;
+        renderProfileSaveError();
+
+        if (state.auth && state.auth.authenticated) {
+          try {
+            const saveBody = {
+              ...state.profile,
+              notifications_enabled: Boolean(state.notificationsOptIn)
+            };
+            const saved = await apiSend('PUT', '/api/v1/profile', saveBody);
+            saved.passenger_loyalty_wallets = [];
+            state.profile = saved;
+            state.profileDirty = false;
+            const isWpSaved = isWorkplaceModeProfile(state.profile);
+            state.saveFeedbackHe = isWpSaved
+              ? '✓ הפרופיל נשמר בחשבון שלך.'
+              : '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
+            state.saveFeedbackEn = isWpSaved
+              ? '✓ Profile saved to your account.'
+              : '✓ Family profile saved to your account.';
+          } catch (err) {
+            if (err && err.status === 401) {
+              await handleSignOut();
+              return;
+            }
+            const detail = extractApiErrorDetail(err);
+            const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
+            const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
+            state.proposals = [];
+            state.lastSearchProfile = null;
+            state.showAllProposals = false;
+            const isWpErr = isWorkplaceModeProfile(state.profile);
+            state.validationErrorHe = isWpErr
+              ? `לא ניתן לשמור את הפרופיל — בדקו שמספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`
+              : `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
+            state.validationErrorEn = isWpErr
+              ? `Could not save profile — verify adults count (1–6) and non-negative Matmid balance.${detailSuffixEn}`
+              : `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
+            if (state.isProfileSheetOpen) {
+              state.profileSaveErrorHe = state.validationErrorHe;
+              state.profileSaveErrorEn = state.validationErrorEn;
+              state.saveFeedbackHe = null;
+              state.saveFeedbackEn = null;
+              renderAuthControls();
+            }
+            renderProposals();
+            return;
+          }
+        }
+
         syncPlanningModeUi();
         renderProfileControls();
         renderCalendarTable();
         renderWorkplaceCalendarTable();
         setProfileSheetOpen(false);
         await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
+        if (state.auth && state.auth.authenticated) {
+          await loadCalendarForSchoolYear();
+        }
         await runVacationSearch();
         if (typeof window !== 'undefined' && window.innerWidth < 1180) {
           state.lastActiveMobileZone = 'zone-results';
@@ -6273,6 +6926,10 @@
 
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
+        if (state.isSharePlanOpen) {
+          closeSharePlanModal();
+          return;
+        }
         if (state.isBookingHandoffOpen) {
           closeBookingHandoffModal();
           return;
@@ -6300,6 +6957,76 @@
         }
       }
     });
+
+    const btnCloseSharePlan = document.getElementById('btn-close-share-plan');
+    if (btnCloseSharePlan) {
+      btnCloseSharePlan.addEventListener('click', () => {
+        closeSharePlanModal();
+      });
+    }
+
+    const sharePlanBackdrop = document.getElementById('share-plan-backdrop');
+    if (sharePlanBackdrop) {
+      sharePlanBackdrop.addEventListener('click', () => {
+        closeSharePlanModal();
+      });
+    }
+
+    const sharePlanBody = document.getElementById('share-plan-body');
+    if (sharePlanBody) {
+      sharePlanBody.addEventListener('click', async (ev) => {
+        const t = ev.target;
+        if (!t || typeof t.closest !== 'function') return;
+        if (t.closest('#btn-share-google-signin')) {
+          startGoogleSignIn();
+          return;
+        }
+        if (t.closest('#btn-share-copy') && state.sharePlanProposal) {
+          const isHe = state.locale === 'he';
+          const plan = buildSharePlanPayload(state.sharePlanProposal);
+          const noteEl = document.getElementById('input-share-email-note');
+          const noteVal = noteEl ? String(noteEl.value || '').trim() : state.sharePlanNoteValue;
+          const plainText = buildSharePlainText(plan, noteVal, isHe);
+          try {
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+              await navigator.clipboard.writeText(plainText);
+            }
+          } catch (_clipErr) {
+            // Ignore clipboard permission errors in restricted contexts
+          }
+          state.sharePlanCopyDone = true;
+          renderSharePlanModalContent();
+          setTimeout(() => {
+            if (!state.isSharePlanOpen) return;
+            state.sharePlanCopyDone = false;
+            renderSharePlanModalContent();
+          }, 2200);
+          return;
+        }
+      });
+
+      sharePlanBody.addEventListener('input', (ev) => {
+        const t = ev.target;
+        if (!t) return;
+        if (t.id === 'input-share-email-to') {
+          state.sharePlanRecipientValue = String(t.value || '');
+        } else if (t.id === 'input-share-email-note' && state.sharePlanProposal) {
+          state.sharePlanNoteValue = String(t.value || '');
+          const waBtn = document.getElementById('btn-share-whatsapp');
+          if (waBtn) {
+            const plan = buildSharePlanPayload(state.sharePlanProposal);
+            waBtn.setAttribute('href', buildWhatsAppShareUrl(plan, state.sharePlanNoteValue, state.locale === 'he'));
+          }
+        }
+      });
+
+      sharePlanBody.addEventListener('submit', (ev) => {
+        if (ev.target && ev.target.id === 'share-email-form') {
+          ev.preventDefault();
+          submitSharePlanEmail();
+        }
+      });
+    }
 
     const btnCloseBookingHandoff = document.getElementById('btn-close-booking-handoff');
     if (btnCloseBookingHandoff) {
@@ -6426,70 +7153,6 @@
       });
     }
 
-    const btnSaveProfile = document.getElementById('btn-save-profile');
-    if (btnSaveProfile) {
-      btnSaveProfile.addEventListener('click', async () => {
-        if (!state.auth || !state.auth.authenticated) {
-          startGoogleSignIn();
-          return;
-        }
-        syncProfileStateFromDom();
-        state.validationErrorHe = null;
-        state.validationErrorEn = null;
-        state.profileSaveErrorHe = null;
-        state.profileSaveErrorEn = null;
-        renderProfileSaveError();
-        try {
-          const saveBody = {
-            ...state.profile,
-            notifications_enabled: Boolean(state.notificationsOptIn)
-          };
-          const saved = await apiSend('PUT', '/api/v1/profile', saveBody);
-          saved.passenger_loyalty_wallets = [];
-          state.profile = saved;
-          state.profileDirty = false;
-          const isWpSaved = isWorkplaceModeProfile(state.profile);
-          state.saveFeedbackHe = isWpSaved
-            ? '✓ הפרופיל נשמר בחשבון שלך.'
-            : '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
-          state.saveFeedbackEn = isWpSaved
-            ? '✓ Profile saved to your account.'
-            : '✓ Family profile saved to your account.';
-          syncPlanningModeUi();
-          renderProfileControls();
-          await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
-          await loadCalendarForSchoolYear();
-          await runVacationSearch();
-        } catch (err) {
-          if (err && err.status === 401) {
-            await handleSignOut();
-            return;
-          }
-          const detail = extractApiErrorDetail(err);
-          const detailSuffixEn = detail && !/[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
-          const detailSuffixHe = detail && /[\u0590-\u05FF]/.test(detail) ? ` (${detail})` : '';
-          state.proposals = [];
-          state.lastSearchProfile = null;
-          state.showAllProposals = false;
-          const isWpErr = isWorkplaceModeProfile(state.profile);
-          state.validationErrorHe = isWpErr
-            ? `לא ניתן לשמור את הפרופיל — בדקו שמספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`
-            : `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
-          state.validationErrorEn = isWpErr
-            ? `Could not save profile — verify adults count (1–6) and non-negative Matmid balance.${detailSuffixEn}`
-            : `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
-          if (state.isProfileSheetOpen) {
-            state.profileSaveErrorHe = state.validationErrorHe;
-            state.profileSaveErrorEn = state.validationErrorEn;
-            state.saveFeedbackHe = null;
-            state.saveFeedbackEn = null;
-            renderAuthControls();
-          }
-          renderProposals();
-        }
-      });
-    }
-
     const btnAddChild = document.getElementById('btn-add-child');
     if (btnAddChild) {
       btnAddChild.addEventListener('click', (ev) => {
@@ -6565,6 +7228,19 @@
     document.body.addEventListener('click', (ev) => {
       const target = ev.target;
       if (!target) return;
+      const shareTriggerBtn =
+        typeof target.closest === 'function'
+          ? target.closest('[data-share-plan-trigger="true"]')
+          : null;
+      if (shareTriggerBtn) {
+        const idx = Number(shareTriggerBtn.getAttribute('data-proposal-idx'));
+        const proposal =
+          Number.isInteger(idx) && idx >= 0 ? state.visibleRenderableProposals[idx] : null;
+        if (proposal) {
+          openSharePlanModal(proposal, { opener: shareTriggerBtn });
+        }
+        return;
+      }
       const guideTriggerBtn =
         typeof target.closest === 'function'
           ? target.closest('[data-booking-guide-trigger="true"]')

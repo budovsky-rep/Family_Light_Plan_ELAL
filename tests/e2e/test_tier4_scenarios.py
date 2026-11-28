@@ -2191,8 +2191,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             _mount_and_wait_boot({}, {})
             guest_draft_state = _cdp_eval(
                 """(() => {
-                  const saveBtnEl = document.getElementById('btn-save-profile');
-                  const saveBtnHiddenOnGuest = Boolean(saveBtnEl && saveBtnEl.hasAttribute('hidden'));
+                  const saveBtnRemoved = !document.getElementById('btn-save-profile');
                   const zeroAlertEl = document.getElementById('zero-points-search-alert');
                   const zeroAlertText = zeroAlertEl ? zeroAlertEl.textContent : '';
                   const awardNoteEl = document.getElementById('award-source-note-banner');
@@ -2219,7 +2218,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   const bodyTxt = document.body.innerText || '';
                   googleBtn.click();
                   return {
-                    saveBtnHiddenOnGuest,
+                    saveBtnRemoved,
                     zeroAlertText,
                     awardNoteText,
                     awardNoteBodyText,
@@ -2231,7 +2230,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                   };
                 })()"""
             )
-            self.assertTrue(guest_draft_state["saveBtnHiddenOnGuest"])
+            self.assertTrue(guest_draft_state["saveBtnRemoved"])
             self.assertEqual(guest_draft_state["removedCount"], 0)
             for removed_tok in ("פירוט הקצאת", "ייצוא .ics", "תקציב חופש"):
                 self.assertNotIn(removed_tok, guest_draft_state["bodyTxt"])
@@ -2276,7 +2275,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
                 """(() => ({
                   ages: Array.from(document.querySelectorAll('[data-child-age]')).map((el) => Number(el.value)),
                   matmid: document.getElementById('prof-matmid-points').value,
-                  saveBtnHiddenAfterLogin: document.getElementById('btn-save-profile').hasAttribute('hidden'),
+                  saveBtnRemovedAfterLogin: !document.getElementById('btn-save-profile'),
+                  applyBtnTextAfterLogin: (document.getElementById('btn-apply-profile-sheet') || {}).textContent || '',
                   hasZeroAlertAfterLogin: Boolean(document.getElementById('zero-points-search-alert')),
                   firstCardText: (document.querySelector('.proposal-card') || {}).textContent || '',
                   feedback: document.getElementById('auth-save-feedback').textContent,
@@ -2288,7 +2288,8 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertEqual(post_login_state["jsErrors"], [])
             self.assertEqual(post_login_state["ages"], [2, 8])
             self.assertEqual(post_login_state["matmid"], "150000")
-            self.assertFalse(post_login_state["saveBtnHiddenAfterLogin"])
+            self.assertTrue(post_login_state["saveBtnRemovedAfterLogin"])
+            self.assertIn("שמור ועדכן", post_login_state["applyBtnTextAfterLogin"])
             self.assertFalse(post_login_state["hasZeroAlertAfterLogin"])
             for removed_card_tok in ("~$", "הערכת מחיר במזומן", "חיסכון משוער", "¢", "נקודות מתמיד"):
                 self.assertNotIn(removed_card_tok, post_login_state["firstCardText"])
@@ -3033,12 +3034,12 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertTrue(desk["calBtnActiveWhenOpen"])
             self.assertFalse(desk["calBtnActiveAfterClose"])
 
-        # 5. Signed-in `#btn-save-profile` HTTP 422 error clears proposals and renders validation banner cleanly
+        # 5. Signed-in `#btn-apply-profile-sheet` HTTP 422 error clears proposals and renders validation banner cleanly
         active_browser_client = client
         _cdp_call("Page.setDocumentContent", {"frameId": frame_id, "html": mounted_doc})
         for _ in range(80):
             if _cdp_eval(
-                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 2 && !document.getElementById('btn-save-profile').hasAttribute('hidden')), 40))"
+                "new Promise((r) => setTimeout(() => r(document.querySelectorAll('.proposal-card').length >= 2 && (document.getElementById('btn-apply-profile-sheet')?.textContent || '').includes('שמור')), 40))"
             ):
                 break
 
@@ -3048,7 +3049,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
               adultsEl.value = '99';
               adultsEl.dispatchEvent(new Event('input', { bubbles: true }));
               adultsEl.dispatchEvent(new Event('change', { bubbles: true }));
-              document.getElementById('btn-save-profile').click();
+              document.getElementById('btn-apply-profile-sheet').click();
               for (let i = 0; i < 60; i++) {
                 await new Promise((r) => setTimeout(r, 30));
                 if (document.querySelector('.status-banner-card')) break;
@@ -5280,7 +5281,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertTrue(st["vis"][key], f"{key} must be visible in the passenger window")
         for key in self._RUN13_SIGNIN_KEYS:
             self.assertFalse(st["vis"][key], f"{key} belongs to the top-bar auth popover, not the passenger window")
-        self.assertEqual(st["vis"]["saveBtn"], signed_in)
+        self.assertFalse(st["vis"]["saveBtn"])
         self.assertTrue(st["bodyLocked"])
         self.assertEqual(st["bodyOverflow"], "hidden")
         self.assertTrue(
@@ -5305,7 +5306,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertTrue(st["vis"][key], f"{key} must be visible in the mobile passenger sheet")
         for key in self._RUN13_SIGNIN_KEYS:
             self.assertFalse(st["vis"][key], f"{key} belongs to the top-bar auth popover, not the mobile travelers sheet")
-        self.assertEqual(st["vis"]["saveBtn"], signed_in)
+        self.assertFalse(st["vis"]["saveBtn"])
         self.assertTrue(st["bodyLocked"])
         self.assertEqual(st["inertIds"], [])
         self.assertEqual(st["aria"], {"edit": "true", "headerAuth": "false", "headerAccount": "false"})
@@ -5650,7 +5651,7 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         browser.real_click("#btn-header-account")
         self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=True)
 
-        # E. Explicit save inside passenger window + failed save (HTTP 422) reported inside window + recovery
+        # E. Unified bottom CTA (`#btn-apply-profile-sheet`) saves via PUT /api/v1/profile, reports HTTP 422 inline without closing, and recovers
         browser.real_click("#btn-open-profile-sheet")
         browser.pump(160)
         user_window = browser.eval(_RUN13_STATE_JS)
@@ -5659,20 +5660,22 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         self.assertTrue(user_window["vis"]["profileSaveFeedback"])
         browser.real_replace_value("#prof-adults-count", "4")
         browser.fetch_log.clear()
-        browser.real_click("#btn-save-profile")
+        browser.real_click("#btn-apply-profile-sheet")
         browser.settle()
         self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/profile")], [200])
         self.assertEqual(api_profile()["adults_count"], 4)
-        after_save = browser.eval(_RUN13_STATE_JS)
-        self.assertTrue(after_save["vis"]["profileSaveFeedback"])
-        self.assertFalse(after_save["vis"]["saveError"])
+        self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=True)
 
+        # Re-open, trigger HTTP 422 -> modal stays open with inline error visible on top
+        browser.real_click("#btn-open-profile-sheet")
+        browser.pump(160)
         browser.real_replace_value("#prof-adults-count", "99")
         browser.fetch_log.clear()
-        browser.real_click("#btn-save-profile")
+        browser.real_click("#btn-apply-profile-sheet")
         browser.settle()
         self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/profile")], [422])
         failed_save = browser.eval(_RUN13_STATE_JS)
+        self._run13_assert_passenger_window_open(failed_save, signed_in=True)
         self.assertTrue(failed_save["vis"]["saveError"])
         self.assertIn("לא ניתן לשמור את פרופיל המשפחה", failed_save["text"]["saveError"])
         self.assertFalse(failed_save["vis"]["profileSaveFeedback"])
@@ -5680,13 +5683,10 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
 
         browser.real_replace_value("#prof-adults-count", "2")
         browser.fetch_log.clear()
-        browser.real_click("#btn-save-profile")
+        browser.real_click("#btn-apply-profile-sheet")
         browser.settle()
         self.assertEqual([r["status"] for r in browser.requests("PUT", "/api/v1/profile")], [200])
-        recovered = browser.eval(_RUN13_STATE_JS)
-        self.assertFalse(recovered["vis"]["saveError"])
-        self.assertTrue(recovered["vis"]["profileSaveFeedback"])
-        browser.real_key("Escape")
+        self.assertEqual(api_profile()["adults_count"], 2)
         self._run13_assert_closed(browser.eval(_RUN13_STATE_JS), signed_in=True)
 
         # F. Notifications opt-in in top-left popover, then 1-click sign-out via top-bar `#btn-header-signout`!
@@ -7908,6 +7908,146 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         for req in browser.fetch_log:
             self.assertNotIn("elal.com", f"{req.get('url', '')} {req.get('path', '')}".lower())
         self.assertEqual(browser.js_errors(), [])
+
+    def test_scenario_33_share_vacation_plan_modal_email_whatsapp_and_guest_gate_e2e(self) -> None:
+        """Scenario 33: Per-card Share Vacation Plan modal — guest Google sign-in gate, signed-in WhatsApp link & server SMTP email delivery, RTL/LTR & mobile."""
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+
+        prev_auth = os.environ.get("VACATION_PLANNER_AUTH_TEST_MODE")
+        prev_smtp_test = os.environ.get("SMTP_TEST_MODE")
+        os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+        os.environ["SMTP_TEST_MODE"] = "1"
+
+        def _restore_env() -> None:
+            if prev_auth is None:
+                os.environ.pop("VACATION_PLANNER_AUTH_TEST_MODE", None)
+            else:
+                os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = prev_auth
+            if prev_smtp_test is None:
+                os.environ.pop("SMTP_TEST_MODE", None)
+            else:
+                os.environ["SMTP_TEST_MODE"] = prev_smtp_test
+
+        self.addCleanup(_restore_env)
+
+        # 1. Guest flow: Share button visible on every card -> opens Google sign-in gate
+        guest_client = self.get_client(db_path)
+        guest_browser = self.open_run13_browser(guest_client, viewport=(1440, 900))
+        guest_browser.mount()
+        guest_browser.wait_until(
+            "document.querySelectorAll('#zone-results .btn-share-plan').length >= 1",
+            "Share plan trigger button rendered on proposal cards for guest",
+        )
+        guest_browser.real_click("#zone-results .btn-share-plan", after_ms=140)
+        guest_share = guest_browser.eval(
+            """(() => ({
+              open: document.getElementById('share-plan-modal')?.classList.contains('is-open'),
+              hasGate: Boolean(document.getElementById('share-plan-guest-gate')),
+              hasSigninBtn: Boolean(document.getElementById('btn-share-google-signin')),
+              hasEmailForm: Boolean(document.getElementById('share-email-form')),
+              hasWaBtn: Boolean(document.getElementById('btn-share-whatsapp')),
+              overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+              jsErrors: window.__fvpJsErrors || []
+            }))()"""
+        )
+        self.assertTrue(guest_share["open"])
+        self.assertTrue(guest_share["hasGate"])
+        self.assertTrue(guest_share["hasSigninBtn"])
+        self.assertFalse(guest_share["hasEmailForm"])
+        self.assertFalse(guest_share["hasWaBtn"])
+        self.assertFalse(guest_share["overflow"])
+        self.assertEqual(guest_share["jsErrors"], [])
+        guest_browser.real_key("Escape", after_ms=80)
+        self.assertFalse(guest_browser.eval("document.getElementById('share-plan-modal').classList.contains('is-open')"))
+
+        # 2. Signed-in Google user flow: WhatsApp link + dynamic note + server SMTP email send + English LTR + Mobile
+        authed_client = self.get_client(db_path)
+        login_res = authed_client.post(
+            "/api/v1/auth/test-login",
+            json={"email": "traveler.share@gmail.com", "display_name": "Dana Traveler"},
+        )
+        self.assertEqual(login_res.status_code, 200)
+
+        browser = self.open_run13_browser(authed_client, viewport=(1440, 900))
+        browser.mount()
+        browser.wait_until(
+            "document.querySelectorAll('#zone-results .btn-share-plan').length >= 1",
+            "Share plan trigger rendered for signed-in user",
+        )
+        browser.real_click("#zone-results .btn-share-plan", after_ms=140)
+        authed_open = browser.eval(
+            """(() => ({
+              open: document.getElementById('share-plan-modal')?.classList.contains('is-open'),
+              hasGate: Boolean(document.getElementById('share-plan-guest-gate')),
+              toVal: (document.getElementById('input-share-email-to') || {}).value || '',
+              waHref: document.getElementById('btn-share-whatsapp')?.getAttribute('href') || '',
+              overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+            }))()"""
+        )
+        self.assertTrue(authed_open["open"])
+        self.assertFalse(authed_open["hasGate"])
+        self.assertEqual(authed_open["toVal"], "traveler.share@gmail.com")
+        self.assertTrue(authed_open["waHref"].startswith("https://wa.me/?text="))
+        self.assertFalse(authed_open["overflow"])
+
+        # Add partner email + personal note -> verify WhatsApp link updates and Email POST succeeds
+        browser.eval(
+            """(() => {
+              const toEl = document.getElementById('input-share-email-to');
+              toEl.value = 'traveler.share@gmail.com, partner.trip@gmail.com';
+              toEl.dispatchEvent(new Event('input', { bubbles: true }));
+              const noteEl = document.getElementById('input-share-email-note');
+              noteEl.value = 'בואי נזמין את הטיסה הזו!';
+              noteEl.dispatchEvent(new Event('input', { bubbles: true }));
+            })()"""
+        )
+        wa_after_note = browser.eval("decodeURIComponent(document.getElementById('btn-share-whatsapp').getAttribute('href'))")
+        self.assertIn("בואי נזמין את הטיסה הזו!", wa_after_note)
+
+        browser.fetch_log.clear()
+        browser.real_click("#btn-share-send-email", after_ms=200)
+        browser.wait_until(
+            "Boolean(document.querySelector('#share-email-status.is-success'))",
+            "Share email success banner rendered",
+        )
+        email_reqs = browser.requests("POST", "/api/v1/share/email")
+        self.assertEqual([r["status"] for r in email_reqs], [200])
+        status_txt = browser.text("#share-email-status")
+        self.assertIn("נשלחה בהצלחה", status_txt)
+        self.assertIn("partner.trip@gmail.com", status_txt)
+        outbox = authed_client.router.share_email_service.get_test_outbox()
+        self.assertEqual(len(outbox), 1)
+        self.assertEqual(outbox[0]["recipients"], ["traveler.share@gmail.com", "partner.trip@gmail.com"])
+        self.assertIn('dir="rtl"', outbox[0]["html_body"])
+        self.assertIn("בואי נזמין את הטיסה הזו!", outbox[0]["plain_body"])
+
+        # Mobile 360x800 check with modal open -> zero horizontal overflow
+        browser.set_viewport(360, 800)
+        browser.pump(120)
+        mob_overflow = browser.eval(
+            "document.documentElement.scrollWidth > document.documentElement.clientWidth"
+        )
+        self.assertFalse(mob_overflow)
+
+        # English LTR check
+        browser.set_viewport(1440, 900)
+        browser.real_click("#btn-close-share-plan", after_ms=80)
+        browser.real_click("#btn-toggle-locale", after_ms=120)
+        browser.real_click("#zone-results .btn-share-plan", after_ms=140)
+        en_modal = browser.eval(
+            """(() => ({
+              title: (document.getElementById('share-plan-title') || {}).textContent || '',
+              sendBtn: (document.getElementById('btn-share-send-email') || {}).textContent || '',
+              waBtn: (document.getElementById('btn-share-whatsapp') || {}).textContent || '',
+              overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+              jsErrors: window.__fvpJsErrors || []
+            }))()"""
+        )
+        self.assertIn("Share", en_modal["title"])
+        self.assertIn("Send Plan by Email", en_modal["sendBtn"])
+        self.assertIn("WhatsApp", en_modal["waBtn"])
+        self.assertFalse(en_modal["overflow"])
+        self.assertEqual(en_modal["jsErrors"], [])
 
 
 if __name__ == "__main__":

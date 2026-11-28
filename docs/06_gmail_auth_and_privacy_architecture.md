@@ -179,6 +179,15 @@ GOOGLE_OAUTH_CLIENT_SECRET=REPLACE_WITH_YOUR_CLIENT_SECRET
 GOOGLE_OAUTH_REDIRECT_URI=https://breezyflights.com/api/v1/auth/google/callback
 GOOGLE_OAUTH_ALLOWED_DOMAINS=gmail.com,googlemail.com
 SESSION_TTL_SECONDS=1209600
+# Optional: Server-side SMTP for "Share Vacation Plan by Email" (POST /api/v1/share/email)
+# Example using a Gmail account with 2-Step Verification + Google App Password:
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=1
+SMTP_USERNAME=your-sender-account@gmail.com
+SMTP_PASSWORD=REPLACE_WITH_16_CHAR_APP_PASSWORD
+SMTP_FROM_EMAIL=your-sender-account@gmail.com
+SMTP_FROM_NAME=breezyflights
 EOF
 
 sudo chown root:root /etc/family_vacation_planner/auth.env

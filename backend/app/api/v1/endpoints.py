@@ -34,6 +34,10 @@ from backend.app.auth_service import (
     redact_pii,
     sha256_hex,
 )
+from backend.app.share_email_service import (
+    ShareEmailError,
+    ShareEmailService,
+)
 from backend.app.calendar_engine.moe_calendar_service import (
     IsraeliWorkplaceCalendarService,
     MoECalendarAutoUpdaterService,
@@ -1242,6 +1246,7 @@ class VacationPlannerAPIRouter:
         self.auth_service = GoogleOAuthService(
             self.repository, token_exchanger=token_exchanger
         )
+        self.share_email_service = ShareEmailService()
         self.calendar_service = MoECalendarService(self.repository)
         self.auto_updater = MoECalendarAutoUpdaterService(self.repository)
         self.maximizer_engine = VacationMaximizerEngine(self.calendar_service)
@@ -1401,6 +1406,7 @@ class VacationPlannerAPIRouter:
             path.startswith("/api/v1/auth")
             or path.startswith("/api/v1/admin")
             or path.startswith("/api/v1/profile")
+            or path.startswith("/api/v1/share")
             or path == "/api/v1/moe-calendar/upcoming"
             or (
                 method_u == "GET"
@@ -1440,11 +1446,13 @@ class VacationPlannerAPIRouter:
                 session = self.auth_service.resolve_session(request_headers)
                 oauth_cfg = self.auth_service.is_oauth_configured()
                 test_mode = self.auth_service.is_test_mode_allowed(request_headers)
+                email_share_cfg = self.share_email_service.is_configured(request_headers)
                 if session is None:
                     sess_payload: dict[str, Any] = {
                         "authenticated": False,
                         "is_admin": False,
                         "oauth_configured": oauth_cfg,
+                        "email_share_configured": email_share_cfg,
                         "test_mode": test_mode,
                         "csrf_token": None,
                         "user": None,
@@ -1455,6 +1463,7 @@ class VacationPlannerAPIRouter:
                         "authenticated": True,
                         "is_admin": is_admin,
                         "oauth_configured": oauth_cfg,
+                        "email_share_configured": email_share_cfg,
                         "test_mode": test_mode,
                         "csrf_token": session["csrf_token"],
                         "user": session["user"],
@@ -1467,6 +1476,22 @@ class VacationPlannerAPIRouter:
                     200,
                     private_json_headers,
                     json.dumps(sess_payload, ensure_ascii=False),
+                )
+
+            if method_u == "POST" and path == "/api/v1/share/email":
+                session = self.auth_service.require_session(request_headers)
+                self.auth_service.verify_csrf(session, request_headers)
+                if not isinstance(json_body, dict):
+                    raise ValueError("Request body must be a JSON object")
+                share_res = self.share_email_service.send_vacation_plan_email(
+                    session=session,
+                    body=dict(json_body),
+                    request_headers=request_headers,
+                )
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(share_res, ensure_ascii=False),
                 )
 
             if method_u == "GET" and path == "/api/v1/admin/bonus-sync-status":
@@ -2299,6 +2324,18 @@ class VacationPlannerAPIRouter:
                 auth_exc.status_code,
                 private_json_headers,
                 json.dumps({"error": auth_exc.safe_message}, ensure_ascii=False),
+            )
+        except ShareEmailError as share_exc:
+            err_body: dict[str, Any] = {
+                "error": share_exc.error_code,
+                "detail": share_exc.detail,
+            }
+            if share_exc.extra:
+                err_body.update(share_exc.extra)
+            return (
+                share_exc.status_code,
+                private_json_headers,
+                json.dumps(err_body, ensure_ascii=False),
             )
         except (
             ValueError,

@@ -2886,5 +2886,164 @@ class TestM3AuthAndUserIsolation(unittest.TestCase):
                 repo.close()
 
 
+class TestShareVacationPlanEmailAPI(unittest.TestCase):
+    """Unit & API security tests for POST /api/v1/share/email and ShareEmailService."""
+
+    def _sample_plan(self) -> dict[str, Any]:
+        return {
+            "destination_name": "לרנקה",
+            "origin_iata": "TLV",
+            "destination_iata": "LCA",
+            "departure_date": "2027-04-22",
+            "return_date": "2027-04-26",
+            "trip_nights": 4,
+            "outbound_flight": "LY411 · 07:30–08:35 · 2+ מושבי בונוס",
+            "return_flight": "LY412 · 21:15–22:15 · 2+ מושבי בונוס",
+            "bonus_summary": "בונוס בשני הכיוונים",
+            "min_points_text": "החל מ-15,000 נק׳ לכרטיס בונוס אחד (הלוך ושוב)",
+            "workdays_summary": "1 יום חופש מהעבודה (נחסכו 4 ימים · יחס ×5.0)",
+            "climate_summary": "23°/13°C · אקלים 94/100",
+            "merged_holidays_text": "פסח",
+            "party_summary": "2 מבוגרים · ללא ילדים",
+            "booking_url": "https://www.google.com/travel/flights?q=Flights+to+LCA+from+TLV",
+            "app_url": "https://breezyflights.com",
+        }
+
+    def test_share_email_auth_csrf_validation_unconfigured_and_rate_limit(self) -> None:
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory(prefix="share_email_t_") as td:
+            db_path = Path(td) / "test.sqlite"
+            saved_env = {
+                k: os.environ.get(k)
+                for k in (
+                    "VACATION_PLANNER_AUTH_TEST_MODE",
+                    "SMTP_TEST_MODE",
+                    "SMTP_HOST",
+                    "SMTP_USERNAME",
+                    "SMTP_PASSWORD",
+                    "ELAL_LIVE_FETCH_ENABLED",
+                )
+            }
+            try:
+                os.environ["VACATION_PLANNER_AUTH_TEST_MODE"] = "1"
+                os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+                for k in ("SMTP_TEST_MODE", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"):
+                    os.environ.pop(k, None)
+
+                client = VacationPlannerTestClient(db_path=db_path)
+
+                # 1. Guest rejected with 401
+                r_guest = client.post(
+                    "/api/v1/share/email",
+                    json={"recipients": "someone@gmail.com", "plan": self._sample_plan()},
+                )
+                self.assertEqual(r_guest.status_code, 401)
+
+                # Sign in verified Google user
+                r_login = client.post(
+                    "/api/v1/auth/test-login",
+                    json={"email": "owner.share@gmail.com", "display_name": "Avi Owner"},
+                )
+                self.assertEqual(r_login.status_code, 200)
+                sess = client.get("/api/v1/auth/session").json()
+                csrf = sess["csrf_token"]
+                self.assertFalse(sess["email_share_configured"])
+
+                # 2. Missing/invalid CSRF rejected with 403
+                r_no_csrf = client.post(
+                    "/api/v1/share/email",
+                    json={"plan": self._sample_plan()},
+                    headers={"X-CSRF-Token": "invalid-csrf-token"},
+                )
+                self.assertEqual(r_no_csrf.status_code, 403)
+
+                # 3. Unconfigured SMTP returns 503 with Gmail Compose fallback URL
+                r_unconf = client.post(
+                    "/api/v1/share/email",
+                    json={"plan": self._sample_plan(), "locale": "he"},
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(r_unconf.status_code, 503)
+                unconf_body = r_unconf.json()
+                self.assertEqual(unconf_body["error"], "email_not_configured")
+                self.assertTrue(
+                    unconf_body["fallback_gmail_compose_url"].startswith(
+                        "https://mail.google.com/mail/?"
+                    )
+                )
+
+                # 4. Enable SMTP_TEST_MODE=1 -> succeeds with bilingual RTL HTML + XSS escaping
+                os.environ["SMTP_TEST_MODE"] = "1"
+                self.assertTrue(client.get("/api/v1/auth/session").json()["email_share_configured"])
+
+                r_ok = client.post(
+                    "/api/v1/share/email",
+                    json={
+                        "recipients": "owner.share@gmail.com, spouse.share@gmail.com",
+                        "locale": "he",
+                        "personal_note": "<script>alert(1)</script> חופשה מעולה!",
+                        "plan": self._sample_plan(),
+                    },
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(r_ok.status_code, 200)
+                ok_body = r_ok.json()
+                self.assertEqual(ok_body["status"], "sent")
+                self.assertEqual(ok_body["delivery_mode"], "test_outbox")
+                self.assertEqual(
+                    ok_body["recipients"], ["owner.share@gmail.com", "spouse.share@gmail.com"]
+                )
+                outbox = client.router.share_email_service.get_test_outbox()
+                self.assertEqual(len(outbox), 1)
+                self.assertIn('dir="rtl"', outbox[0]["html_body"])
+                self.assertNotIn("<script>", outbox[0]["html_body"])
+                self.assertIn("&lt;script&gt;", outbox[0]["html_body"])
+
+                # 5. English LTR template
+                r_en = client.post(
+                    "/api/v1/share/email",
+                    json={"locale": "en", "plan": self._sample_plan()},
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(r_en.status_code, 200)
+                self.assertIn('dir="ltr"', client.router.share_email_service.get_test_outbox()[-1]["html_body"])
+
+                # 6. Validation: header injection, bad email, >3 recipients -> 422
+                for bad_recips in (
+                    "bad-email",
+                    "ok@gmail.com\r\nBcc: evil@example.com",
+                    "a@gmail.com, b@gmail.com, c@gmail.com, d@gmail.com",
+                ):
+                    r_bad = client.post(
+                        "/api/v1/share/email",
+                        json={"recipients": bad_recips, "plan": self._sample_plan()},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(r_bad.status_code, 422, bad_recips)
+
+                # 7. Rate limit (>10/hr per user) -> 429
+                for _ in range(8):
+                    r_rl = client.post(
+                        "/api/v1/share/email",
+                        json={"plan": self._sample_plan()},
+                        headers={"X-CSRF-Token": csrf},
+                    )
+                    self.assertEqual(r_rl.status_code, 200)
+                r_429 = client.post(
+                    "/api/v1/share/email",
+                    json={"plan": self._sample_plan()},
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(r_429.status_code, 429)
+                self.assertEqual(r_429.json()["error"], "rate_limit_exceeded")
+            finally:
+                for k, v in saved_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+
 if __name__ == "__main__":
     unittest.main()
