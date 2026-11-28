@@ -515,6 +515,7 @@ class ElAlRbdDataClientAdapter:
                     "econ_seats": prev.economy_award_seats if prev else 0,
                     "prem_seats": prev.premium_award_seats if prev else 0,
                     "biz_seats": prev.business_award_seats if prev else 0,
+                    "seen_cabins": set(),
                     "dep_time": dep_hhmm or (prev.departure_time_local if prev else None),
                     "arr_time": arr_hhmm or (prev.arrival_time_local if prev else None),
                 },
@@ -525,11 +526,17 @@ class ElAlRbdDataClientAdapter:
                 entry["arr_time"] = arr_hhmm
             rbd_u = rbd_code.strip().upper()
             if rbd_u in CLASSIC_AWARD_RBDS["BUSINESS"] or rbd_u == "BUSINESS":
-                entry["biz_seats"] = max(entry["biz_seats"], seat_cnt)
+                cabin_key = "biz_seats"
             elif rbd_u in CLASSIC_AWARD_RBDS["PREMIUM"] or rbd_u == "PREMIUM":
-                entry["prem_seats"] = max(entry["prem_seats"], seat_cnt)
+                cabin_key = "prem_seats"
             else:
-                entry["econ_seats"] = max(entry["econ_seats"], seat_cnt)
+                cabin_key = "econ_seats"
+
+            if cabin_key not in entry["seen_cabins"]:
+                entry["seen_cabins"].add(cabin_key)
+                entry[cabin_key] = seat_cnt
+            else:
+                entry[cabin_key] = max(entry[cabin_key], seat_cnt)
 
         def _ingest_accumulated_output(acc_wrapper: dict[str, Any]) -> None:
             acc_obj = acc_wrapper.get("AccumulatedOutput")

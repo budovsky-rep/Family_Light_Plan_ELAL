@@ -4959,6 +4959,107 @@ class TestRun19WorkplaceTwoGroupSearchAndApi(unittest.TestCase):
             self.assertGreater(d_moe["count"], 0)
             self.assertEqual(d_moe["proposals"][0]["holiday_alignment_score"], 100.0)
 
+    def test_passive_sync_downgrades_seats_without_reconcile_slices(self) -> None:
+        """Passive sync (without reconcile_slices) must downgrade a cabin's seats (e.g. 2+ -> 1)
+        while preserving untouched cabins on the same flight and keeping max() within the same payload."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = SQLiteRepository(db_path=Path(tmpdir) / "passive_downgrade.db", auto_seed=False)
+            adapter = ElAlRbdDataClientAdapter(repo)
+
+            # 1. Initial sync: LY5175 TLV->VRN has Economy=2+ and Premium=2
+            adapter.parse_and_import_external_rbd_payload(
+                [
+                    {
+                        "destination_iata": "VRN",
+                        "direction": "OUTBOUND",
+                        "flight_number": "LY5175",
+                        "flight_date": "2027-04-20",
+                        "economy_seats": "2+",
+                        "premium_seats": 2,
+                        "dep_time": "17:30",
+                        "arr_time": "20:35",
+                    }
+                ]
+            )
+            before = repo.get_cached_elal_bonus(
+                destinations=["VRN"],
+                start_date=date(2027, 4, 20),
+                end_date=date(2027, 4, 20),
+            )
+            self.assertEqual(len(before), 1)
+            self.assertEqual(before[0].economy_award_seats, 2)
+            self.assertTrue(before[0].economy_seats_is_two_plus)
+            self.assertEqual(before[0].premium_award_seats, 2)
+
+            # 2. Passive sync (no reconcile_slices): Economy drops to 1 seat; Premium omitted (0)
+            adapter.parse_and_import_external_rbd_payload(
+                [
+                    {
+                        "destination_iata": "VRN",
+                        "direction": "OUTBOUND",
+                        "flight_number": "LY5175",
+                        "flight_date": "2027-04-20",
+                        "economy_seats": "1",
+                        "premium_seats": 0,
+                        "dep_time": "17:30",
+                        "arr_time": "20:25",
+                    }
+                ]
+            )
+            after = repo.get_cached_elal_bonus(
+                destinations=["VRN"],
+                start_date=date(2027, 4, 20),
+                end_date=date(2027, 4, 20),
+            )
+            self.assertEqual(len(after), 1)
+            self.assertEqual(after[0].economy_award_seats, 1)
+            self.assertFalse(after[0].economy_seats_is_two_plus)
+            self.assertEqual(after[0].premium_award_seats, 2)
+            self.assertEqual(after[0].arrival_time_local, "20:25")
+
+            # 3. Same-payload multi-RBD records (E=1 and X=2) still resolve to max (2+)
+            adapter.parse_and_import_external_rbd_payload(
+                {
+                    "AccumulatedOutput": {
+                        "resultSet": [
+                            {
+                                "Record": [
+                                    {
+                                        "SegmentRoute": "TLVVRN",
+                                        "SegmentDepDate": "2027-04-20",
+                                        "SegmentDepTime": "2027-04-20T17:30:00",
+                                        "SegmentArrTime": "2027-04-20T20:25:00",
+                                        "FlightCarrier": "LY",
+                                        "FlightNumber": "5175",
+                                        "RBD": "E",
+                                        "NewAvailability": "1",
+                                    },
+                                    {
+                                        "SegmentRoute": "TLVVRN",
+                                        "SegmentDepDate": "2027-04-20",
+                                        "SegmentDepTime": "2027-04-20T17:30:00",
+                                        "SegmentArrTime": "2027-04-20T20:25:00",
+                                        "FlightCarrier": "LY",
+                                        "FlightNumber": "5175",
+                                        "RBD": "X",
+                                        "NewAvailability": "2+",
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                }
+            )
+            multi = repo.get_cached_elal_bonus(
+                destinations=["VRN"],
+                start_date=date(2027, 4, 20),
+                end_date=date(2027, 4, 20),
+            )
+            self.assertEqual(len(multi), 1)
+            self.assertEqual(multi[0].economy_award_seats, 2)
+            self.assertTrue(multi[0].economy_seats_is_two_plus)
+            self.assertEqual(multi[0].premium_award_seats, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

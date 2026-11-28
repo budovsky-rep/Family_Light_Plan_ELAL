@@ -3770,8 +3770,8 @@
       step3CalloutHtml = `<div class="handoff-warning-callout" data-handoff-warning="high"><span aria-hidden="true">⚠️</span> <span>${warnText}</span></div>`;
     } else {
       const tipText = isHe
-        ? 'טיפ: כשמחפשים יותר מ-2 מושבים (או כשיש מושב בודד), התחלה במבוגר 1 והעלאה הדרגתית באתר אל על מונעת פספוס מושבי בונוס.'
-        : 'Tip: When checking for more than 2 seated passengers (or a 1-seat leg), starting with 1 adult and incrementing on EL AL avoids zero-result searches.';
+        ? 'טיפ: גם כשמופיע 2+, הזמינות החיה בהזמנה (במיוחד בסאן דור) עלולה לרדת למושב 1 — התחלה במבוגר 1 והעלאה הדרגתית באתר אל על <span class="handoff-seq-mono" dir="ltr">(1 → 2)</span> מונעת פספוס מושבי בונוס.'
+        : 'Tip: Even when 2+ is shown, live booking availability (especially on Sun d\'Or) can drop to 1 seat — starting with 1 adult and incrementing on EL AL <span class="handoff-seq-mono" dir="ltr">(1 → 2)</span> avoids missing open bonus seats.';
       step3CalloutHtml = `<div class="handoff-warning-callout" data-handoff-warning="info"><span aria-hidden="true">ℹ️</span> <span>${tipText}</span></div>`;
     }
 
@@ -3787,8 +3787,8 @@
 
     const step3Title = isHe ? 'בדקו כמות מושבי בונוס מדויקת והזמינו' : 'Check exact bonus seat count & book';
     const step3Body = isHe
-      ? 'אמתו את זמינות מושבי הבונוס העדכנית והשלימו את ההזמנה ישירות באתר אל על.'
-      : 'Confirm live bonus seat availability and complete your booking directly on EL AL.';
+      ? 'אמתו את זמינות מושבי הבונוס העדכנית (שעלולה להיות נמוכה יותר ממחשבון אל על, במיוחד בטיסות סאן דור) והשלימו את ההזמנה ישירות באתר אל על.'
+      : 'Confirm live bonus seat availability (which may be lower than EL AL\'s calculator, especially on Sun d\'Or flights) and complete your booking directly on EL AL.';
 
     bodyEl.innerHTML = `
       <div class="handoff-cheatsheet" id="booking-handoff-cheatsheet" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}">
@@ -5910,8 +5910,8 @@
         </summary>
         <p class="award-note-body">${
           isHe
-            ? '<strong>מאגר טיסות הבונוס מתעדכן פעם ביום.</strong> מספר מושבי הבונוס ומספר הנקודות לכרטיס מבוססים על מאגר כרטיסי הבונוס של אל על ואינם מחייבים. "2+" פירושו שאל על מאשרת לפחות 2 מושבי בונוס בטיסה. הזמינות והנקודות הסופיות נקבעות בעת ההזמנה באל על.'
-            : '<strong>The bonus flight database is updated once daily.</strong> Bonus seat counts and points per ticket come from EL AL\'s award seat database and are not binding. "2+" means EL AL confirms at least 2 bonus seats on the flight. Final availability and points are set when you book with EL AL.'
+            ? '<strong>מאגר טיסות הבונוס מתעדכן פעם ביום.</strong> מספר מושבי הבונוס ומספר הנקודות לכרטיס מבוססים על מאגר כרטיסי הבונוס של אל על ואינם מחייבים. "2+" פירושו שלפחות 2 מושבי בונוס הופיעו במחשבון אל על, אך הזמינות החיה במנוע ההזמנות (במיוחד בטיסות סאן דור / חכירה) עלולה להיות נמוכה יותר. הזמינות והנקודות הסופיות נקבעות בעת ההזמנה באל על.'
+            : '<strong>The bonus flight database is updated once daily.</strong> Bonus seat counts and points per ticket come from EL AL\'s award seat database and are not binding. "2+" means at least 2 bonus seats appeared in EL AL\'s calculator, though live booking inventory (especially on Sun d\'Or / leased flights) may be lower. Final availability and points are set when you book with EL AL.'
         }</p>
       </details>
     `;
@@ -6172,8 +6172,8 @@
           dirInfo.inbound.twoPlus ||
           Boolean(it.requires_two_plus_seat_verification);
         const twoPlusTailHtml = isHe
-          ? ' = לפחות 2 מושבי בונוס בטיסה; ייתכן שיש יותר.'
-          : ' = at least 2 bonus seats on this flight; there may be more.';
+          ? ' = לפחות 2 מושבי בונוס לפי מחשבון אל על (הזמינות החיה בהזמנה, במיוחד בסאן דור, עלולה להיות נמוכה יותר).'
+          : ' = at least 2 bonus seats per EL AL\'s calculator (live booking inventory, especially on Sun d\'Or, may be lower).';
         const twoPlusPartyHtml =
           seatedCount > 2
             ? (isHe
