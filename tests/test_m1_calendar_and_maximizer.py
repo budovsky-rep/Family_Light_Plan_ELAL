@@ -1673,5 +1673,434 @@ class TestRun18WorkplaceCalendarAndMaximizer(unittest.TestCase):
             repo.close()
 
 
+class TestRun19WorkplaceTwoGroupCatalogAndBestYear(unittest.TestCase):
+    """Run 19 R1–R5: Two-group workplace catalog, auto min/max nights, Best-Year Maximizer, workdays budget & TLV Yom Kippur rule."""
+
+    _FORBIDDEN_TOKENS = (
+        "בוגרים",
+        "חיסכון",
+        "$",
+        "¢",
+        "הערכת",
+        "מזומן",
+        "Est. Cash",
+        "נקודות:",
+        "בי״ס",
+        'בי"ס',
+        "בית ספר",
+        "מוסדות החינוך",
+        "משרד החינוך",
+        "חיסור",
+        "ניצנים",
+        "יוני",
+    )
+
+    def test_run19_two_group_workplace_catalog_no_duplicate_sukkot_multi_year(self) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        expected_ind = {"PESACH", "YOM_HAATZMAUT", "SHAVUOT", "ROSH_HASHANAH", "SUKKOT"}
+        expected_mega = {
+            "FULL_TISHREI",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "ROSH_HASHANAH_KIPPUR_BRIDGE",
+        }
+        for as_of in ("2026-11-28", "2027-04-25", "2027-10-12", "2028-02-29", "2036-01-01"):
+            cat = IsraeliWorkplaceCalendarService.get_workplace_holiday_catalog_for_rolling_year(
+                as_of_date=as_of
+            )
+            self.assertEqual(cat["catalog_count"], 8)
+            self.assertEqual(len(cat["catalog_items"]), 8)
+            self.assertEqual(len(cat["holiday_groups"]), 2)
+            self.assertEqual(cat["best_year_option"]["holiday_code"], "BEST_YEAR_MAXIMIZER")
+            self.assertEqual(cat["best_year_option"]["holiday_group"], "BEST_YEAR")
+            self.assertEqual(cat["best_year_option"]["recommended_min_nights"], 3)
+            self.assertEqual(cat["best_year_option"]["recommended_max_nights"], 15)
+
+            g_ind = cat["holiday_groups"][0]
+            g_mega = cat["holiday_groups"][1]
+            self.assertEqual(g_ind["group_id"], "INDIVIDUAL_HOLIDAYS")
+            self.assertEqual(g_mega["group_id"], "MEGA_BRIDGES")
+
+            ind_codes = [it["holiday_code"] for it in g_ind["items"]]
+            mega_codes = [it["holiday_code"] for it in g_mega["items"]]
+            self.assertEqual(len(ind_codes), 5)
+            self.assertEqual(len(mega_codes), 3)
+            self.assertEqual(set(ind_codes), expected_ind)
+            self.assertEqual(set(mega_codes), expected_mega)
+            self.assertEqual(set(ind_codes) & set(mega_codes), set())
+            self.assertEqual(ind_codes.count("SUKKOT"), 1)
+
+            by_code = {it["holiday_code"]: it for it in cat["catalog_items"]}
+            self.assertIn("סוכות בלבד", by_code["SUKKOT"]["name_he"])
+            self.assertEqual(
+                by_code["FULL_TISHREI"]["name_he"], "כל חגי תשרי: ראש השנה → סוכות"
+            )
+            self.assertEqual(
+                by_code["YOM_KIPPUR_SUKKOT_BRIDGE"]["name_he"], "גשר כיפור–סוכות"
+            )
+            self.assertEqual(
+                by_code["ROSH_HASHANAH_KIPPUR_BRIDGE"]["name_he"], "גשר ראש השנה–כיפור"
+            )
+
+            for it in cat["catalog_items"]:
+                self.assertFalse(
+                    IsraeliWorkplaceCalendarService.is_tlv_yom_kippur_closure(
+                        it["recommended_window_start"]
+                    ),
+                    f"Recommended start on TLV YK closure: {it}",
+                )
+                self.assertFalse(
+                    IsraeliWorkplaceCalendarService.is_tlv_yom_kippur_closure(
+                        it["recommended_window_end"]
+                    ),
+                    f"Recommended end on TLV YK closure: {it}",
+                )
+                blob = f"{it['name_he']} {it['name_en']} {it['label_he']} {it['label_en']}"
+                for bad in self._FORBIDDEN_TOKENS:
+                    self.assertNotIn(bad, blob, f"Forbidden token {bad!r} in {blob!r}")
+
+            # Legacy 6-item list preserved verbatim
+            legacy = IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                as_of_date=as_of
+            )
+            self.assertEqual(len(legacy), 6)
+            self.assertTrue(all(len(it.keys()) == 21 for it in legacy))
+
+    def test_run19_recommended_min_max_nights_metadata_for_individual_and_mega_vacations(
+        self,
+    ) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        expected_ranges = {
+            "BEST_YEAR_MAXIMIZER": (3, 15),
+            "FULL_TISHREI": (16, 23),
+            "YOM_KIPPUR_SUKKOT_BRIDGE": (10, 16),
+            "ROSH_HASHANAH_KIPPUR_BRIDGE": (9, 13),
+            "SUKKOT": (4, 8),
+            "PESACH": (4, 7),
+            "ROSH_HASHANAH": (2, 4),
+            "YOM_HAATZMAUT": (2, 4),
+            "SHAVUOT": (2, 4),
+        }
+        for code, expected in expected_ranges.items():
+            self.assertEqual(
+                IsraeliWorkplaceCalendarService.get_recommended_nights_range(code),
+                expected,
+                code,
+            )
+
+        cat = IsraeliWorkplaceCalendarService.get_workplace_holiday_catalog_for_rolling_year(
+            "2026-11-28"
+        )
+        for it in cat["catalog_items"]:
+            exp_min, exp_max = expected_ranges[it["holiday_code"]]
+            self.assertEqual(it["recommended_min_nights"], exp_min)
+            self.assertEqual(it["recommended_max_nights"], exp_max)
+
+    def test_run19_mega_bridge_window_generation_covers_all_constituent_holidays(
+        self,
+    ) -> None:
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        try:
+            cal = MoECalendarService(repo)
+
+            def _forbid(*_args, **_kwargs):
+                raise AssertionError("MoE DB must NOT be called in 0-children workplace mode")
+
+            cal.get_calendar_windows = _forbid  # type: ignore[method-assign]
+            cal.get_child_day_status = _forbid  # type: ignore[method-assign]
+            cal.resolve_upcoming_holiday_occurrence = _forbid  # type: ignore[method-assign]
+
+            maximizer = VacationMaximizerEngine(cal)
+            p0 = FamilyProfile(id="r19-p0", adults_count=2, children=[])
+
+            # FULL_TISHREI 2027 (16..23n) -> must cover RH + YK + SUKKOT
+            ft_wins = maximizer.generate_candidate_windows(
+                {
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "FULL_TISHREI",
+                    "direct_target_year": 2027,
+                    "min_trip_nights": 16,
+                    "max_trip_nights": 23,
+                },
+                p0,
+            )
+            self.assertGreater(len(ft_wins), 0)
+            top_ft = ft_wins[0]
+            self.assertEqual(
+                [m["code"] for m in top_ft.merged_holidays],
+                ["ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"],
+            )
+            self.assertTrue(top_ft.is_merged_multi_holiday)
+            self.assertEqual(
+                top_ft.associated_holiday_codes,
+                ["ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"],
+            )
+
+            # YOM_KIPPUR_SUKKOT_BRIDGE 2027 (10..16n) -> must cover YK + SUKKOT (not Sukkot-only)
+            yk_suk_wins = maximizer.generate_candidate_windows(
+                {
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "YOM_KIPPUR_SUKKOT_BRIDGE",
+                    "direct_target_year": 2027,
+                    "min_trip_nights": 10,
+                    "max_trip_nights": 16,
+                },
+                p0,
+            )
+            self.assertGreater(len(yk_suk_wins), 0)
+            self.assertEqual(
+                [m["code"] for m in yk_suk_wins[0].merged_holidays],
+                ["YOM_KIPPUR", "SUKKOT"],
+            )
+            self.assertTrue(yk_suk_wins[0].is_merged_multi_holiday)
+
+            # SUKKOT alone 2027 (4..8n) -> SUKKOT only
+            suk_wins = maximizer.generate_candidate_windows(
+                {
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "SUKKOT",
+                    "direct_target_year": 2027,
+                    "min_trip_nights": 4,
+                    "max_trip_nights": 8,
+                },
+                p0,
+            )
+            self.assertGreater(len(suk_wins), 0)
+            self.assertEqual([m["code"] for m in suk_wins[0].merged_holidays], ["SUKKOT"])
+            self.assertFalse(suk_wins[0].is_merged_multi_holiday)
+        finally:
+            repo.close()
+
+    def test_run19_best_year_maximizer_and_max_workdays_off_budget_filter(self) -> None:
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        try:
+            cal = MoECalendarService(repo)
+            maximizer = VacationMaximizerEngine(cal)
+            p0 = FamilyProfile(id="r19-best-year", adults_count=2, children=[])
+
+            all_wins = maximizer.generate_candidate_windows(
+                {
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "BEST_YEAR_MAXIMIZER",
+                    "as_of_date": "2026-11-28",
+                    "min_trip_nights": 3,
+                    "max_trip_nights": 15,
+                },
+                p0,
+            )
+            self.assertGreater(len(all_wins), 10)
+            distinct_codes = {
+                tuple(m["code"] for m in w.merged_holidays) for w in all_wins
+            }
+            self.assertGreaterEqual(len(distinct_codes), 4)
+            for w in all_wins:
+                self.assertGreaterEqual(w.start_date, date(2026, 11, 28))
+                self.assertLessEqual(w.start_date, date(2027, 11, 28))
+                self.assertGreater(len(w.merged_holidays), 0)
+
+            for budget in (2.0, 1.5, 0.0):
+                b_wins = maximizer.generate_candidate_windows(
+                    {
+                        "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                        "direct_holiday_code": "BEST_YEAR_MAXIMIZER",
+                        "as_of_date": "2026-11-28",
+                        "min_trip_nights": 3,
+                        "max_trip_nights": 15,
+                        "max_workdays_off": budget,
+                    },
+                    p0,
+                )
+                for w in b_wins:
+                    self.assertLessEqual(float(w.workplace_vacation_days_cost or 0.0), budget + 1e-9)
+                if budget >= 1.5:
+                    self.assertGreater(len(b_wins), 0)
+
+            # Impossible 0.0 workdays budget on FULL_TISHREI -> empty list
+            zero_ft = maximizer.generate_candidate_windows(
+                {
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "FULL_TISHREI",
+                    "direct_target_year": 2027,
+                    "min_trip_nights": 16,
+                    "max_trip_nights": 23,
+                    "max_workdays_off": 0.0,
+                },
+                p0,
+            )
+            self.assertEqual(zero_ft, [])
+        finally:
+            repo.close()
+
+    def test_run19_ben_gurion_yom_kippur_closure_stay_abroad_vs_endpoint_and_overnight_rejection(
+        self,
+    ) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+        from backend.app.schemas.domain import FlightLeg
+
+        # Verify closure windows across 2025..2029
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.yom_kippur_closure_window(2025),
+            (date(2025, 10, 1), date(2025, 10, 2)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.yom_kippur_closure_window(2026),
+            (date(2026, 9, 20), date(2026, 9, 21)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.yom_kippur_closure_window(2027),
+            (date(2027, 10, 10), date(2027, 10, 11)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.yom_kippur_closure_window(2029),
+            (date(2029, 9, 18), date(2029, 9, 19)),
+        )
+
+        # (a) Staying abroad across Yom Kippur 2027 is ALLOWED and saves 1 workday
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        try:
+            cal = MoECalendarService(repo)
+            maximizer = VacationMaximizerEngine(cal)
+            p0 = FamilyProfile(id="r19-yk", adults_count=2, children=[])
+            w_abroad = maximizer.evaluate_window(p0, date(2027, 10, 8), date(2027, 10, 22))
+            self.assertFalse(w_abroad.has_tlv_airport_closure_on_endpoints)
+            self.assertEqual(
+                IsraeliWorkplaceCalendarService.classify_workday_date(date(2027, 10, 11)),
+                ("OFFICIAL_HOLIDAY", 0.0),
+            )
+            self.assertEqual(w_abroad.workplace_vacation_days_cost, 6.5)
+            yk_entries = [m for m in w_abroad.merged_holidays if m["code"] == "YOM_KIPPUR"]
+            self.assertEqual(len(yk_entries), 1)
+            self.assertTrue(yk_entries[0]["is_stay_abroad_holiday"])
+
+            # (b) Departing or returning on yk_eve or yk_day (2027 & 2029) strictly REJECTED
+            for bad_start, bad_end in (
+                (date(2027, 10, 10), date(2027, 10, 18)),
+                (date(2027, 10, 11), date(2027, 10, 18)),
+                (date(2027, 10, 2), date(2027, 10, 10)),
+                (date(2027, 10, 2), date(2027, 10, 11)),
+                (date(2029, 9, 18), date(2029, 9, 25)),
+                (date(2029, 9, 12), date(2029, 9, 19)),
+            ):
+                w_bad = maximizer.evaluate_window(p0, bad_start, bad_end)
+                self.assertTrue(w_bad.has_tlv_airport_closure_on_endpoints)
+                self.assertEqual(w_bad.workday_efficiency_score, 0.0)
+                self.assertTrue(
+                    IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+                        bad_start, bad_end
+                    )
+                )
+
+            # (c) Overnight arrival crossing midnight into TLV on yk_eve >= 13:00 REJECTED vs < 13:00 ALLOWED
+            jfk_blocked_leg = FlightLeg(
+                flight_number="LY002",
+                origin_iata="JFK",
+                destination_iata="TLV",
+                flight_date=date(2027, 10, 9),
+                departure_time_local="22:00",
+                arrival_time_local="15:30",
+            )
+            self.assertTrue(
+                IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+                    date(2027, 10, 1),
+                    date(2027, 10, 9),
+                    inbound_legs=[jfk_blocked_leg],
+                )
+            )
+            fco_allowed_leg = FlightLeg(
+                flight_number="LY384",
+                origin_iata="FCO",
+                destination_iata="TLV",
+                flight_date=date(2027, 10, 9),
+                departure_time_local="21:45",
+                arrival_time_local="02:10",
+            )
+            self.assertFalse(
+                IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+                    date(2027, 10, 1),
+                    date(2027, 10, 9),
+                    inbound_legs=[fco_allowed_leg],
+                )
+            )
+        finally:
+            repo.close()
+
+    def test_run19_zero_ddl_sqlite_reload_hydrates_merged_holidays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = SQLiteRepository(db_path=Path(tmpdir) / "run19_reload.db", auto_seed=False)
+            try:
+                q = FlightSearchQuery(
+                    id="r19-q1",
+                    family_profile_id=None,
+                    origin_iata="TLV",
+                    destination_iatas=["BKK"],
+                )
+                itin_ft = FlightItinerary(
+                    id="r19-itin-ft",
+                    search_query_id="r19-q1",
+                    destination_iata="BKK",
+                    destination_city_he="בנגקוק",
+                    departure_date=date(2027, 10, 1),
+                    return_date=date(2027, 10, 22),
+                    trip_nights=21,
+                )
+                prop_ft = VacationOptionProposal(
+                    id="r19-prop-ft",
+                    search_query_id="r19-q1",
+                    itinerary_id="r19-itin-ft",
+                    associated_holiday_codes=["ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"],
+                    window_set_type="STRICT_INTERSECTION",
+                    holiday_alignment_score=65.0,
+                    flight_bonus_value_score=100.0,
+                    combined_trip_optimization_score=80.8,
+                    explanation_summary_he="בנגקוק (BKK) | ציונים: יעילות ימי חופש=65.0/100, FBVS=100.0, CTOS=80.8",
+                    itinerary=itin_ft,
+                    calendar_mode="WORKPLACE",
+                )
+                itin_reg = FlightItinerary(
+                    id="r19-itin-reg",
+                    search_query_id="r19-q1",
+                    destination_iata="FCO",
+                    destination_city_he="רומא",
+                    departure_date=date(2026, 12, 17),
+                    return_date=date(2026, 12, 24),
+                    trip_nights=7,
+                )
+                prop_reg = VacationOptionProposal(
+                    id="r19-prop-reg",
+                    search_query_id="r19-q1",
+                    itinerary_id="r19-itin-reg",
+                    associated_holiday_codes=[],
+                    window_set_type="SPECIFIC_USER_WINDOW",
+                    holiday_alignment_score=20.0,
+                    flight_bonus_value_score=100.0,
+                    combined_trip_optimization_score=56.0,
+                    explanation_summary_he="רומא (FCO) | ציונים: יעילות ימי חופש=20.0/100, FBVS=100.0, CTOS=56.0",
+                    itinerary=itin_reg,
+                    calendar_mode="WORKPLACE",
+                )
+                repo.save_search_results(q, [prop_ft, prop_reg])
+
+                reloaded_ft = repo.get_proposal_by_id("r19-prop-ft")
+                reloaded_reg = repo.get_proposal_by_id("r19-prop-reg")
+                self.assertIsNotNone(reloaded_ft)
+                self.assertIsNotNone(reloaded_reg)
+                self.assertEqual(
+                    [m["code"] for m in reloaded_ft.merged_holidays],
+                    ["ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"],
+                )
+                self.assertTrue(reloaded_ft.is_merged_multi_holiday)
+                self.assertEqual(reloaded_reg.merged_holidays, [])
+                self.assertFalse(reloaded_reg.is_merged_multi_holiday)
+            finally:
+                repo.close()
+
+
 if __name__ == "__main__":
     unittest.main()

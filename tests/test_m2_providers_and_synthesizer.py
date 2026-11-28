@@ -4217,7 +4217,7 @@ class TestRun14WorkplaceHolidayCalendarAndCost(unittest.TestCase):
         from backend.app.planner_synthesizer.bonus_planner_service import (
             _are_open_jaw_compatible,
         )
-        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile
+        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile, FamilyProfile
 
         # 1. Island / sea / distant pairs are strictly disallowed regardless of trip nights
         for bad_a, bad_b in (
@@ -4411,7 +4411,7 @@ class TestRun18WorkplacePlannerAndApi(unittest.TestCase):
         self,
     ) -> None:
         from backend.app.main import VacationPlannerTestClient
-        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile
+        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile, FamilyProfile
         from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4666,6 +4666,298 @@ class TestRun18WorkplacePlannerAndApi(unittest.TestCase):
                 [p["workday_efficiency_score"] for p in b_wp1["proposals"]],
                 [p["workday_efficiency_score"] for p in b_wp2["proposals"]],
             )
+
+
+class TestRun19WorkplaceTwoGroupSearchAndApi(unittest.TestCase):
+    """Run 19 R1–R5: Two-group workplace API, Best-Year Maximizer, max_workdays_off budget, mega-bridge auto-nights & YK closure."""
+
+    _FORBIDDEN_SCHOOL_AND_PRICE = (
+        "בוגרים",
+        "חיסכון",
+        "$",
+        "¢",
+        "הערכת",
+        "מזומן",
+        "Est. Cash",
+        "נקודות:",
+        "בי״ס",
+        'בי"ס',
+        "בית ספר",
+        "מוסדות החינוך",
+        "משרד החינוך",
+        "חיסור",
+        "ניצנים",
+        "יוני",
+    )
+
+    def test_run19_workplace_upcoming_api_two_groups_and_backwards_compat(self) -> None:
+        import json
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r19_upcoming.db")
+            r1 = client.get("/api/v1/workplace-calendar/upcoming?as_of=2026-11-28")
+            r2 = client.get(
+                "/api/v1/moe-calendar/upcoming?as_of=2026-11-28&calendar_mode=workplace"
+            )
+            self.assertEqual(r1.status_code, 200)
+            self.assertEqual(r2.status_code, 200)
+            d1 = r1.json()
+            self.assertEqual(d1, r2.json())
+
+            # Backwards-compatible legacy fields preserved verbatim
+            self.assertEqual(d1["count"], 6)
+            self.assertEqual(len(d1["holidays"]), 6)
+
+            # Additive two-group catalog + Best-Year Maximizer
+            self.assertEqual(d1["best_year_option"]["holiday_code"], "BEST_YEAR_MAXIMIZER")
+            self.assertEqual(d1["catalog_count"], 8)
+            self.assertEqual(len(d1["holiday_groups"]), 2)
+            self.assertEqual(d1["holiday_groups"][0]["group_id"], "INDIVIDUAL_HOLIDAYS")
+            self.assertEqual(len(d1["holiday_groups"][0]["items"]), 5)
+            self.assertEqual(d1["holiday_groups"][1]["group_id"], "MEGA_BRIDGES")
+            self.assertEqual(len(d1["holiday_groups"][1]["items"]), 3)
+            self.assertEqual(
+                [it["holiday_code"] for it in d1["holiday_groups"][1]["items"]],
+                ["FULL_TISHREI", "YOM_KIPPUR_SUKKOT_BRIDGE", "ROSH_HASHANAH_KIPPUR_BRIDGE"],
+            )
+            serialized = json.dumps(d1, ensure_ascii=False)
+            for bad in self._FORBIDDEN_SCHOOL_AND_PRICE:
+                self.assertNotIn(bad, serialized)
+
+    def test_run19_search_best_year_maximizer_budget_filter_and_merged_holidays_api(
+        self,
+    ) -> None:
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r19_best_year.db")
+            # 1. Unlimited Best-Year Maximizer
+            r_all = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "BEST_YEAR_MAXIMIZER",
+                    "as_of_date": "2026-11-28",
+                    "destination_iatas": ["FCO", "ATH"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(r_all.status_code, 200)
+            d_all = r_all.json()
+            self.assertEqual(d_all["calendar_mode"], "WORKPLACE")
+            self.assertFalse(d_all["workdays_budget_exceeded"])
+            self.assertEqual(d_all["query"]["min_trip_nights"], 3)
+            self.assertEqual(d_all["query"]["max_trip_nights"], 15)
+            self.assertGreater(d_all["count"], 0)
+            ctos_vals = [p["combined_trip_optimization_score"] for p in d_all["proposals"]]
+            self.assertEqual(ctos_vals, sorted(ctos_vals, reverse=True))
+            sigs = set()
+            for p in d_all["proposals"]:
+                self.assertGreater(len(p["merged_holidays"]), 0)
+                sigs.add(tuple(m["code"] for m in p["merged_holidays"]))
+            self.assertGreaterEqual(len(sigs), 2)
+
+            # 2. Budget filter 2.0 and 1.5 workdays
+            for budget in (2.0, 1.5):
+                r_b = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                        "direct_holiday_code": "BEST_YEAR_MAXIMIZER",
+                        "as_of_date": "2026-11-28",
+                        "max_workdays_off": budget,
+                        "destination_iatas": ["FCO", "ATH"],
+                        "inline_profile": {"adults_count": 2, "children": []},
+                    },
+                )
+                self.assertEqual(r_b.status_code, 200)
+                d_b = r_b.json()
+                self.assertGreater(d_b["count"], 0)
+                for p in d_b["proposals"]:
+                    self.assertLessEqual(p["workplace_vacation_days_cost"], budget + 1e-9)
+
+            # 3. Tight impossible budget 0.0 on FULL_TISHREI -> workdays_budget_exceeded=True + bilingual copy
+            r_tight = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "FULL_TISHREI",
+                    "direct_target_year": 2027,
+                    "max_workdays_off": 0.0,
+                    "destination_iatas": ["FCO"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(r_tight.status_code, 200)
+            d_tight = r_tight.json()
+            self.assertEqual(d_tight["count"], 0)
+            self.assertTrue(d_tight["workdays_budget_exceeded"])
+            self.assertTrue(d_tight["status_message_he"])
+            self.assertTrue(d_tight["status_message_en"])
+
+            # 4. Invalid max_workdays_off -> 422
+            for bad_val in (-1, True, "nan", 50):
+                r_err = client.post(
+                    "/api/v1/vacations/search",
+                    json={
+                        "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                        "direct_holiday_code": "PESACH",
+                        "max_workdays_off": bad_val,
+                        "destination_iatas": ["FCO"],
+                        "inline_profile": {"adults_count": 2, "children": []},
+                    },
+                )
+                self.assertEqual(r_err.status_code, 422, f"Expected 422 for {bad_val!r}")
+
+    def test_run19_search_mega_bridge_auto_nights_manual_override_and_yk_closure_enforcement(
+        self,
+    ) -> None:
+        from backend.app.main import VacationPlannerTestClient
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r19_mega.db")
+
+            # Auto-default nights when omitted: FULL_TISHREI -> (16, 23), YK_SUKKOT -> (10, 16)
+            r_ft = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "FULL_TISHREI",
+                    "direct_target_year": 2027,
+                    "destination_iatas": ["FCO"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(r_ft.status_code, 200)
+            d_ft = r_ft.json()
+            self.assertEqual(d_ft["query"]["min_trip_nights"], 16)
+            self.assertEqual(d_ft["query"]["max_trip_nights"], 23)
+            self.assertGreater(d_ft["count"], 0)
+            self.assertEqual(
+                [m["code"] for m in d_ft["proposals"][0]["merged_holidays"]],
+                ["ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"],
+            )
+            self.assertTrue(d_ft["proposals"][0]["is_merged_multi_holiday"])
+
+            r_yks = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "YOM_KIPPUR_SUKKOT_BRIDGE",
+                    "direct_target_year": 2027,
+                    "destination_iatas": ["FCO"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(r_yks.status_code, 200)
+            d_yks = r_yks.json()
+            self.assertEqual(d_yks["query"]["min_trip_nights"], 10)
+            self.assertEqual(d_yks["query"]["max_trip_nights"], 16)
+
+            # Manual override preserved untouched
+            r_override = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "FULL_TISHREI",
+                    "direct_target_year": 2027,
+                    "min_trip_nights": 12,
+                    "max_trip_nights": 18,
+                    "destination_iatas": ["FCO"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(r_override.status_code, 200)
+            d_ov = r_override.json()
+            self.assertEqual(d_ov["query"]["min_trip_nights"], 12)
+            self.assertEqual(d_ov["query"]["max_trip_nights"], 18)
+
+            # Synthetic 2029 overnight arrival landing TLV 2029-09-18 15:30 (yk_eve >= 13:00) MUST be rejected by allocate_family_tickets!
+            out_2029 = ElAlBonusAvailability(
+                id="LY001_2029-09-10",
+                origin_iata="TLV",
+                destination_iata="JFK",
+                direction="OUTBOUND",
+                flight_number="LY001",
+                flight_date=date(2029, 9, 10),
+                departure_time_local="00:45",
+                arrival_time_local="05:45",
+                economy_award_seats=2,
+                economy_seats_is_two_plus=True,
+                source_url="https://www.elal.com/rbddataclients/#live",
+            )
+            in_2029_blocked = ElAlBonusAvailability(
+                id="LY002_2029-09-17",
+                origin_iata="JFK",
+                destination_iata="TLV",
+                direction="INBOUND",
+                flight_number="LY002",
+                flight_date=date(2029, 9, 17),
+                departure_time_local="22:00",
+                arrival_time_local="15:30",
+                economy_award_seats=2,
+                economy_seats_is_two_plus=True,
+                source_url="https://www.elal.com/rbddataclients/#live",
+            )
+            alloc_blocked = client.router.planner_service.wallet_engine.allocate_family_tickets(
+                profile=FamilyProfile(id="p-2029", adults_count=2, children=[]),
+                outbound_award=out_2029,
+                inbound_award=in_2029_blocked,
+                cash_benchmark_per_pax=0.0,
+                strategy="FULL_BONUS_SAME_CABIN",
+            )
+            self.assertIsNone(alloc_blocked)
+
+            for p in d_ft["proposals"] + d_yks["proposals"]:
+                it = p["itinerary"]
+                self.assertFalse(
+                    IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+                        it["departure_date"],
+                        it["return_date"],
+                        it.get("outbound_legs") or [],
+                        it.get("inbound_legs") or [],
+                    )
+                )
+
+    def test_run19_one_or_more_children_moe_zero_regression(self) -> None:
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "r19_moe.db")
+            r_up = client.get("/api/v1/moe-calendar/upcoming?as_of=2026-11-28")
+            self.assertEqual(r_up.status_code, 200)
+            self.assertEqual(r_up.json()["count"], 11)
+
+            # Even if max_workdays_off=0.0 is sent, 1+ children MOE mode ignores it and returns 100.0 alignment!
+            r_moe = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "PESACH",
+                    "direct_target_year": 2027,
+                    "min_trip_nights": 5,
+                    "max_trip_nights": 8,
+                    "max_workdays_off": 0.0,
+                    "destination_iatas": ["FCO"],
+                    "inline_profile": {
+                        "adults_count": 2,
+                        "children": [
+                            {"child_age_years": 8, "framework_type": "ELEMENTARY_1_3"}
+                        ],
+                    },
+                },
+            )
+            self.assertEqual(r_moe.status_code, 200)
+            d_moe = r_moe.json()
+            self.assertEqual(d_moe["calendar_mode"], "MOE")
+            self.assertFalse(d_moe["workdays_budget_exceeded"])
+            self.assertGreater(d_moe["count"], 0)
+            self.assertEqual(d_moe["proposals"][0]["holiday_alignment_score"], 100.0)
 
 
 if __name__ == "__main__":

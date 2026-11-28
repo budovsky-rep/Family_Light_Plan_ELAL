@@ -7066,12 +7066,15 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             re.compile(r"\bmissed\b", re.IGNORECASE),
         )
         expected_workplace_codes = [
+            "BEST_YEAR_MAXIMIZER",
             "PESACH",
             "YOM_HAATZMAUT",
             "SHAVUOT",
             "ROSH_HASHANAH",
-            "YOM_KIPPUR_SUKKOT_BRIDGE",
             "SUKKOT",
+            "FULL_TISHREI",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "ROSH_HASHANAH_KIPPUR_BRIDGE",
         ]
         expected_moe_codes = [
             "HANUKKAH",
@@ -7612,6 +7615,298 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
         for req in browser.fetch_log:
             req_target = f"{req.get('url', '')} {req.get('path', '')}".lower()
             self.assertNotIn("elal.com", req_target)
+        self.assertEqual(browser.js_errors(), [])
+
+    def test_scenario_32_run19_two_group_mega_holidays_nights_override_budget_and_best_year_e2e(
+        self,
+    ) -> None:
+        """Scenario 32 (Run 19): Real headless-Chrome CDP end-to-end verification of R1–R5 across all 4
+        viewport x locale configurations (he RTL & en LTR x Desktop 1440x900 & Mobile 390x844/360x800):
+        - R1: Two-group #select-direct-holiday (<optgroup individual vs mega_bridge> + featured BEST_YEAR_MAXIMIZER),
+          zero duplicate Sukkot, #workplace-holiday-brief explaining exact holiday chain & TLV Yom Kippur rule.
+        - R2: Auto-adjust min/max nights on holiday/mega-bridge switch (FULL_TISHREI 16..23, YK-Sukkot 10..16,
+          Sukkot 4..8, Pesach 4..7) + zero-clobber manual override across search, he<->en toggle, & budget edits.
+        - R3: #btn-best-year-quick Best-Year Maximizer, optional #controls-workday-budget (presets + 0.5-step +
+          tight-budget actionable empty state #btn-empty-clear-budget), and explicit .card-merged-holidays-strip
+          badges + Yom Kippur stay-abroad pill on cards.
+        - R4 & R5: Live bilingual <optgroup label> switch, zero horizontal overflow, headerH <= 68px at 360x800,
+          zero forbidden copy/MoE terms, #workplace-calendar-bridges-note + 10 rows, and 100% clean 1+ child restoration.
+        """
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ELAL_LIVE_FETCH_ENABLED", old_live)
+            if old_live is not None
+            else os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+        )
+
+        client = self.get_client(db_path)
+        browser = _Run13ChromeSession(self, client, reference_date="2026-11-28")
+
+        def set_dpr2_vp(w: int, h: int, is_mob: bool) -> None:
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": is_mob},
+            )
+            browser.pump(80)
+
+        forbidden_he = (
+            re.compile(r"משרד החינוך"),
+            re.compile(r'בי"ס'),
+            re.compile(r"בי״ס"),
+            re.compile(r"בית ספר"),
+            re.compile(r"מוסדות החינוך"),
+            re.compile(r"חיסור"),
+            re.compile(r"ניצנים"),
+            re.compile(r"(?<![א-ת])בוגרים(?![א-ת])"),
+            re.compile(r"חיסכון"),
+        )
+        forbidden_en = (
+            re.compile(r"\bMoE\b", re.IGNORECASE),
+            re.compile(r"\bschool break", re.IGNORECASE),
+            re.compile(r"\bschool vacation", re.IGNORECASE),
+            re.compile(r"\bNitzanim\b", re.IGNORECASE),
+        )
+
+        def assert_layout_clean(ctx: str, lang_dir: str, check_header_68: bool = False) -> None:
+            snap = browser.eval(
+                """(() => {
+                  const hdr = document.getElementById('app-header');
+                  return {
+                    dir: document.documentElement.getAttribute('dir'),
+                    scrollW: document.documentElement.scrollWidth,
+                    clientW: document.documentElement.clientWidth,
+                    headerH: hdr ? hdr.getBoundingClientRect().height : 0,
+                    bodyText: document.body.innerText || '',
+                  };
+                })()"""
+            )
+            self.assertEqual(snap["dir"], lang_dir, ctx)
+            self.assertLessEqual(snap["scrollW"], snap["clientW"] + 1, f"Horizontal overflow in {ctx}: {snap}")
+            if check_header_68:
+                self.assertLessEqual(snap["headerH"], 68.5, f"Header too tall in {ctx}: {snap['headerH']}")
+            pats = forbidden_he if lang_dir == "rtl" else forbidden_en
+            for pat in pats:
+                m = pat.search(snap["bodyText"])
+                if m is not None:
+                    self.fail(f"Forbidden token {m.group(0)!r} in {ctx}")
+
+        # ---- Config 1: Hebrew RTL Desktop (1440x900) ----
+        set_dpr2_vp(1440, 900, False)
+        browser.mount()
+        browser.real_click("#tab-mode-holiday", after_ms=100)
+
+        # R1: Verify 2 <optgroup>s + featured BEST_YEAR_MAXIMIZER + zero duplicate Sukkot
+        grp_snap = browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              const grps = Array.from(sel.querySelectorAll('optgroup')).map(g => ({
+                group: g.getAttribute('data-holiday-group'),
+                label: g.label,
+                opts: Array.from(g.querySelectorAll('option')).map(o => ({ val: o.value, txt: o.textContent.trim() }))
+              }));
+              const topOpts = Array.from(sel.children).filter(el => el.tagName === 'OPTION').map(o => ({ val: o.value, txt: o.textContent.trim() }));
+              return { grps, topOpts, val: sel.value };
+            })()"""
+        )
+        self.assertEqual(len(grp_snap["topOpts"]), 1)
+        self.assertEqual(grp_snap["topOpts"][0]["val"], "BEST_YEAR_MAXIMIZER")
+        self.assertIn("המיקסום הטוב ביותר", grp_snap["topOpts"][0]["txt"])
+        self.assertEqual(len(grp_snap["grps"]), 2)
+        self.assertEqual(grp_snap["grps"][0]["group"], "individual")
+        self.assertEqual(grp_snap["grps"][1]["group"], "mega_bridge")
+        ind_vals = [o["val"] for o in grp_snap["grps"][0]["opts"]]
+        mega_vals = [o["val"] for o in grp_snap["grps"][1]["opts"]]
+        self.assertEqual(ind_vals.count("SUKKOT"), 1)
+        self.assertNotIn("SUKKOT", mega_vals)
+        self.assertEqual(
+            mega_vals,
+            ["FULL_TISHREI", "YOM_KIPPUR_SUKKOT_BRIDGE", "ROSH_HASHANAH_KIPPUR_BRIDGE"],
+        )
+
+        # R2: Select FULL_TISHREI -> auto-sets 16..23 nights + Bridge Dispatch Ribbon with YK rule
+        browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              sel.value = 'FULL_TISHREI';
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            })()"""
+        )
+        browser.pump(100)
+        self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), "16")
+        self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), "23")
+        brief_he = browser.text("#workplace-holiday-brief")
+        self.assertIn("ראש השנה", brief_he)
+        self.assertIn("סוכות", brief_he)
+        self.assertNotIn("נתב״ג", brief_he)
+
+        # Run FULL_TISHREI search -> verify merged-holidays stamp & YK abroad pill on cards
+        browser.real_click("#btn-run-search", after_ms=150)
+        browser.wait_until(
+            "document.querySelectorAll('#zone-results .card-merged-holidays-strip[data-merged-holidays=\"true\"]').length >= 1",
+            "FULL_TISHREI cards rendered with merged-holidays strip",
+        )
+        ft_card = browser.eval(
+            """(() => {
+              const strip = document.querySelector('#zone-results .card-merged-holidays-strip[data-merged-holidays="true"]');
+              const chips = Array.from(strip.querySelectorAll('.merged-holiday-chip')).map(el => el.textContent.trim());
+              return {
+                count: Number(strip.getAttribute('data-merged-count')),
+                ykAbroad: strip.getAttribute('data-yom-kippur-abroad'),
+                chips,
+                ykPill: (strip.querySelector('.merged-yk-pill')?.textContent || '').trim()
+              };
+            })()"""
+        )
+        self.assertEqual(ft_card["count"], 3)
+        self.assertEqual(ft_card["ykAbroad"], "true")
+        self.assertEqual(ft_card["chips"], ["ראש השנה", "יום כיפור", "סוכות"])
+        self.assertIn("כיפור", ft_card["ykPill"])
+
+        # R2: Select YOM_KIPPUR_SUKKOT_BRIDGE -> 10..16, SUKKOT -> 4..8, FULL_TISHREI -> manual override 12..19 preserved!
+        for code, exp_min, exp_max in (
+            ("YOM_KIPPUR_SUKKOT_BRIDGE", "10", "16"),
+            ("SUKKOT", "4", "8"),
+            ("FULL_TISHREI", "16", "23"),
+        ):
+            browser.eval(
+                f"""(() => {{
+                  const sel = document.getElementById('select-direct-holiday');
+                  sel.value = '{code}';
+                  sel.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }})()"""
+            )
+            browser.pump(60)
+            self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), exp_min, code)
+            self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), exp_max, code)
+
+        # Manual override to 12..19 -> MUST NOT be clobbered by search, he<->en toggle, or budget click!
+        browser.eval(
+            """(() => {
+              const minEl = document.getElementById('input-min-nights');
+              const maxEl = document.getElementById('input-max-nights');
+              minEl.value = '12';
+              minEl.dispatchEvent(new Event('input', { bubbles: true }));
+              maxEl.value = '19';
+              maxEl.dispatchEvent(new Event('input', { bubbles: true }));
+            })()"""
+        )
+        browser.pump(60)
+        browser.real_click("#btn-run-search", after_ms=150)
+        self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), "12")
+        self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), "19")
+
+        # Toggle he -> en -> he: verify live English <optgroup label> & manual nights untouched!
+        browser.real_click("#btn-toggle-locale", after_ms=120)
+        en_grp = browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              return {
+                labels: Array.from(sel.querySelectorAll('optgroup')).map(g => g.label),
+                minN: document.getElementById('input-min-nights').value,
+                maxN: document.getElementById('input-max-nights').value
+              };
+            })()"""
+        )
+        self.assertIn("Individual Market Holidays", en_grp["labels"][0])
+        self.assertIn("Mega-Vacations", en_grp["labels"][1])
+        self.assertEqual(en_grp["minN"], "12")
+        self.assertEqual(en_grp["maxN"], "19")
+        assert_layout_clean("Config 3: en LTR desktop 1440", "ltr")
+
+        # Config 4: English LTR Mobile (390x844 & 360x800)
+        set_dpr2_vp(390, 844, True)
+        assert_layout_clean("Config 4a: en LTR mobile 390", "ltr")
+        set_dpr2_vp(360, 800, True)
+        assert_layout_clean("Config 4b: en LTR mobile 360", "ltr", check_header_68=True)
+
+        # Toggle back to Hebrew RTL for Mobile + Best-Year + Budget tests
+        browser.real_click("#btn-toggle-locale", after_ms=120)
+        assert_layout_clean("Config 2b: he RTL mobile 360", "rtl", check_header_68=True)
+        set_dpr2_vp(390, 844, True)
+        assert_layout_clean("Config 2a: he RTL mobile 390", "rtl")
+
+        # Back to Desktop 1440 for R3 Best-Year Maximizer, Budget Presets, Tight-Budget Empty State & 1+ Child Reset
+        set_dpr2_vp(1440, 900, False)
+
+        # Test tight budget 0 on FULL_TISHREI -> actionable #btn-empty-clear-budget recovery!
+        browser.real_click('#workday-budget-presets .budget-preset-pill[data-budget-preset="0"]', after_ms=150)
+        browser.wait_until(
+            "document.getElementById('btn-empty-clear-budget') !== null",
+            "Tight budget empty state rendered with clear button",
+        )
+        browser.real_click("#btn-empty-clear-budget", after_ms=150)
+        browser.wait_until(
+            "document.querySelectorAll('#zone-results .proposal-card').length >= 1",
+            "Budget cleared and cards restored",
+        )
+
+        # Click #btn-best-year-quick -> BEST_YEAR_MAXIMIZER (3..15n) + preset <=2 filters cards strictly!
+        browser.real_click("#btn-best-year-quick", after_ms=150)
+        self.assertEqual(browser.eval("document.getElementById('select-direct-holiday').value"), "BEST_YEAR_MAXIMIZER")
+        self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), "3")
+        self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), "15")
+        browser.real_click('#workday-budget-presets .budget-preset-pill[data-budget-preset="2"]', after_ms=180)
+        browser.wait_until(
+            "document.querySelectorAll('#zone-results .proposal-card').length >= 1",
+            "Best-Year <=2 budget cards rendered",
+        )
+        budget_costs = browser.eval(
+            """Array.from(document.querySelectorAll('#zone-results [data-kpi="workdays-cost"]'))
+                .map(el => Number(el.getAttribute('data-workdays')))"""
+        )
+        self.assertGreater(len(budget_costs), 0)
+        for c in budget_costs:
+            self.assertLessEqual(c, 2.0 + 1e-6)
+        assert_layout_clean("Config 1: he RTL desktop 1440 Best-Year <=2", "rtl")
+
+        # Calendar popup in 0-children mode -> 10 rows + visible #workplace-calendar-bridges-note
+        browser.real_click("#btn-toggle-calendar", after_ms=100)
+        cal_snap = browser.eval(
+            """(() => ({
+              rows: document.querySelectorAll('#workplace-calendar-tbody tr').length,
+              noteVis: document.getElementById('workplace-calendar-bridges-note')?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+              noteTxt: (document.getElementById('workplace-calendar-bridges-note')?.textContent || '').trim()
+            }))()"""
+        )
+        self.assertEqual(cal_snap["rows"], 10)
+        self.assertTrue(cal_snap["noteVis"])
+        self.assertIn("כל חגי תשרי", cal_snap["noteTxt"])
+        browser.real_click("#btn-close-calendar", after_ms=80)
+
+        # R5: Add 1 child -> all Run 19 workplace controls hide, 11 flat MoE options restored with 0 <optgroup>s!
+        browser.real_click("#btn-open-profile-sheet", after_ms=100)
+        browser.real_click("#btn-add-child", after_ms=100)
+        browser.real_click("#btn-apply-profile-sheet", after_ms=180)
+        browser.wait_until(
+            'document.getElementById("dashboard-shell")?.getAttribute("data-planning-mode") === "family" && document.querySelectorAll("#zone-results [data-kpi=\\"school-fit\\"]").length >= 1',
+            "1-child MoE search completed and cards rendered",
+        )
+        fam_snap = browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              return {
+                mode: document.getElementById('dashboard-shell')?.getAttribute('data-planning-mode'),
+                optgroups: sel.querySelectorAll('optgroup').length,
+                opts: sel.options.length,
+                bestVis: document.getElementById('btn-best-year-quick')?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+                briefVis: document.getElementById('workplace-holiday-brief')?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+                budgetVis: document.getElementById('controls-workday-budget')?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+                mergedStrips: document.querySelectorAll('#zone-results .card-merged-holidays-strip').length,
+              };
+            })()"""
+        )
+        self.assertEqual(fam_snap["mode"], "family")
+        self.assertEqual(fam_snap["optgroups"], 0)
+        self.assertEqual(fam_snap["opts"], 11)
+        self.assertFalse(fam_snap["bestVis"])
+        self.assertFalse(fam_snap["briefVis"])
+        self.assertFalse(fam_snap["budgetVis"])
+        self.assertEqual(fam_snap["mergedStrips"], 0)
+
+        for req in browser.fetch_log:
+            self.assertNotIn("elal.com", f"{req.get('url', '')} {req.get('path', '')}".lower())
         self.assertEqual(browser.js_errors(), [])
 
 

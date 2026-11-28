@@ -255,6 +255,24 @@ WORKPLACE_HOLIDAY_CODES = (
     "YOM_HAATZMAUT",
     "SHAVUOT",
 )
+WORKPLACE_INDIVIDUAL_HOLIDAY_CODES = (
+    "PESACH",
+    "YOM_HAATZMAUT",
+    "SHAVUOT",
+    "ROSH_HASHANAH",
+    "SUKKOT",
+)
+WORKPLACE_MEGA_BRIDGE_CODES = (
+    "FULL_TISHREI",
+    "YOM_KIPPUR_SUKKOT_BRIDGE",
+    "ROSH_HASHANAH_KIPPUR_BRIDGE",
+)
+WORKPLACE_BEST_YEAR_CODE = "BEST_YEAR_MAXIMIZER"
+WORKPLACE_EXTENDED_HOLIDAY_CODES = (
+    *WORKPLACE_INDIVIDUAL_HOLIDAY_CODES,
+    *WORKPLACE_MEGA_BRIDGE_CODES,
+    WORKPLACE_BEST_YEAR_CODE,
+)
 
 
 def compute_workday_efficiency_score(
@@ -792,6 +810,8 @@ class FlightSearchQuery(_DomainModelBase):
     preferred_vacation_types: list[str] = field(default_factory=list)
     weather_filter_mode: str = "SOFT_PRIORITIZE"
     min_weather_suitability_score: Optional[float] = None
+    max_workdays_off: Optional[float] = None
+    as_of_date: Optional[date] = None
     allow_hybrid_bonus_cash: bool = True
     direct_flights_only: bool = True
     created_at: Optional[str] = field(default_factory=_now_iso)
@@ -962,6 +982,22 @@ class FlightSearchQuery(_DomainModelBase):
         else:
             self.min_weather_suitability_score = None
 
+        if self.max_workdays_off is not None and self.max_workdays_off != "":
+            if isinstance(self.max_workdays_off, bool):
+                raise ValueError("max_workdays_off must be a numeric value, not bool")
+            mwo_val = float(self.max_workdays_off)
+            if mwo_val != mwo_val or mwo_val in (float("inf"), float("-inf")):
+                raise ValueError("max_workdays_off must be a finite number")
+            if mwo_val < 0.0 or mwo_val > 45.0:
+                raise ValueError(
+                    f"max_workdays_off must be between 0.0 and 45.0, got {mwo_val}"
+                )
+            self.max_workdays_off = round(mwo_val, 2)
+        else:
+            self.max_workdays_off = None
+
+        self.as_of_date = _parse_optional_date(self.as_of_date)
+
         self.allow_hybrid_bonus_cash = _parse_bool(self.allow_hybrid_bonus_cash, True)
         self.direct_flights_only = _parse_bool(self.direct_flights_only, True)
         if not self.created_at:
@@ -1006,6 +1042,8 @@ class FlightSearchQuery(_DomainModelBase):
             "preferred_vacation_types_json": json.dumps(self.preferred_vacation_types),
             "weather_filter_mode": self.weather_filter_mode,
             "min_weather_suitability_score": self.min_weather_suitability_score,
+            "max_workdays_off": self.max_workdays_off,
+            "as_of_date": _format_optional_date(self.as_of_date),
             "allow_hybrid_bonus_cash": self.allow_hybrid_bonus_cash,
             "direct_flights_only": self.direct_flights_only,
             "created_at": self.created_at,
@@ -1083,6 +1121,8 @@ class FlightSearchQuery(_DomainModelBase):
                 or "SOFT_PRIORITIZE"
             ),
             min_weather_suitability_score=data.get("min_weather_suitability_score"),
+            max_workdays_off=data.get("max_workdays_off"),
+            as_of_date=data.get("as_of_date"),
             allow_hybrid_bonus_cash=_parse_bool(data.get("allow_hybrid_bonus_cash", True)),
             direct_flights_only=_parse_bool(data.get("direct_flights_only", True)),
             created_at=data.get("created_at") or _now_iso(),
@@ -1891,6 +1931,8 @@ class VacationOptionProposal(_DomainModelBase):
     workday_efficiency_ratio: float = 0.0
     workday_efficiency_score: Optional[float] = None
     is_zero_workday_trip: bool = False
+    merged_holidays: list[dict[str, Any]] = field(default_factory=list)
+    is_merged_multi_holiday: bool = False
     created_at: Optional[str] = field(default_factory=_now_iso)
 
     def __post_init__(self) -> None:
@@ -2005,6 +2047,12 @@ class VacationOptionProposal(_DomainModelBase):
                 self.trip_calendar_days / max(0.5, self.workplace_vacation_days_cost), 2
             )
             self.is_zero_workday_trip = bool(self.workplace_vacation_days_cost == 0.0)
+            self.merged_holidays = (
+                IsraeliWorkplaceCalendarService.detect_merged_workplace_holidays(
+                    self.itinerary.departure_date, self.itinerary.return_date
+                )
+            )
+            self.is_merged_multi_holiday = len(self.merged_holidays) >= 2
             if self.workday_efficiency_score is None:
                 if self.calendar_mode == "WORKPLACE" and (
                     self.holiday_alignment_score > 0.0 or has_workplace_expl
@@ -2081,6 +2129,12 @@ class VacationOptionProposal(_DomainModelBase):
                     min(100.0, max(0.0, float(self.workday_efficiency_score or 0.0))),
                     1,
                 )
+            self.merged_holidays = [
+                dict(m)
+                for m in _parse_json_list(self.merged_holidays, [])
+                if isinstance(m, dict)
+            ]
+            self.is_merged_multi_holiday = len(self.merged_holidays) >= 2
         if not self.created_at:
             self.created_at = _now_iso()
 
@@ -2123,6 +2177,8 @@ class VacationOptionProposal(_DomainModelBase):
             "workday_efficiency_ratio": self.workday_efficiency_ratio,
             "workday_efficiency_score": self.workday_efficiency_score,
             "is_zero_workday_trip": self.is_zero_workday_trip,
+            "merged_holidays": [dict(m) for m in self.merged_holidays],
+            "is_merged_multi_holiday": self.is_merged_multi_holiday,
             "created_at": self.created_at,
         }
 
@@ -2210,6 +2266,10 @@ class VacationOptionProposal(_DomainModelBase):
             ),
             is_zero_workday_trip=_parse_bool(
                 data.get("is_zero_workday_trip", False), False
+            ),
+            merged_holidays=_parse_json_list(data.get("merged_holidays"), []),
+            is_merged_multi_holiday=_parse_bool(
+                data.get("is_merged_multi_holiday", False), False
             ),
             created_at=data.get("created_at") or _now_iso(),
         )
@@ -2329,6 +2389,8 @@ class CandidateVacationWindow(_DomainModelBase):
     workday_efficiency_ratio: Optional[float] = None
     workday_efficiency_score: Optional[float] = None
     is_zero_workday_trip: Optional[bool] = None
+    merged_holidays: list[dict[str, Any]] = field(default_factory=list)
+    is_merged_multi_holiday: bool = False
 
     def __post_init__(self) -> None:
         self.start_date = _parse_date(self.start_date)
@@ -2412,6 +2474,16 @@ class CandidateVacationWindow(_DomainModelBase):
             self.workday_efficiency_score = round(
                 min(100.0, max(0.0, float(self.workday_efficiency_score))), 1
             )
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        self.merged_holidays = (
+            IsraeliWorkplaceCalendarService.detect_merged_workplace_holidays(
+                self.start_date, self.end_date
+            )
+        )
+        self.is_merged_multi_holiday = len(self.merged_holidays) >= 2
 
     @property
     def SAP(self) -> float:
@@ -2449,6 +2521,8 @@ class CandidateVacationWindow(_DomainModelBase):
             "workday_efficiency_ratio": self.workday_efficiency_ratio,
             "workday_efficiency_score": self.workday_efficiency_score,
             "is_zero_workday_trip": self.is_zero_workday_trip,
+            "merged_holidays": [dict(m) for m in self.merged_holidays],
+            "is_merged_multi_holiday": self.is_merged_multi_holiday,
         }
 
     @classmethod
@@ -2517,6 +2591,10 @@ class CandidateVacationWindow(_DomainModelBase):
                 _parse_bool(data["is_zero_workday_trip"])
                 if data.get("is_zero_workday_trip") is not None
                 else None
+            ),
+            merged_holidays=_parse_json_list(data.get("merged_holidays"), []),
+            is_merged_multi_holiday=_parse_bool(
+                data.get("is_merged_multi_holiday", False), False
             ),
         )
 

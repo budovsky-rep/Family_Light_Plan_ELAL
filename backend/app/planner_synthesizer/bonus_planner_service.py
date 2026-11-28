@@ -38,7 +38,10 @@ from enum import Enum
 from typing import Any, Optional
 from urllib.parse import urlencode
 
-from backend.app.calendar_engine.moe_calendar_service import MoECalendarService
+from backend.app.calendar_engine.moe_calendar_service import (
+    IsraeliWorkplaceCalendarService,
+    MoECalendarService,
+)
 from backend.app.config_manager.settings import AppSettings, get_settings
 from backend.app.providers.commercial_flights import (
     AllAirlinesSearchAdapter,
@@ -901,7 +904,7 @@ class MultiClubWalletAllocationEngine:
             out_carrier = str(meta.get("operating_carrier", "LY"))
             out_dep_t = str(meta.get("dep_time_out", "07:15"))
             out_arr_t = str(meta.get("arr_time_out", "10:00"))
-            if dep_date in YOM_KIPPUR_CLOSED_DATES or (
+            if IsraeliWorkplaceCalendarService.is_tlv_yom_kippur_closure(dep_date) or (
                 out_carrier in ("LY", "2U")
                 and (
                     (has_live_award and dep_date.weekday() == 5)
@@ -913,7 +916,7 @@ class MultiClubWalletAllocationEngine:
             in_carrier = str(in_meta_check.get("operating_carrier", "LY"))
             in_dep_t = str(in_meta_check.get("dep_time_in", "21:45"))
             in_arr_t = str(in_meta_check.get("arr_time_in", "02:10"))
-            if ret_date in YOM_KIPPUR_CLOSED_DATES or (
+            if IsraeliWorkplaceCalendarService.is_tlv_yom_kippur_closure(ret_date) or (
                 in_carrier in ("LY", "2U")
                 and (
                     (has_live_award and ret_date.weekday() == 5)
@@ -946,6 +949,15 @@ class MultiClubWalletAllocationEngine:
             dep_date=dep_date,
             ret_date=ret_date,
         )
+        # Enforce multi-year Ben Gurion Airport Yom Kippur closure across ALL itineraries (date + time + overnight)
+        if IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+            dep_date=dep_date,
+            ret_date=ret_date,
+            outbound_legs=outbound_legs,
+            inbound_legs=inbound_legs,
+            origin_iata=origin_iata,
+        ):
+            return None
         primary_carrier = outbound_legs[0].operating_carrier if outbound_legs else "LY"
         is_elal = primary_carrier in ("LY", "2U")
 
@@ -1579,6 +1591,7 @@ class BonusVacationPlannerService:
         self.last_expanded_destinations: list[str] = []
         self.last_weather_fallback_message_he: Optional[str] = None
         self.last_weather_fallback_message_en: Optional[str] = None
+        self.last_workdays_budget_exceeded: bool = False
         # Bounded 1-hour TTL cache for ephemeral guest / unsaved-session proposals (zero SQLite writes)
         self._ephemeral_proposals: dict[
             str, tuple[VacationOptionProposal, Optional[str], float]
@@ -2112,11 +2125,15 @@ class BonusVacationPlannerService:
                     in_dates.add(a.flight_date)
                     in_by_dest.setdefault(a.origin_iata, set()).add(a.flight_date)
 
-            live_cap = 20 if len(expanded_destinations) <= 6 else 12
+            is_best_year_live = (
+                len(profile.children) == 0
+                and str(query.direct_holiday_code or "").strip().upper()
+                == "BEST_YEAR_MAXIMIZER"
+            )
+            live_cap = 24 if is_best_year_live else (20 if len(expanded_destinations) <= 6 else 12)
             # First priority: windows with round-trip award availability on the same destination
+            rt_matches: list[CandidateVacationWindow] = []
             for w in all_windows:
-                if len(selected) >= live_cap:
-                    break
                 pair = (w.start_date, w.end_date)
                 if pair in seen_pairs:
                     continue
@@ -2125,8 +2142,37 @@ class BonusVacationPlannerService:
                     for d in expanded_destinations
                 )
                 if has_rt_dest:
-                    seen_pairs.add(pair)
-                    selected.append(w)
+                    rt_matches.append(w)
+
+            if is_best_year_live and rt_matches:
+                by_sig: dict[tuple[str, ...], list[CandidateVacationWindow]] = {}
+                for w in rt_matches:
+                    sig = tuple(
+                        str(m.get("code") or "") for m in (w.merged_holidays or [])
+                    )
+                    by_sig.setdefault(sig, []).append(w)
+                sig_lists = list(by_sig.values())
+                max_d_len = max((len(lst) for lst in sig_lists), default=0)
+                for depth in range(max_d_len):
+                    if len(selected) >= live_cap:
+                        break
+                    for lst in sig_lists:
+                        if len(selected) >= live_cap:
+                            break
+                        if depth < len(lst):
+                            w = lst[depth]
+                            pair = (w.start_date, w.end_date)
+                            if pair not in seen_pairs:
+                                seen_pairs.add(pair)
+                                selected.append(w)
+            else:
+                for w in rt_matches:
+                    if len(selected) >= live_cap:
+                        break
+                    pair = (w.start_date, w.end_date)
+                    if pair not in seen_pairs:
+                        seen_pairs.add(pair)
+                        selected.append(w)
 
             # Priority 1b: windows with compatible Open-Jaw round-trip award availability (e.g. TLV->LTN + LHR->TLV)
             if len(expanded_destinations) >= 2 and len(selected) < live_cap:
@@ -2186,15 +2232,46 @@ class BonusVacationPlannerService:
                     seen_pairs.add(pair)
                     selected.append(w)
 
-        # 2. Fill with top-ranked windows by HAS
-        max_windows = 8 if len(expanded_destinations) <= 3 else (4 if len(expanded_destinations) <= 6 else 2)
-        for w in all_windows:
-            if len(selected) >= max_windows:
-                break
-            pair = (w.start_date, w.end_date)
-            if pair not in seen_pairs:
-                seen_pairs.add(pair)
-                selected.append(w)
+        # 2. Fill with top-ranked windows by HAS (with multi-holiday round-robin diversity for BEST_YEAR_MAXIMIZER)
+        is_best_year_mode = (
+            is_workplace_mode
+            and str(query.direct_holiday_code or "").strip().upper()
+            == "BEST_YEAR_MAXIMIZER"
+        )
+        if is_best_year_mode:
+            max_windows = 16
+            by_sig_off: dict[tuple[str, ...], list[CandidateVacationWindow]] = {}
+            for w in all_windows:
+                pair = (w.start_date, w.end_date)
+                if pair in seen_pairs:
+                    continue
+                sig = tuple(
+                    str(m.get("code") or "") for m in (w.merged_holidays or [])
+                )
+                by_sig_off.setdefault(sig, []).append(w)
+            sig_lists_off = list(by_sig_off.values())
+            max_d_off = max((len(lst) for lst in sig_lists_off), default=0)
+            for depth in range(max_d_off):
+                if len(selected) >= max_windows:
+                    break
+                for lst in sig_lists_off:
+                    if len(selected) >= max_windows:
+                        break
+                    if depth < len(lst):
+                        w = lst[depth]
+                        pair = (w.start_date, w.end_date)
+                        if pair not in seen_pairs:
+                            seen_pairs.add(pair)
+                            selected.append(w)
+        else:
+            max_windows = 8 if len(expanded_destinations) <= 3 else (4 if len(expanded_destinations) <= 6 else 2)
+            for w in all_windows:
+                if len(selected) >= max_windows:
+                    break
+                pair = (w.start_date, w.end_date)
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    selected.append(w)
 
         return selected
 
@@ -2209,9 +2286,10 @@ class BonusVacationPlannerService:
         """Execute end-to-end vacation search across Date Modes 1/2/3 and Airline Modes 1/2."""
         matmid_override: Optional[int] = None
         min_nights_omitted = (
-            isinstance(query_data, dict)
-            and "min_trip_nights" not in query_data
-            and "max_trip_nights" in query_data
+            isinstance(query_data, dict) and "min_trip_nights" not in query_data
+        )
+        max_nights_omitted = (
+            isinstance(query_data, dict) and "max_trip_nights" not in query_data
         )
         if isinstance(query_data, dict):
             q_dict = dict(query_data)
@@ -2307,12 +2385,42 @@ class BonusVacationPlannerService:
         is_workplace_mode = len(active_profile.children) == 0
         if (
             is_workplace_mode
-            and min_nights_omitted
             and query.date_selection_mode == DateSelectionMode.HOLIDAY_DIRECT_INTENT
-            and str(query.direct_holiday_code or "").strip().upper()
-            in ("ROSH_HASHANAH", "YOM_HAATZMAUT", "SHAVUOT")
         ):
-            query.min_trip_nights = min(2, int(query.max_trip_nights))
+            d_code_u = str(query.direct_holiday_code or "").strip().upper()
+            rec_min_n, rec_max_n = IsraeliWorkplaceCalendarService.get_recommended_nights_range(
+                d_code_u
+            )
+            if (
+                min_nights_omitted
+                and max_nights_omitted
+                and d_code_u
+                in (
+                    "BEST_YEAR_MAXIMIZER",
+                    "FULL_TISHREI",
+                    "YOM_KIPPUR_SUKKOT_BRIDGE",
+                    "YOM_KIPPUR_SUKKOT",
+                    "ROSH_HASHANAH_KIPPUR_BRIDGE",
+                )
+            ):
+                query.min_trip_nights = rec_min_n
+                query.max_trip_nights = rec_max_n
+            elif (
+                min_nights_omitted
+                and not max_nights_omitted
+                and d_code_u
+                in (
+                    "ROSH_HASHANAH",
+                    "YOM_HAATZMAUT",
+                    "SHAVUOT",
+                    "BEST_YEAR_MAXIMIZER",
+                    "FULL_TISHREI",
+                    "YOM_KIPPUR_SUKKOT_BRIDGE",
+                    "YOM_KIPPUR_SUKKOT",
+                    "ROSH_HASHANAH_KIPPUR_BRIDGE",
+                )
+            ):
+                query.min_trip_nights = min(rec_min_n, int(query.max_trip_nights))
 
         if persist_results:
             existing_db_prof = (
@@ -2340,6 +2448,7 @@ class BonusVacationPlannerService:
         self.last_expanded_destinations = list(expanded_destinations)
         self.last_weather_fallback_message_he = None
         self.last_weather_fallback_message_en = None
+        self.last_workdays_budget_exceeded = False
 
         has_weather_filter = bool(query.preferred_vacation_types)
         effective_tau = self.weather_engine.get_effective_threshold(
@@ -2353,6 +2462,15 @@ class BonusVacationPlannerService:
             expanded_destinations=expanded_destinations,
         )
         if not prelim_windows:
+            if is_workplace_mode and query.max_workdays_off is not None:
+                unbudgeted_q = FlightSearchQuery.from_dict(
+                    {**query.to_dict(), "max_workdays_off": None}
+                )
+                resolved_ty_attr = getattr(query, "_resolved_target_year", None)
+                if resolved_ty_attr is not None:
+                    setattr(unbudgeted_q, "_resolved_target_year", resolved_ty_attr)
+                if self.maximizer.generate_candidate_windows(unbudgeted_q, active_profile):
+                    self.last_workdays_budget_exceeded = True
             if persist_results:
                 self.repository.save_search_query(query)
             return []
@@ -2745,6 +2863,32 @@ class BonusVacationPlannerService:
                     )
                 ]
 
+        # Defense-in-depth Ben Gurion Yom Kippur closure filter (date + timed legs + overnight arrivals)
+        raw_proposals = [
+            p
+            for p in raw_proposals
+            if p.itinerary is not None
+            and not IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+                dep_date=p.itinerary.departure_date,
+                ret_date=p.itinerary.return_date,
+                outbound_legs=p.itinerary.outbound_legs,
+                inbound_legs=p.itinerary.inbound_legs,
+                origin_iata=p.itinerary.origin_iata,
+            )
+        ]
+
+        # Defense-in-depth optional max_workdays_off filter (0-children workplace mode ONLY)
+        if is_workplace_mode and query.max_workdays_off is not None:
+            had_pre_budget = len(raw_proposals) > 0
+            budget_lim = float(query.max_workdays_off) + 1e-9
+            raw_proposals = [
+                p
+                for p in raw_proposals
+                if float(p.workplace_vacation_days_cost) <= budget_lim
+            ]
+            if had_pre_budget and not raw_proposals:
+                self.last_workdays_budget_exceeded = True
+
         if not raw_proposals:
             if persist_results:
                 self.repository.save_search_query(query)
@@ -2882,8 +3026,14 @@ class BonusVacationPlannerService:
         selected_ids: set[str] = set()
         seen_strategies: set[str] = set()
         seen_destinations: set[str] = set()
+        seen_holiday_sigs: set[tuple[str, ...]] = set()
+        is_best_year_div = (
+            is_workplace_mode
+            and str(query.direct_holiday_code or "").strip().upper()
+            == "BEST_YEAR_MAXIMIZER"
+        )
 
-        # Pass 1: Ensure canonical flagship proposals (when unfiltered) and strategy/destination diversity
+        # Pass 1: Ensure canonical flagship proposals (when unfiltered) and strategy/destination/holiday diversity
         for p in raw_proposals:
             if p.itinerary is None:
                 continue
@@ -2906,9 +3056,16 @@ class BonusVacationPlannerService:
                     (date(2027, 6, 21), date(2027, 6, 28)),
                 }
             )
+            h_sig = (
+                tuple(str(m.get("code") or "") for m in (p.merged_holidays or []))
+                if is_best_year_div
+                else ()
+            )
+            is_new_holiday_sig = bool(is_best_year_div and h_sig and h_sig not in seen_holiday_sigs)
             if (
                 is_open_jaw_p
                 or is_canonical_window
+                or is_new_holiday_sig
                 or st not in seen_strategies
                 or p.itinerary.destination_iata not in seen_destinations
             ):
@@ -2916,6 +3073,8 @@ class BonusVacationPlannerService:
                 selected_ids.add(p.id)
                 seen_strategies.add(st)
                 seen_destinations.add(p.itinerary.destination_iata)
+                if h_sig:
+                    seen_holiday_sigs.add(h_sig)
 
         # Pass 2: Fill up to 36 proposals sorted by _proposal_sort_key descending
         for p in raw_proposals:
@@ -3013,5 +3172,7 @@ class BonusVacationPlannerService:
                 else None
             ),
             is_zero_workday_trip=bool(window.is_zero_workday_trip),
+            merged_holidays=list(window.merged_holidays),
+            is_merged_multi_holiday=bool(window.is_merged_multi_holiday),
             created_at=_now_iso(),
         )

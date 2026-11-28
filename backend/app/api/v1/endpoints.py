@@ -35,6 +35,7 @@ from backend.app.auth_service import (
     sha256_hex,
 )
 from backend.app.calendar_engine.moe_calendar_service import (
+    IsraeliWorkplaceCalendarService,
     MoECalendarAutoUpdaterService,
     MoECalendarService,
     normalize_school_year,
@@ -83,7 +84,12 @@ _VALID_FRAMEWORKS = {e.value for e in MoEFrameworkType}
 _VALID_PROGRAMS = {e.value for e in LoyaltyProgramCode}
 _VALID_DATE_MODES = {e.value for e in DateSelectionMode}
 _VALID_AIRLINE_MODES = {e.value for e in AirlineSelectionMode}
-_VALID_HOLIDAY_CODES = set(DIRECT_HOLIDAY_CODES) | {"YOM_KIPPUR_SUKKOT_BRIDGE"}
+_VALID_HOLIDAY_CODES = set(DIRECT_HOLIDAY_CODES) | {
+    "YOM_KIPPUR_SUKKOT_BRIDGE",
+    "FULL_TISHREI",
+    "ROSH_HASHANAH_KIPPUR_BRIDGE",
+    "BEST_YEAR_MAXIMIZER",
+}
 _VALID_OVERLAP_POLICIES = set(OVERLAP_POLICIES) | {
     "CAMP_AWARE_ALL_CHILDREN_OFF",
     "WEIGHTED_MIN_ABSENCE",
@@ -1179,6 +1185,26 @@ def _validate_search_payload_strict(payload: dict[str, Any]) -> None:
         )
         payload["min_weather_suitability_score"] = min_wss_val
 
+    if "max_workdays_off" in payload:
+        raw_mwo = payload["max_workdays_off"]
+        if raw_mwo is None or raw_mwo == "":
+            payload["max_workdays_off"] = None
+        else:
+            payload["max_workdays_off"] = _parse_strict_float(
+                raw_mwo,
+                "max_workdays_off",
+                min_val=0.0,
+                max_val=45.0,
+            )
+
+    if "as_of_date" in payload:
+        raw_as_of = payload["as_of_date"]
+        if raw_as_of is None or raw_as_of == "":
+            payload["as_of_date"] = None
+        else:
+            as_of_d = _parse_iso_date_strict(raw_as_of, "as_of_date")
+            payload["as_of_date"] = as_of_d.isoformat()
+
     if "inline_profile" in payload and payload["inline_profile"] is not None:
         if not isinstance(payload["inline_profile"], dict):
             raise ValueError("inline_profile must be a JSON object")
@@ -1324,8 +1350,16 @@ class VacationPlannerAPIRouter:
         return FamilyProfile.from_dict(prof_dict), has_persisted
 
     def _build_workplace_upcoming_payload(self, ref_d: date) -> dict[str, Any]:
-        """Build the rolling 1-year Israeli workplace holiday payload for `ref_d`."""
+        """Build the rolling 1-year Israeli workplace holiday payload for `ref_d`.
+
+        Preserves Run 18 `count: 6` and legacy `holidays` (6 items x 21 keys) verbatim while
+        exposing additive Run 19 two-group catalog keys (`best_year_option`, `holiday_groups`,
+        `catalog_count`, `catalog_items`).
+        """
         holidays = self.calendar_service.get_upcoming_workplace_holidays_for_rolling_year(
+            as_of_date=ref_d
+        )
+        catalog = self.calendar_service.get_workplace_holiday_catalog_for_rolling_year(
             as_of_date=ref_d
         )
         try:
@@ -1338,6 +1372,10 @@ class VacationPlannerAPIRouter:
             "calendar_mode": "WORKPLACE",
             "count": len(holidays),
             "holidays": holidays,
+            "best_year_option": catalog["best_year_option"],
+            "holiday_groups": catalog["holiday_groups"],
+            "catalog_count": catalog["catalog_count"],
+            "catalog_items": catalog["catalog_items"],
         }
 
     def dispatch(
@@ -2006,9 +2044,8 @@ class VacationPlannerAPIRouter:
                 if not isinstance(json_body, dict):
                     raise ValueError("Request body must be a JSON object")
                 body = dict(json_body)
-                min_nights_was_omitted = (
-                    "min_trip_nights" not in body and "max_trip_nights" in body
-                )
+                min_nights_was_omitted = "min_trip_nights" not in body
+                max_nights_was_omitted = "max_trip_nights" not in body
                 _validate_search_payload_strict(body)
                 if body.get("overlap_policy") in (
                     "CAMP_AWARE_ALL_CHILDREN_OFF",
@@ -2042,12 +2079,44 @@ class VacationPlannerAPIRouter:
                 calendar_mode = "WORKPLACE" if len(profile.children) == 0 else "MOE"
                 if (
                     calendar_mode == "WORKPLACE"
-                    and min_nights_was_omitted
                     and query.date_selection_mode == DateSelectionMode.HOLIDAY_DIRECT_INTENT
-                    and str(query.direct_holiday_code or "").strip().upper()
-                    in ("ROSH_HASHANAH", "YOM_HAATZMAUT", "SHAVUOT")
                 ):
-                    query.min_trip_nights = min(2, int(query.max_trip_nights))
+                    d_code_u = str(query.direct_holiday_code or "").strip().upper()
+                    rec_min_n, rec_max_n = (
+                        IsraeliWorkplaceCalendarService.get_recommended_nights_range(
+                            d_code_u
+                        )
+                    )
+                    if (
+                        min_nights_was_omitted
+                        and max_nights_was_omitted
+                        and d_code_u
+                        in (
+                            "BEST_YEAR_MAXIMIZER",
+                            "FULL_TISHREI",
+                            "YOM_KIPPUR_SUKKOT_BRIDGE",
+                            "YOM_KIPPUR_SUKKOT",
+                            "ROSH_HASHANAH_KIPPUR_BRIDGE",
+                        )
+                    ):
+                        query.min_trip_nights = rec_min_n
+                        query.max_trip_nights = rec_max_n
+                    elif (
+                        min_nights_was_omitted
+                        and not max_nights_was_omitted
+                        and d_code_u
+                        in (
+                            "ROSH_HASHANAH",
+                            "YOM_HAATZMAUT",
+                            "SHAVUOT",
+                            "BEST_YEAR_MAXIMIZER",
+                            "FULL_TISHREI",
+                            "YOM_KIPPUR_SUKKOT_BRIDGE",
+                            "YOM_KIPPUR_SUKKOT",
+                            "ROSH_HASHANAH_KIPPUR_BRIDGE",
+                        )
+                    ):
+                        query.min_trip_nights = min(rec_min_n, int(query.max_trip_nights))
                 expanded_dests = self.elal_adapter.expand_metro_iatas(
                     query.destination_iatas
                 )
@@ -2061,6 +2130,11 @@ class VacationPlannerAPIRouter:
                     self.repository.is_live_fetch_mode()
                     or self.planner_service._has_live_only_inventory()
                 )
+                workdays_budget_exceeded = bool(
+                    getattr(
+                        self.planner_service, "last_workdays_budget_exceeded", False
+                    )
+                )
                 weather_fallback_he = getattr(
                     self.planner_service, "last_weather_fallback_message_he", None
                 )
@@ -2070,7 +2144,22 @@ class VacationPlannerAPIRouter:
                     status_msg_en = (
                         "Strict weather threshold relaxed so you still see the highest-rated weather options."
                     )
-                if not proposals and live_mode:
+                if (
+                    not proposals
+                    and calendar_mode == "WORKPLACE"
+                    and query.max_workdays_off is not None
+                    and workdays_budget_exceeded
+                ):
+                    budget_str = f"{float(query.max_workdays_off):g}"
+                    status_msg_he = (
+                        f"לא נמצאו חלונות טיסה בתקציב של עד {budget_str} ימי חופש מהעבודה עבור הבחירה הנוכחית. "
+                        f"נסו להגדיל את התקציב או לבחור ב״✨ המיקסום הטוב ביותר בשנה הקרובה״."
+                    )
+                    status_msg_en = (
+                        f"No flight windows matched a budget of up to {budget_str} workdays off for this selection. "
+                        f"Try increasing the workdays budget or selecting '✨ Best Maximization Next Year'."
+                    )
+                elif not proposals and live_mode:
                     status_msg_he = (
                         "אין משיכה של טיסות מהשרת (לא נמצאו טיסות אמיתיות מסונכרנות במסד הנתונים עבור יעד ומועד זה. "
                         "טיסות פיקטיביות מבוטלות במצב פרודקשן כדי למנוע הטעיה)."
@@ -2088,6 +2177,7 @@ class VacationPlannerAPIRouter:
                     "expanded_destinations": expanded_dests,
                     "count": len(proposals),
                     "live_fetch_mode": live_mode,
+                    "workdays_budget_exceeded": workdays_budget_exceeded,
                     "status_message_he": status_msg_he,
                     "status_message_en": status_msg_en,
                     "weather_fallback_message_he": weather_fallback_he,

@@ -381,7 +381,10 @@
 
         <div id="controls-holiday-direct" class="form-grid" style="display: none;">
           <div class="form-field">
-            <label id="label-direct-holiday" for="select-direct-holiday" data-he="חג / חופשה בשנה הקרובה:" data-en="Upcoming Holiday (Next 12 Months):">חג / חופשה בשנה הקרובה:</label>
+            <div class="holiday-label-row">
+              <label id="label-direct-holiday" for="select-direct-holiday" data-he="חג / חופשה בשנה הקרובה:" data-en="Upcoming Holiday (Next 12 Months):">חג / חופשה בשנה הקרובה:</label>
+              <button type="button" id="btn-best-year-quick" class="btn-best-year-quick" hidden style="display: none;" data-he="✨ מיקסום שנתי" data-en="✨ Best Year">✨ מיקסום שנתי</button>
+            </div>
             <select id="select-direct-holiday">
               <option value="HANUKKAH" selected data-year="2026" data-days="7" data-he="חופשת חנוכה 2026 (7 ימים)" data-en="Hanukkah Break 2026 (7 days)">חופשת חנוכה 2026 (7 ימים)</option>
               <option value="PURIM" data-year="2027" data-days="2" data-he="חופשת פורים 2027 (2 ימים)" data-en="Purim Break 2027 (2 days)">חופשת פורים 2027 (2 ימים)</option>
@@ -395,6 +398,23 @@
               <option value="YOM_KIPPUR_SUKKOT_BRIDGE" data-year="2027" data-days="14" data-he="גשר יום כיפור–סוכות 2027 (14 ימים)" data-en="Yom Kippur–Sukkot Bridge 2027 (14 days)">גשר יום כיפור–סוכות 2027 (14 ימים)</option>
               <option value="SUKKOT" data-year="2027" data-days="9" data-he="חופשת סוכות 2027 (9 ימים)" data-en="Sukkot Break 2027 (9 days)">חופשת סוכות 2027 (9 ימים)</option>
             </select>
+            <div id="workplace-holiday-brief" class="workplace-holiday-brief" hidden style="display: none;" aria-live="polite"></div>
+          </div>
+          <div class="form-field workday-budget-field" id="controls-workday-budget" hidden style="display: none;">
+            <div class="workday-budget-head">
+              <label id="label-max-workdays-budget" for="input-max-workdays-off" data-he="תקציב מקס׳ ימי חופש מהעבודה (אופציונלי):" data-en="Max Workdays Off Budget (Optional):">תקציב מקס׳ ימי חופש מהעבודה (אופציונלי):</label>
+              <button type="button" id="btn-clear-workdays-budget" class="btn-budget-clear" hidden style="display: none;" data-he="נקה" data-en="Clear">נקה</button>
+            </div>
+            <div class="workday-budget-control-row">
+              <div class="workday-budget-presets" id="workday-budget-presets" role="group" aria-label="תקציב מהיר של ימי חופש מהעבודה" data-aria-he="תקציב מהיר של ימי חופש מהעבודה" data-aria-en="Quick max workdays off budget presets">
+                <button type="button" class="budget-preset-pill active" data-budget-preset="" data-he="ללא הגבלה" data-en="Any">ללא הגבלה</button>
+                <button type="button" class="budget-preset-pill" data-budget-preset="0" dir="ltr" data-he="0" data-en="0">0</button>
+                <button type="button" class="budget-preset-pill" data-budget-preset="2" dir="ltr" data-he="≤2" data-en="≤2">≤2</button>
+                <button type="button" class="budget-preset-pill" data-budget-preset="4" dir="ltr" data-he="≤4" data-en="≤4">≤4</button>
+                <button type="button" class="budget-preset-pill" data-budget-preset="6" dir="ltr" data-he="≤6" data-en="≤6">≤6</button>
+              </div>
+              <input type="number" id="input-max-workdays-off" class="workday-budget-input" min="0" max="45" step="0.5" placeholder="∞" dir="ltr" aria-label="תקציב מקסימלי לימי חופש מהעבודה" data-aria-he="תקציב מקסימלי לימי חופש מהעבודה" data-aria-en="Maximum workdays off budget" />
+            </div>
           </div>
         </div>
 
@@ -674,6 +694,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="workplace-calendar-bridges-note" class="workplace-calendar-bridges-note" hidden style="display: none;"></div>
           </div>
         </div>
       </section>

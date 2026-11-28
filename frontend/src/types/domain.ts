@@ -24,15 +24,26 @@ export type DateSelectionMode =
 
 export type CalendarPlanningMode = 'MOE' | 'WORKPLACE';
 
+export type WorkplaceHolidayGroupId =
+  | 'BEST_YEAR'
+  | 'INDIVIDUAL_HOLIDAYS'
+  | 'MEGA_BRIDGES';
+
 export type WorkplaceHolidayCode =
+  | 'BEST_YEAR_MAXIMIZER'
   | 'ROSH_HASHANAH'
+  | 'FULL_TISHREI'
   | 'YOM_KIPPUR_SUKKOT_BRIDGE'
+  | 'ROSH_HASHANAH_KIPPUR_BRIDGE'
   | 'SUKKOT'
   | 'PESACH'
   | 'YOM_HAATZMAUT'
   | 'SHAVUOT';
 
 export type DirectHolidayCode =
+  | 'BEST_YEAR_MAXIMIZER'
+  | 'FULL_TISHREI'
+  | 'ROSH_HASHANAH_KIPPUR_BRIDGE'
   | 'ROSH_HASHANAH'
   | 'YOM_KIPPUR_SUKKOT_BRIDGE'
   | 'SUKKOT'
@@ -176,6 +187,8 @@ export interface FlightSearchQuery {
   preferred_vacation_types?: VacationType[];
   weather_filter_mode?: WeatherFilterMode;
   min_weather_suitability_score?: number | null;
+  max_workdays_off?: number | null;
+  as_of_date?: string | null;
 }
 
 export interface FlightLeg {
@@ -244,6 +257,17 @@ export interface WorkplaceHolidayPeriod {
   status_badge_en: string;
 }
 
+export interface MergedWorkplaceHoliday {
+  code: string;
+  name_he: string;
+  name_en: string;
+  short_name_he: string;
+  short_name_en: string;
+  start_date: string;
+  end_date: string;
+  is_stay_abroad_holiday: boolean;
+}
+
 export interface UpcomingWorkplaceHoliday {
   holiday_code: WorkplaceHolidayCode;
   name_he: string;
@@ -268,12 +292,57 @@ export interface UpcomingWorkplaceHoliday {
   label_en: string;
 }
 
+export interface WorkplaceCatalogHoliday extends UpcomingWorkplaceHoliday {
+  id: string;
+  holiday_group: WorkplaceHolidayGroupId;
+  is_mega_vacation: boolean;
+  recommended_min_nights: number;
+  recommended_max_nights: number;
+  merged_holidays: MergedWorkplaceHoliday[];
+  includes_yom_kippur_abroad: boolean;
+}
+
+export interface WorkplaceHolidayGroup {
+  group_id: 'INDIVIDUAL_HOLIDAYS' | 'MEGA_BRIDGES';
+  label_he: string;
+  label_en: string;
+  items: WorkplaceCatalogHoliday[];
+}
+
+export interface BestYearMaximizerOption {
+  id: string;
+  holiday_code: 'BEST_YEAR_MAXIMIZER';
+  holiday_group: 'BEST_YEAR';
+  is_mega_vacation: false;
+  is_best_year_maximizer: true;
+  name_he: string;
+  name_en: string;
+  label_he: string;
+  label_en: string;
+  subtitle_he: string;
+  subtitle_en: string;
+  start_date: string;
+  end_date: string;
+  target_year: number;
+  recommended_window_start: string;
+  recommended_window_end: string;
+  recommended_min_nights: number;
+  recommended_max_nights: number;
+  merged_holidays: MergedWorkplaceHoliday[];
+  includes_yom_kippur_abroad: boolean;
+  calendar_mode: 'WORKPLACE';
+}
+
 export interface UpcomingWorkplaceHolidaysResponse {
   as_of_date: string;
   window_end_date: string;
   calendar_mode: 'WORKPLACE';
   count: number;
   holidays: UpcomingWorkplaceHoliday[];
+  best_year_option?: BestYearMaximizerOption;
+  holiday_groups?: WorkplaceHolidayGroup[];
+  catalog_count?: number;
+  catalog_items?: WorkplaceCatalogHoliday[];
 }
 
 export interface VacationOptionProposal {
@@ -302,6 +371,8 @@ export interface VacationOptionProposal {
   workday_efficiency_ratio?: number;
   workday_efficiency_score?: number;
   is_zero_workday_trip?: boolean;
+  merged_holidays?: MergedWorkplaceHoliday[];
+  is_merged_multi_holiday?: boolean;
   explanation_summary_he?: string;
   itinerary: FlightItinerary | null;
 }
@@ -312,6 +383,7 @@ export interface VacationSearchResponse {
   expanded_destinations: string[];
   count: number;
   live_fetch_mode: boolean;
+  workdays_budget_exceeded?: boolean;
   status_message_he: string | null;
   status_message_en: string | null;
   weather_fallback_message_he: string | null;

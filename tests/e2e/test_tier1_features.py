@@ -5810,6 +5810,187 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             "0e85a5235b0633860f991ff23de6e22e3e90f503e5bc2c2aa8f92f6a3d99cd67",
         )
 
+    def test_f31_13_run19_two_group_mega_holidays_budget_and_best_year_contracts(
+        self,
+    ) -> None:
+        """Run 19 R1–R5 Tier 1 contract: static CSS/HTML/JS/TS guardrails, two-group workplace catalog API,
+        auto min/max nights, BEST_YEAR_MAXIMIZER + max_workdays_off budget filter, merged_holidays badges,
+        TLV Yom Kippur closure rule, 1+ children MoE zero-regression, and repo DB SHA-256 lock."""
+        import hashlib
+        import re
+        from bs4 import BeautifulSoup
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        # ---- Section A: Static CSS, HTML, JS, TS & copy guardrails ----
+        css = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text("utf-8")
+        html = (PROJECT_ROOT / "frontend" / "index.html").read_text("utf-8")
+        self.assertEqual(re.findall(r"(?i)(left|right|ellipsis)", css), [])
+        self.assertEqual(re.findall(r"@media[^{]*max-width", css), [])
+        min_widths = [
+            int(m)
+            for m in re.findall(r"@media\s*\(\s*min-width\s*:\s*(\d+)px\s*\)", css)
+        ]
+        self.assertEqual(
+            min_widths,
+            [560, 640, 768, 900, 1024, 1180, 1260, 1280, 1360, 1440],
+        )
+        for css_hook in (
+            ".workplace-holiday-brief",
+            ".workday-budget-field",
+            ".card-merged-holidays-strip",
+            ".merged-holiday-chip",
+            ".workplace-calendar-bridges-note",
+            '#zone-profile[data-sheet-view="travelers"]',
+        ):
+            self.assertIn(css_hook, css)
+
+        soup = BeautifulSoup(html, "html.parser")
+        direct_sel = soup.find("select", id="select-direct-holiday")
+        self.assertIsNotNone(direct_sel)
+        self.assertEqual(len(direct_sel.find_all("option")), 11)
+        for dom_id in (
+            "btn-best-year-quick",
+            "workplace-holiday-brief",
+            "controls-workday-budget",
+            "label-max-workdays-budget",
+            "btn-clear-workdays-budget",
+            "workday-budget-presets",
+            "input-max-workdays-off",
+            "workplace-calendar-bridges-note",
+        ):
+            self.assertIsNotNone(soup.find(id=dom_id), f"Missing #{dom_id} in index.html")
+
+        for tag in soup.find_all(attrs={"data-he": True}):
+            self.assertTrue(tag.get("data-en"), f"Missing data-en on {tag}")
+            self.assertEqual(list(tag.find_all(recursive=False)), [], f"Non-leaf data-he on {tag}")
+
+        for rel in (
+            "frontend/index.html",
+            "frontend/src/app.js",
+            "frontend/src/styles/app.css",
+            "frontend/src/types/domain.ts",
+            "frontend/public/manifest.webmanifest",
+        ):
+            asset_txt = (PROJECT_ROOT / rel).read_text("utf-8")
+            self.assertIsNone(re.search(r"(?<![א-ת])בוגרים(?![א-ת])", asset_txt), rel)
+            self.assertIsNone(re.search(r"(?<![א-ת])יוני(?![א-ת])", asset_txt), rel)
+            self.assertIsNone(re.search(r"(?i)(yoni|budovsky|בודובסקי)", asset_txt), rel)
+            for forbidden_tok in ("חיסכון", "Est. Cash", "non-binding", "לא מחייב"):
+                self.assertNotIn(forbidden_tok, asset_txt, f"{forbidden_tok!r} in {rel}")
+
+        # ---- Section B: Live API contracts on isolated temp DB ----
+        client = self.get_client()
+        r_wp = client.get("/api/v1/workplace-calendar/upcoming?as_of=2026-11-28")
+        self.assertEqual(r_wp.status_code, 200)
+        wp = r_wp.json()
+        self.assertEqual(wp["count"], 6)
+        self.assertEqual(wp["catalog_count"], 8)
+        self.assertEqual(wp["best_year_option"]["holiday_code"], "BEST_YEAR_MAXIMIZER")
+        self.assertEqual(len(wp["holiday_groups"]), 2)
+        ind_items = wp["holiday_groups"][0]["items"]
+        mega_items = wp["holiday_groups"][1]["items"]
+        self.assertEqual([it["holiday_code"] for it in ind_items].count("SUKKOT"), 1)
+        self.assertEqual(
+            [it["holiday_code"] for it in mega_items],
+            ["FULL_TISHREI", "YOM_KIPPUR_SUKKOT_BRIDGE", "ROSH_HASHANAH_KIPPUR_BRIDGE"],
+        )
+        by_code = {it["holiday_code"]: it for it in wp["catalog_items"]}
+        self.assertEqual(by_code["FULL_TISHREI"]["recommended_min_nights"], 16)
+        self.assertEqual(by_code["FULL_TISHREI"]["recommended_max_nights"], 23)
+        self.assertEqual(by_code["YOM_KIPPUR_SUKKOT_BRIDGE"]["recommended_min_nights"], 10)
+        self.assertEqual(by_code["YOM_KIPPUR_SUKKOT_BRIDGE"]["recommended_max_nights"], 16)
+
+        # BEST_YEAR_MAXIMIZER + max_workdays_off budget + merged_holidays
+        r_by = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "BEST_YEAR_MAXIMIZER",
+                "as_of_date": "2026-11-28",
+                "max_workdays_off": 2.0,
+                "destination_iatas": ["FCO", "ATH"],
+                "inline_profile": {"adults_count": 2, "children": []},
+            },
+        )
+        self.assertEqual(r_by.status_code, 200)
+        d_by = r_by.json()
+        self.assertEqual(d_by["calendar_mode"], "WORKPLACE")
+        self.assertGreater(d_by["count"], 0)
+        for prop in d_by["proposals"]:
+            self.assertLessEqual(prop["workplace_vacation_days_cost"], 2.0 + 1e-9)
+            self.assertGreater(len(prop["merged_holidays"]), 0)
+            it = prop["itinerary"]
+            self.assertFalse(
+                IsraeliWorkplaceCalendarService.is_itinerary_blocked_by_tlv_yom_kippur(
+                    it["departure_date"],
+                    it["return_date"],
+                    it.get("outbound_legs") or [],
+                    it.get("inbound_legs") or [],
+                )
+            )
+
+        # FULL_TISHREI merges RH + YK (stay abroad) + SUKKOT
+        r_ft = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "FULL_TISHREI",
+                "direct_target_year": 2027,
+                "destination_iatas": ["FCO"],
+                "inline_profile": {"adults_count": 2, "children": []},
+            },
+        )
+        self.assertEqual(r_ft.status_code, 200)
+        d_ft = r_ft.json()
+        self.assertGreater(d_ft["count"], 0)
+        self.assertEqual(
+            [m["code"] for m in d_ft["proposals"][0]["merged_holidays"]],
+            ["ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"],
+        )
+
+        # Invalid budget -> 422
+        r_bad = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "max_workdays_off": -1,
+                "destination_iatas": ["FCO"],
+                "inline_profile": {"adults_count": 2, "children": []},
+            },
+        )
+        self.assertEqual(r_bad.status_code, 422)
+
+        # 1+ child MoE completely unaffected
+        r_fam = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "min_trip_nights": 5,
+                "max_trip_nights": 8,
+                "max_workdays_off": 0.0,
+                "destination_iatas": ["FCO"],
+                "inline_profile": {
+                    "adults_count": 2,
+                    "children": [{"child_age_years": 8, "framework_type": "ELEMENTARY_1_3"}],
+                },
+            },
+        )
+        self.assertEqual(r_fam.status_code, 200)
+        self.assertEqual(r_fam.json()["calendar_mode"], "MOE")
+        self.assertGreater(r_fam.json()["count"], 0)
+
+        # ---- Section C: Repo DB SHA-256 lock ----
+        repo_db = PROJECT_ROOT / "data" / "vacation_planner.db"
+        self.assertEqual(
+            hashlib.sha256(repo_db.read_bytes()).hexdigest(),
+            "0e85a5235b0633860f991ff23de6e22e3e90f503e5bc2c2aa8f92f6a3d99cd67",
+        )
+
 
 
 # ============================================================================

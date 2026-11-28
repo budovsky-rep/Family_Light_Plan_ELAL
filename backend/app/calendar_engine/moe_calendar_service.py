@@ -572,18 +572,284 @@ class IsraeliWorkplaceCalendarService:
         ("YOM_HAATZMAUT", "יום העצמאות (גשר סופ״ש)", "Independence Day Bridge"),
         ("SHAVUOT", "חג השבועות (סופ״ש ארוך)", "Shavuot Long Weekend"),
     )
+    WORKPLACE_INDIVIDUAL_ROLLING_HOLIDAYS: tuple[tuple[str, str, str], ...] = (
+        ("ROSH_HASHANAH", "ראש השנה", "Rosh Hashanah"),
+        ("SUKKOT", "סוכות בלבד (חול המועד)", "Sukkot Alone (Chol HaMoed)"),
+        ("PESACH", "פסח וחול המועד", "Passover & Chol HaMoed"),
+        ("YOM_HAATZMAUT", "יום העצמאות", "Independence Day"),
+        ("SHAVUOT", "חג השבועות", "Shavuot"),
+    )
+    WORKPLACE_MEGA_BRIDGE_HOLIDAYS: tuple[
+        tuple[str, str, str, tuple[str, ...], int], ...
+    ] = (
+        (
+            "FULL_TISHREI",
+            "כל חגי תשרי: ראש השנה → סוכות",
+            "All Tishrei Holidays: Rosh Hashanah → Sukkot",
+            ("ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"),
+            1,
+        ),
+        (
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "גשר כיפור–סוכות",
+            "Yom Kippur–Sukkot Bridge",
+            ("YOM_KIPPUR", "SUKKOT"),
+            2,
+        ),
+        (
+            "ROSH_HASHANAH_KIPPUR_BRIDGE",
+            "גשר ראש השנה–כיפור",
+            "Rosh Hashanah–Yom Kippur Bridge",
+            ("ROSH_HASHANAH", "YOM_KIPPUR"),
+            3,
+        ),
+    )
+    RECOMMENDED_NIGHTS_BY_CODE: dict[str, tuple[int, int]] = {
+        "BEST_YEAR_MAXIMIZER": (3, 15),
+        "FULL_TISHREI": (16, 23),
+        "YOM_KIPPUR_SUKKOT_BRIDGE": (10, 16),
+        "YOM_KIPPUR_SUKKOT": (10, 16),
+        "ROSH_HASHANAH_KIPPUR_BRIDGE": (9, 13),
+        "SUKKOT": (4, 8),
+        "PESACH": (4, 7),
+        "ROSH_HASHANAH": (2, 4),
+        "YOM_HAATZMAUT": (2, 4),
+        "SHAVUOT": (2, 4),
+    }
     _AUTUMN_WORKPLACE_CODES: frozenset[str] = frozenset(
         {
             "ROSH_HASHANAH",
             "YOM_KIPPUR",
             "YOM_KIPPUR_SUKKOT",
             "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "FULL_TISHREI",
+            "ROSH_HASHANAH_KIPPUR_BRIDGE",
             "SUKKOT",
             "SUKKOT_I",
             "CHOL_HAMOED_SUKKOT",
             "SIMCHAT_TORAH",
         }
     )
+
+    @staticmethod
+    def _parse_hhmm_minutes(local_time: Optional[str]) -> Optional[int]:
+        if local_time is None:
+            return None
+        s = str(local_time).strip()
+        if not s:
+            return None
+        parts = s.split(":")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        except (ValueError, TypeError):
+            return None
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour * 60 + minute
+
+    @classmethod
+    def yom_kippur_closure_window(cls, gregorian_year: int) -> tuple[date, date]:
+        """Return `(yk_eve, yk_day)` for Ben Gurion Airport Yom Kippur closure in `gregorian_year`."""
+        rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(int(gregorian_year) + 3761)
+        return (rh1 + timedelta(days=8), rh1 + timedelta(days=9))
+
+    @classmethod
+    def is_tlv_yom_kippur_closure(
+        cls, target_date: date | datetime | str, local_time: Optional[str] = None
+    ) -> bool:
+        """Return True iff Ben Gurion Airport (`TLV`) is closed for Yom Kippur on `target_date` (and optional `HH:MM`)."""
+        d = cls._coerce_date(target_date)
+        yk_eve, yk_day = cls.yom_kippur_closure_window(d.year)
+        if d != yk_eve and d != yk_day:
+            return False
+        if local_time is None or not str(local_time).strip():
+            return True
+        mins = cls._parse_hhmm_minutes(local_time)
+        if mins is None:
+            return True
+        if d == yk_eve:
+            return mins >= 13 * 60
+        if d == yk_day:
+            return mins <= 22 * 60 + 30
+        return False
+
+    @classmethod
+    def is_itinerary_blocked_by_tlv_yom_kippur(
+        cls,
+        dep_date: date | datetime | str,
+        ret_date: date | datetime | str,
+        outbound_legs: Any = (),
+        inbound_legs: Any = (),
+        origin_iata: str = "TLV",
+    ) -> bool:
+        """Check whether an itinerary departs or arrives at TLV during Yom Kippur closure.
+
+        Staying abroad over Yom Kippur (`dep_date < yk_day < ret_date`) is ALLOWED.
+        Departing or landing at TLV during closure (date-only `yk_eve`/`yk_day`, timed
+        `yk_eve >= 13:00` or `yk_day <= 22:30`, including overnight inbound flights crossing
+        midnight into `yk_eve`/`yk_day`) is strictly REJECTED.
+        """
+        dep_d = cls._coerce_date(dep_date)
+        ret_d = cls._coerce_date(ret_date)
+        if cls.is_tlv_yom_kippur_closure(dep_d) or cls.is_tlv_yom_kippur_closure(ret_d):
+            return True
+
+        orig_u = str(origin_iata or "TLV").strip().upper()
+        for leg in outbound_legs or ():
+            if isinstance(leg, dict):
+                leg_orig = str(leg.get("origin_iata") or "").strip().upper()
+                leg_date_raw = leg.get("flight_date")
+                dep_time = leg.get("departure_time_local")
+            else:
+                leg_orig = str(getattr(leg, "origin_iata", "") or "").strip().upper()
+                leg_date_raw = getattr(leg, "flight_date", None)
+                dep_time = getattr(leg, "departure_time_local", None)
+            if leg_orig == orig_u and leg_date_raw is not None:
+                leg_d = cls._coerce_date(leg_date_raw)
+                if cls.is_tlv_yom_kippur_closure(leg_d, dep_time or None):
+                    return True
+
+        for leg in inbound_legs or ():
+            if isinstance(leg, dict):
+                leg_dest = str(leg.get("destination_iata") or "").strip().upper()
+                leg_date_raw = leg.get("flight_date")
+                dep_time = leg.get("departure_time_local")
+                arr_time = leg.get("arrival_time_local")
+            else:
+                leg_dest = str(getattr(leg, "destination_iata", "") or "").strip().upper()
+                leg_date_raw = getattr(leg, "flight_date", None)
+                dep_time = getattr(leg, "departure_time_local", None)
+                arr_time = getattr(leg, "arrival_time_local", None)
+            if leg_dest == orig_u and leg_date_raw is not None:
+                leg_d = cls._coerce_date(leg_date_raw)
+                dep_mins = cls._parse_hhmm_minutes(dep_time)
+                arr_mins = cls._parse_hhmm_minutes(arr_time)
+                arr_d = (
+                    leg_d + timedelta(days=1)
+                    if (dep_mins is not None and arr_mins is not None and arr_mins < dep_mins)
+                    else leg_d
+                )
+                if cls.is_tlv_yom_kippur_closure(arr_d, arr_time or None):
+                    return True
+
+        return False
+
+    @classmethod
+    def get_recommended_nights_range(cls, holiday_code: str) -> tuple[int, int]:
+        """Return canonical `(recommended_min_nights, recommended_max_nights)` for a workplace holiday code."""
+        code = str(holiday_code or "").strip().upper()
+        return cls.RECOMMENDED_NIGHTS_BY_CODE.get(code, (4, 7))
+
+    @classmethod
+    def detect_merged_workplace_holidays(
+        cls, start_date: date | datetime | str, end_date: date | datetime | str
+    ) -> list[dict[str, Any]]:
+        """Return chronological statutory Israeli workplace holidays overlapped by `[start_date, end_date]`."""
+        s_d = cls._coerce_date(start_date)
+        e_d = cls._coerce_date(end_date)
+        if e_d < s_d:
+            return []
+        heb_years = sorted(
+            {s_d.year + 3760, s_d.year + 3761, e_d.year + 3760, e_d.year + 3761}
+        )
+        seen: set[tuple[str, str]] = set()
+        found: list[dict[str, Any]] = []
+        for heb_y in heb_years:
+            rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(heb_y)
+            pes1 = HebrewCalendarRuleProjector.pesach_first_day(heb_y)
+            atz = HebrewCalendarRuleProjector.yom_haatzmaut_date(heb_y)
+            specs = (
+                (
+                    "ROSH_HASHANAH",
+                    "ראש השנה",
+                    "Rosh Hashanah",
+                    "ראש השנה",
+                    "Rosh Hashanah",
+                    rh1,
+                    rh1 + timedelta(days=1),
+                    False,
+                ),
+                (
+                    "YOM_KIPPUR",
+                    "יום כיפור (שהייה בחו״ל)",
+                    "Yom Kippur (abroad)",
+                    "יום כיפור",
+                    "Yom Kippur",
+                    rh1 + timedelta(days=9),
+                    rh1 + timedelta(days=9),
+                    True,
+                ),
+                (
+                    "SUKKOT",
+                    "סוכות",
+                    "Sukkot",
+                    "סוכות",
+                    "Sukkot",
+                    rh1 + timedelta(days=14),
+                    rh1 + timedelta(days=21),
+                    False,
+                ),
+                (
+                    "PESACH",
+                    "פסח",
+                    "Passover",
+                    "פסח",
+                    "Passover",
+                    pes1,
+                    pes1 + timedelta(days=6),
+                    False,
+                ),
+                (
+                    "YOM_HAATZMAUT",
+                    "יום העצמאות",
+                    "Independence Day",
+                    "יום העצמאות",
+                    "Independence Day",
+                    atz,
+                    atz,
+                    False,
+                ),
+                (
+                    "SHAVUOT",
+                    "שבועות",
+                    "Shavuot",
+                    "שבועות",
+                    "Shavuot",
+                    pes1 + timedelta(days=50),
+                    pes1 + timedelta(days=50),
+                    False,
+                ),
+            )
+            for (
+                code,
+                name_he,
+                name_en,
+                short_he,
+                short_en,
+                h_start,
+                h_end,
+                is_stay_abroad,
+            ) in specs:
+                if h_start <= e_d and h_end >= s_d:
+                    dedup_key = (code, h_start.isoformat())
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
+                    found.append(
+                        {
+                            "code": code,
+                            "name_he": name_he,
+                            "name_en": name_en,
+                            "short_name_he": short_he,
+                            "short_name_en": short_en,
+                            "start_date": h_start.isoformat(),
+                            "end_date": h_end.isoformat(),
+                            "is_stay_abroad_holiday": is_stay_abroad,
+                        }
+                    )
+        found.sort(key=lambda item: (str(item["start_date"]), str(item["code"])))
+        return found
 
     @staticmethod
     def _coerce_date(val: date | datetime | str) -> date:
@@ -765,6 +1031,10 @@ class IsraeliWorkplaceCalendarService:
             return (rh1, rh1 + timedelta(days=1))
         if code == "YOM_KIPPUR":
             return (rh1 + timedelta(days=9), rh1 + timedelta(days=9))
+        if code == "FULL_TISHREI":
+            return (rh1, rh1 + timedelta(days=21))
+        if code == "ROSH_HASHANAH_KIPPUR_BRIDGE":
+            return (rh1, rh1 + timedelta(days=9))
         if code in ("YOM_KIPPUR_SUKKOT_BRIDGE", "YOM_KIPPUR_SUKKOT"):
             return (rh1 + timedelta(days=9), rh1 + timedelta(days=21))
         if code == "SUKKOT":
@@ -931,12 +1201,282 @@ class IsraeliWorkplaceCalendarService:
         return upcoming
 
     @classmethod
+    def compute_recommended_mega_bridge_window(
+        cls,
+        holiday_code: str,
+        start_date: date | str,
+        end_date: date | str,
+        constituent_codes: tuple[str, ...] = (),
+    ) -> tuple[date, date]:
+        """Compute the optimal TLV-open flyable window covering all constituent holidays of a mega-bridge."""
+        s_date = cls._coerce_date(start_date)
+        e_date = cls._coerce_date(end_date)
+        code = str(holiday_code or "").strip().upper()
+        req_codes = set(constituent_codes)
+        if not req_codes:
+            if code == "FULL_TISHREI":
+                req_codes = {"ROSH_HASHANAH", "YOM_KIPPUR", "SUKKOT"}
+            elif code in ("YOM_KIPPUR_SUKKOT_BRIDGE", "YOM_KIPPUR_SUKKOT"):
+                req_codes = {"YOM_KIPPUR", "SUKKOT"}
+            elif code == "ROSH_HASHANAH_KIPPUR_BRIDGE":
+                req_codes = {"ROSH_HASHANAH", "YOM_KIPPUR"}
+
+        rec_min, rec_max = cls.get_recommended_nights_range(code)
+        _, yk_day = cls.yom_kippur_closure_window(s_date.year)
+
+        best_key: Optional[tuple[int, int, float, float, float, int]] = None
+        best_span: Optional[tuple[date, date]] = None
+
+        for ds in range(-3, 2):
+            ws = s_date + timedelta(days=ds)
+            if cls.is_tlv_yom_kippur_closure(ws) or ws.weekday() == 5:
+                continue
+            for de in range(-2, 4):
+                we = e_date + timedelta(days=de)
+                if we <= ws:
+                    continue
+                if cls.is_tlv_yom_kippur_closure(we) or we.weekday() == 5:
+                    continue
+                nights = (we - ws).days
+                merged = cls.detect_merged_workplace_holidays(ws, we)
+                found_codes = {m["code"] for m in merged}
+                if req_codes and not req_codes.issubset(found_codes):
+                    continue
+                if "YOM_KIPPUR" in req_codes and not (ws < yk_day < we):
+                    continue
+                ev = cls.evaluate_trip_workdays_cost(ws, we)
+                trip_days = nights + 1
+                cost = float(ev["workplace_vacation_days_cost"])
+                saved = round(max(0.0, trip_days - cost), 1)
+                ratio = round(trip_days / max(0.5, cost), 2)
+                in_rec = 1 if (rec_min <= nights <= rec_max) else 0
+                pref_span = 1 if (ws <= s_date and we >= e_date - timedelta(days=1)) else 0
+                key = (in_rec, pref_span, ratio, saved, -cost, nights)
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_span = (ws, we)
+
+        if best_span is not None:
+            return best_span
+
+        # Guaranteed TLV-open fallback
+        ws_fb = s_date
+        while cls.is_tlv_yom_kippur_closure(ws_fb) or ws_fb.weekday() == 5:
+            ws_fb -= timedelta(days=1)
+        we_fb = e_date
+        while cls.is_tlv_yom_kippur_closure(we_fb) or we_fb.weekday() == 5:
+            we_fb += timedelta(days=1)
+        return (ws_fb, we_fb)
+
+    @classmethod
+    def get_workplace_holiday_catalog_for_rolling_year(
+        cls, as_of_date: Optional[date | str] = None
+    ) -> dict[str, Any]:
+        """Return the Run 19 two-group workplace holiday catalog + Best-Year Maximizer option.
+
+        - `best_year_option`: Featured `BEST_YEAR_MAXIMIZER` option scanning all rolling 12-month holidays/bridges.
+        - `holiday_groups`:
+          1. `INDIVIDUAL_HOLIDAYS` (5 deduplicated items: `PESACH`, `YOM_HAATZMAUT`, `SHAVUOT`, `ROSH_HASHANAH`, `SUKKOT`)
+          2. `MEGA_BRIDGES` (3 genuine Tishrei bridges: `FULL_TISHREI`, `YOM_KIPPUR_SUKKOT_BRIDGE`, `ROSH_HASHANAH_KIPPUR_BRIDGE`)
+        """
+        ref_date = (
+            datetime.now(UTC).date()
+            if as_of_date is None
+            else cls._coerce_date(as_of_date)
+        )
+        try:
+            win_end = ref_date.replace(year=ref_date.year + 1)
+        except ValueError:
+            win_end = ref_date + timedelta(days=365)
+
+        y1 = ref_date.year if ref_date.month >= 9 else ref_date.year - 1
+
+        def _build_entry(
+            canon_code: str,
+            name_he: str,
+            name_en: str,
+            group_id: str,
+            constituent_codes: tuple[str, ...] = (),
+        ) -> Optional[dict[str, Any]]:
+            for i in range(3):
+                sy_y1 = y1 + i
+                sy = f"{sy_y1}-{sy_y1 + 1}"
+                heb_y = sy_y1 + 3761
+                target_yr = (
+                    sy_y1 if canon_code in cls._AUTUMN_WORKPLACE_CODES else (sy_y1 + 1)
+                )
+                span = cls.resolve_workplace_holiday_span(canon_code, target_yr)
+                if span is None:
+                    continue
+                s_date, e_date = span
+                if e_date >= ref_date:
+                    holiday_days = max(1, (e_date - s_date).days + 1)
+                    off_set, chol_set = cls.get_year_holiday_sets(heb_y)
+                    official_holiday_days = sum(
+                        1
+                        for k in range(holiday_days)
+                        if (s_date + timedelta(days=k)) in off_set
+                    )
+                    chol_hamoed_days = sum(
+                        1
+                        for k in range(holiday_days)
+                        if (s_date + timedelta(days=k)) in chol_set
+                    )
+                    core_eval = cls.evaluate_trip_workdays_cost(s_date, e_date)
+                    is_mega = group_id == "MEGA_BRIDGES"
+                    if is_mega:
+                        rec_s, rec_e = cls.compute_recommended_mega_bridge_window(
+                            canon_code, s_date, e_date, constituent_codes
+                        )
+                    else:
+                        rec_s, rec_e = cls.compute_recommended_workplace_window(
+                            s_date, e_date
+                        )
+                        while cls.is_tlv_yom_kippur_closure(rec_s):
+                            rec_s -= timedelta(days=1)
+                        while cls.is_tlv_yom_kippur_closure(rec_e):
+                            rec_e += timedelta(days=1)
+                    rec_days = max(1, (rec_e - rec_s).days + 1)
+                    rec_min_n, rec_max_n = cls.get_recommended_nights_range(canon_code)
+                    rec_eval = cls.evaluate_trip_workdays_cost(rec_s, rec_e)
+                    rec_cost = float(rec_eval["workplace_vacation_days_cost"])
+                    rec_saved = round(max(0.0, rec_days - rec_cost), 1)
+                    rec_ratio = round(rec_days / max(0.5, rec_cost), 2)
+                    merged_list = cls.detect_merged_workplace_holidays(rec_s, rec_e)
+                    includes_yk_abroad = any(
+                        bool(m.get("is_stay_abroad_holiday")) for m in merged_list
+                    )
+
+                    cost_str = f"{rec_cost:g}"
+                    cost_unit_he = "יום חופש" if rec_cost == 1.0 else "ימי חופש"
+                    cost_unit_en = "workday" if rec_cost == 1.0 else "workdays"
+                    day_word_he = "יום" if rec_days == 1 else "ימים"
+                    day_word_en = "day" if rec_days == 1 else "days"
+                    label_he = (
+                        f"{name_he} {s_date.year} "
+                        f"({rec_days} {day_word_he} · {cost_str} {cost_unit_he})"
+                    )
+                    label_en = (
+                        f"{name_en} {s_date.year} "
+                        f"({rec_days} {day_word_en} · {cost_str} {cost_unit_en})"
+                    )
+                    return {
+                        "id": f"workplace_{heb_y}_{canon_code}",
+                        "holiday_code": canon_code,
+                        "holiday_group": group_id,
+                        "is_mega_vacation": is_mega,
+                        "name_he": name_he,
+                        "name_en": name_en,
+                        "target_year": s_date.year,
+                        "school_year": sy,
+                        "start_date": s_date.isoformat(),
+                        "end_date": e_date.isoformat(),
+                        "holiday_days": holiday_days,
+                        "recommended_window_start": rec_s.isoformat(),
+                        "recommended_window_end": rec_e.isoformat(),
+                        "recommended_trip_days": rec_days,
+                        "recommended_min_nights": rec_min_n,
+                        "recommended_max_nights": rec_max_n,
+                        "recommended_workdays_cost": rec_cost,
+                        "recommended_workdays_saved": rec_saved,
+                        "recommended_efficiency_ratio": rec_ratio,
+                        "workplace_workdays_cost": float(
+                            core_eval["workplace_vacation_days_cost"]
+                        ),
+                        "official_holiday_days": official_holiday_days,
+                        "chol_hamoed_days": chol_hamoed_days,
+                        "merged_holidays": merged_list,
+                        "includes_yom_kippur_abroad": includes_yk_abroad,
+                        "is_ongoing": s_date <= ref_date <= e_date,
+                        "calendar_mode": "WORKPLACE",
+                        "label_he": label_he,
+                        "label_en": label_en,
+                    }
+            return None
+
+        individual_items: list[dict[str, Any]] = []
+        for canon_code, name_he, name_en in cls.WORKPLACE_INDIVIDUAL_ROLLING_HOLIDAYS:
+            entry = _build_entry(canon_code, name_he, name_en, "INDIVIDUAL_HOLIDAYS")
+            if entry is not None:
+                individual_items.append(entry)
+        individual_items.sort(
+            key=lambda item: (
+                str(item["start_date"]),
+                str(item["end_date"]),
+                str(item["holiday_code"]),
+            )
+        )
+
+        mega_sortable: list[tuple[int, int, dict[str, Any]]] = []
+        for (
+            canon_code,
+            name_he,
+            name_en,
+            constituents,
+            prio,
+        ) in cls.WORKPLACE_MEGA_BRIDGE_HOLIDAYS:
+            entry = _build_entry(
+                canon_code, name_he, name_en, "MEGA_BRIDGES", constituents
+            )
+            if entry is not None:
+                mega_sortable.append((int(entry["target_year"]), prio, entry))
+        mega_sortable.sort(key=lambda tup: (tup[0], tup[1]))
+        mega_items = [tup[2] for tup in mega_sortable]
+
+        rec_min_by, rec_max_by = cls.get_recommended_nights_range("BEST_YEAR_MAXIMIZER")
+        best_year_option: dict[str, Any] = {
+            "id": "workplace_best_year_maximizer",
+            "holiday_code": "BEST_YEAR_MAXIMIZER",
+            "holiday_group": "BEST_YEAR",
+            "is_mega_vacation": False,
+            "is_best_year_maximizer": True,
+            "name_he": "✨ המיקסום הטוב ביותר בשנה הקרובה",
+            "name_en": "✨ Best Maximization Next Year",
+            "label_he": "✨ המיקסום הטוב ביותר בשנה הקרובה",
+            "label_en": "✨ Best Maximization Next Year",
+            "subtitle_he": "סורק את כל חגי המשק ואיחודי החגים בשנה הקרובה",
+            "subtitle_en": "Scans all Israeli workplace holidays & bridges over the next 12 months",
+            "start_date": ref_date.isoformat(),
+            "end_date": win_end.isoformat(),
+            "target_year": win_end.year,
+            "recommended_window_start": ref_date.isoformat(),
+            "recommended_window_end": win_end.isoformat(),
+            "recommended_min_nights": rec_min_by,
+            "recommended_max_nights": rec_max_by,
+            "merged_holidays": [],
+            "includes_yom_kippur_abroad": False,
+            "calendar_mode": "WORKPLACE",
+        }
+
+        holiday_groups: list[dict[str, Any]] = [
+            {
+                "group_id": "INDIVIDUAL_HOLIDAYS",
+                "label_he": "חגי משק בודדים",
+                "label_en": "Individual Market Holidays",
+                "items": individual_items,
+            },
+            {
+                "group_id": "MEGA_BRIDGES",
+                "label_he": "מגה-חופשות ואיחודי חגים",
+                "label_en": "Mega-Vacations & Holiday Bridges",
+                "items": mega_items,
+            },
+        ]
+        catalog_items = [*individual_items, *mega_items]
+        return {
+            "best_year_option": best_year_option,
+            "holiday_groups": holiday_groups,
+            "catalog_count": len(catalog_items),
+            "catalog_items": catalog_items,
+        }
+
+    @classmethod
     def resolve_upcoming_workplace_holiday_occurrence(
         cls,
         holiday_code: str,
         as_of_date: Optional[date | str] = None,
     ) -> Optional[dict[str, Any]]:
-        """Resolve a statutory workplace holiday code to its upcoming rolling-year occurrence."""
+        """Resolve a statutory workplace holiday code (including mega-bridges) to its upcoming occurrence."""
         norm_code = str(holiday_code or "").strip().upper()
         if not norm_code:
             return None
@@ -948,6 +1488,12 @@ class IsraeliWorkplaceCalendarService:
         for item in cls.get_upcoming_workplace_holidays_for_rolling_year(
             as_of_date=as_of_date
         ):
+            if item["holiday_code"] == lookup_code:
+                return {**item, "holiday_code": norm_code}
+        catalog = cls.get_workplace_holiday_catalog_for_rolling_year(
+            as_of_date=as_of_date
+        )
+        for item in catalog.get("catalog_items") or []:
             if item["holiday_code"] == lookup_code:
                 return {**item, "holiday_code": norm_code}
         return None
@@ -1090,6 +1636,14 @@ class MoECalendarService:
     ) -> list[dict[str, Any]]:
         """Return all 6 canonical statutory Israeli workplace holidays within the rolling 1-year window."""
         return IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+            as_of_date=as_of_date
+        )
+
+    def get_workplace_holiday_catalog_for_rolling_year(
+        self, as_of_date: Optional[date | str] = None
+    ) -> dict[str, Any]:
+        """Return the Run 19 two-group workplace holiday catalog + Best-Year Maximizer option."""
+        return IsraeliWorkplaceCalendarService.get_workplace_holiday_catalog_for_rolling_year(
             as_of_date=as_of_date
         )
 
@@ -1264,27 +1818,9 @@ class MoECalendarService:
         self, target_date: date, departure_or_arrival_time: Optional[str] = None
     ) -> bool:
         """Check if Ben Gurion Airport (`TLV`) is closed for Yom Kippur on `target_date`."""
-        school_year = self.infer_school_year_for_date(target_date)
-        heb_year, _ = gregorian_school_year_to_hebrew_year(school_year)
-        rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(heb_year)
-        yk_eve = rh1 + timedelta(days=8)
-        yk_day = rh1 + timedelta(days=9)
-
-        if target_date != yk_eve and target_date != yk_day:
-            return False
-
-        if departure_or_arrival_time is None:
-            return True
-
-        parts = departure_or_arrival_time.split(":")
-        hour = int(parts[0]) if parts else 14
-        minute = int(parts[1]) if len(parts) > 1 else 0
-        mins = hour * 60 + minute
-        if target_date == yk_eve:
-            return mins >= 13 * 60
-        if target_date == yk_day:
-            return mins <= 22 * 60 + 30
-        return False
+        return IsraeliWorkplaceCalendarService.is_tlv_yom_kippur_closure(
+            target_date, departure_or_arrival_time
+        )
 
     def get_child_day_status(
         self, child: ChildFramework, target_date: date

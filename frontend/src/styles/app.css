@@ -1768,6 +1768,79 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   white-space: nowrap;
 }
 
+/* Boarding-Pass Merged-Holidays Stamp inside Route Bar (0-Children Workplace Mode Only) */
+.card-merged-holidays-strip {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding-block-start: 6px;
+  margin-block-start: 2px;
+  border-block-start: 1px dashed var(--border-subtle);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  line-height: 1.3;
+  color: var(--ink-flightdeck);
+}
+
+.merged-holidays-label {
+  font-weight: 700;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+
+.merged-holidays-chain {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.merged-holiday-chip {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 1px;
+  padding-inline: 7px;
+  border-radius: 999px;
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+  color: var(--pine-bridge);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.card-merged-holidays-strip.is-mega-combo .merged-holiday-chip {
+  background: var(--brass-tint);
+  border-color: var(--brass-border);
+  color: var(--ink-flightdeck);
+}
+
+.merged-holiday-plus {
+  font-weight: 700;
+  color: var(--brass-matmid);
+}
+
+.merged-yk-pill {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 1px;
+  padding-inline: 7px;
+  border-radius: 999px;
+  background: var(--azure-tint);
+  border: 1px solid var(--azure-border);
+  color: var(--azure-elal);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  max-width: 100%;
+  white-space: normal;
+}
+
 /* 3-Cell Main Pass KPI Strip */
 .score-strip {
   display: flex;
@@ -2509,6 +2582,196 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   background: var(--pine-tint);
   border-color: var(--pine-border);
   color: var(--pine-bridge);
+}
+
+/* Workplace Two-Group Selector Quick Toggle, Bridge Dispatch Ribbon & Optional Workdays Budget */
+.holiday-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.btn-best-year-quick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding-block: 3px;
+  padding-inline: 10px;
+  border-radius: 999px;
+  background: var(--brass-tint);
+  border: 1px solid var(--brass-border);
+  color: #8A5205;
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.btn-best-year-quick:hover {
+  background: #FCEAD0;
+  border-color: var(--brass-matmid);
+}
+
+.btn-best-year-quick.active {
+  background: var(--brass-matmid);
+  border-color: var(--brass-matmid);
+  color: #FFFFFF;
+}
+
+.workplace-holiday-brief {
+  margin-block-start: 6px;
+  padding-block: 7px;
+  padding-inline: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+  border-inline-start: 3px solid var(--pine-bridge);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  color: var(--ink-flightdeck);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.38;
+  text-align: start;
+}
+
+.workplace-holiday-brief.is-featured {
+  background: var(--brass-tint);
+  border-color: var(--brass-border);
+  border-inline-start-color: var(--brass-matmid);
+}
+
+.brief-main-line {
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.workday-budget-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-block: 8px;
+  padding-inline: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-recessed);
+  border: 1px solid var(--border-subtle);
+}
+
+.workday-budget-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.btn-budget-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding-block: 2px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-boarding);
+  color: var(--ink-secondary);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-budget-clear:hover {
+  border-color: var(--azure-elal);
+  color: var(--azure-elal);
+}
+
+.workday-budget-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workday-budget-presets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.budget-preset-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding-block: 3px;
+  padding-inline: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-boarding);
+  color: var(--ink-flightdeck);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.budget-preset-pill:hover {
+  border-color: var(--pine-bridge);
+  color: var(--pine-bridge);
+}
+
+.budget-preset-pill.active {
+  background: var(--pine-bridge);
+  border-color: var(--pine-bridge);
+  color: #FFFFFF;
+}
+
+.workday-budget-input {
+  width: 52px;
+  flex: 0 0 52px;
+  min-height: var(--control-h);
+  padding-inline: 4px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  background: var(--surface-boarding);
+}
+
+#select-direct-holiday {
+  font-size: 0.83rem;
+}
+
+.compact-num-trio.is-auto-adjusted input {
+  border-color: var(--pine-bridge);
+  box-shadow: 0 0 0 2px rgba(12, 122, 96, 0.18);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.awaiting-flights-actions {
+  margin-block-start: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 /* 48px Household Summary Bar & <1180px Bottom-Sheet Profile Drawer */
@@ -3546,6 +3809,31 @@ body.is-keyboard-open .profile-sheet-footer {
 
 #zone-calendar[data-calendar-mode="workplace"] .calendar-dual-grid {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.workplace-calendar-bridges-note {
+  margin-block-start: 10px;
+  padding-block: 8px;
+  padding-inline: 11px;
+  border-radius: var(--radius-sm);
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+  border-inline-start: 3px solid var(--pine-bridge);
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  color: var(--ink-flightdeck);
+  line-height: 1.45;
+  text-align: start;
+}
+
+.bridges-note-title {
+  font-weight: 700;
+  color: var(--pine-bridge);
+  margin-block-end: 3px;
+}
+
+.bridges-note-body {
+  overflow-wrap: break-word;
 }
 
 /* Admin-Only Flight-Deck Bonus Sync Telemetry (Yearly 12-Period Horizon) */
@@ -4635,6 +4923,16 @@ body.is-keyboard-open .profile-sheet-footer {
 
   .compact-num-duo {
     grid-template-columns: minmax(115px, 140px) minmax(0, 1fr);
+  }
+
+  .btn-best-year-quick {
+    min-height: 28px;
+    padding-block: 2px;
+    padding-inline: 9px;
+  }
+
+  .budget-preset-pill {
+    min-height: 30px;
   }
 
   .pass-kpi-grid {

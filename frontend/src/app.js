@@ -50,6 +50,60 @@
     { code: 'SHAVUOT', nameHe: 'חג השבועות (סופ״ש ארוך)', nameEn: 'Shavuot Long Weekend', autumn: false }
   ];
 
+  const WORKPLACE_INDIVIDUAL_HOLIDAYS_CLIENT = [
+    { code: 'ROSH_HASHANAH', nameHe: 'ראש השנה', nameEn: 'Rosh Hashanah', autumn: true },
+    { code: 'SUKKOT', nameHe: 'סוכות בלבד (חול המועד)', nameEn: 'Sukkot Alone (Chol HaMoed)', autumn: true },
+    { code: 'PESACH', nameHe: 'פסח וחול המועד', nameEn: 'Passover & Chol HaMoed', autumn: false },
+    { code: 'YOM_HAATZMAUT', nameHe: 'יום העצמאות', nameEn: 'Independence Day', autumn: false },
+    { code: 'SHAVUOT', nameHe: 'חג השבועות', nameEn: 'Shavuot', autumn: false }
+  ];
+
+  const WORKPLACE_MEGA_BRIDGE_HOLIDAYS_CLIENT = [
+    {
+      code: 'FULL_TISHREI',
+      nameHe: 'כל חגי תשרי: ראש השנה → סוכות',
+      nameEn: 'All Tishrei Holidays: Rosh Hashanah → Sukkot',
+      constituents: ['ROSH_HASHANAH', 'YOM_KIPPUR', 'SUKKOT'],
+      prio: 1
+    },
+    {
+      code: 'YOM_KIPPUR_SUKKOT_BRIDGE',
+      nameHe: 'גשר כיפור–סוכות',
+      nameEn: 'Yom Kippur–Sukkot Bridge',
+      constituents: ['YOM_KIPPUR', 'SUKKOT'],
+      prio: 2
+    },
+    {
+      code: 'ROSH_HASHANAH_KIPPUR_BRIDGE',
+      nameHe: 'גשר ראש השנה–כיפור',
+      nameEn: 'Rosh Hashanah–Yom Kippur Bridge',
+      constituents: ['ROSH_HASHANAH', 'YOM_KIPPUR'],
+      prio: 3
+    }
+  ];
+
+  const WORKPLACE_RECOMMENDED_NIGHTS_CLIENT = {
+    BEST_YEAR_MAXIMIZER: [3, 15],
+    FULL_TISHREI: [16, 23],
+    YOM_KIPPUR_SUKKOT_BRIDGE: [10, 16],
+    YOM_KIPPUR_SUKKOT: [10, 16],
+    ROSH_HASHANAH_KIPPUR_BRIDGE: [9, 13],
+    SUKKOT: [4, 8],
+    PESACH: [4, 7],
+    ROSH_HASHANAH: [2, 4],
+    YOM_HAATZMAUT: [2, 4],
+    SHAVUOT: [2, 4]
+  };
+
+  const SHORT_MONTHS_HE = [
+    'ינו׳', 'פבר׳', 'מרץ', 'אפר׳', 'מאי', 'יונ׳',
+    'יול׳', 'אוג׳', 'ספט׳', 'אוק׳', 'נוב׳', 'דצמ׳'
+  ];
+  const SHORT_MONTHS_EN = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
   const ALL_8_FRAMEWORKS = [
     'DAYCARE_SUPERVISED',
     'MUNICIPAL_GAN',
@@ -586,6 +640,265 @@
     return upcoming;
   }
 
+  function isTlvYomKippurClosureClient(dateIso) {
+    if (!dateIso || dateIso.length < 10) return false;
+    const yr = Number(dateIso.slice(0, 4));
+    if (!Number.isFinite(yr)) return false;
+    const rh1 = roshHashanahIso(yr + 3761);
+    const ykEve = addDaysIso(rh1, 8);
+    const ykDay = addDaysIso(rh1, 9);
+    return dateIso === ykEve || dateIso === ykDay;
+  }
+
+  function detectMergedWorkplaceHolidaysClient(startIso, endIso) {
+    if (!startIso || !endIso || endIso < startIso) return [];
+    const sYear = Number(startIso.slice(0, 4));
+    const eYear = Number(endIso.slice(0, 4));
+    const hebYears = Array.from(
+      new Set([sYear + 3760, sYear + 3761, eYear + 3760, eYear + 3761])
+    ).sort((a, b) => a - b);
+    const seen = new Set();
+    const found = [];
+    hebYears.forEach((hebY) => {
+      const yr = getWorkplaceHolidaySetsClient(hebY);
+      const specs = [
+        { code: 'ROSH_HASHANAH', name_he: 'ראש השנה', name_en: 'Rosh Hashanah', short_name_he: 'ראש השנה', short_name_en: 'Rosh Hashanah', start_date: yr.rh1, end_date: addDaysIso(yr.rh1, 1), is_stay_abroad_holiday: false },
+        { code: 'YOM_KIPPUR', name_he: 'יום כיפור (שהייה בחו״ל)', name_en: 'Yom Kippur (abroad)', short_name_he: 'יום כיפור', short_name_en: 'Yom Kippur', start_date: addDaysIso(yr.rh1, 9), end_date: addDaysIso(yr.rh1, 9), is_stay_abroad_holiday: true },
+        { code: 'SUKKOT', name_he: 'סוכות', name_en: 'Sukkot', short_name_he: 'סוכות', short_name_en: 'Sukkot', start_date: addDaysIso(yr.rh1, 14), end_date: addDaysIso(yr.rh1, 21), is_stay_abroad_holiday: false },
+        { code: 'PESACH', name_he: 'פסח', name_en: 'Passover', short_name_he: 'פסח', short_name_en: 'Passover', start_date: yr.pes1, end_date: addDaysIso(yr.pes1, 6), is_stay_abroad_holiday: false },
+        { code: 'YOM_HAATZMAUT', name_he: 'יום העצמאות', name_en: 'Independence Day', short_name_he: 'יום העצמאות', short_name_en: 'Independence Day', start_date: yr.atzmautIso, end_date: yr.atzmautIso, is_stay_abroad_holiday: false },
+        { code: 'SHAVUOT', name_he: 'שבועות', name_en: 'Shavuot', short_name_he: 'שבועות', short_name_en: 'Shavuot', start_date: yr.shavuotIso, end_date: yr.shavuotIso, is_stay_abroad_holiday: false }
+      ];
+      specs.forEach((sp) => {
+        if (sp.start_date <= endIso && sp.end_date >= startIso) {
+          const key = `${sp.code}:${sp.start_date}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            found.push(sp);
+          }
+        }
+      });
+    });
+    found.sort((a, b) => (a.start_date !== b.start_date ? (a.start_date < b.start_date ? -1 : 1) : (a.code < b.code ? -1 : 1)));
+    return found;
+  }
+
+  function computeRecommendedMegaBridgeWindowClient(code, startIso, endIso, constituents) {
+    const reqSet = new Set(constituents || []);
+    const recRange = WORKPLACE_RECOMMENDED_NIGHTS_CLIENT[code] || [10, 16];
+    const yr = Number(startIso.slice(0, 4));
+    const rh1 = roshHashanahIso(yr + 3761);
+    const ykDay = addDaysIso(rh1, 9);
+    let bestKey = null;
+    let bestSpan = null;
+    for (let ds = -3; ds <= 1; ds += 1) {
+      const ws = addDaysIso(startIso, ds);
+      if (isTlvYomKippurClosureClient(ws) || utcWeekdayMon0(ws) === 5) continue;
+      for (let de = -2; de <= 3; de += 1) {
+        const we = addDaysIso(endIso, de);
+        if (we <= ws) continue;
+        if (isTlvYomKippurClosureClient(we) || utcWeekdayMon0(we) === 5) continue;
+        const nights = diffDaysIso(ws, we);
+        const merged = detectMergedWorkplaceHolidaysClient(ws, we);
+        const foundCodes = new Set(merged.map((m) => m.code));
+        let ok = true;
+        reqSet.forEach((reqCode) => {
+          if (!foundCodes.has(reqCode)) ok = false;
+        });
+        if (!ok) continue;
+        if (reqSet.has('YOM_KIPPUR') && !(ws < ykDay && ykDay < we)) continue;
+        const ev = computeTripWorkdaysClient(ws, we);
+        const days = nights + 1;
+        const cost = Number(ev.workplace_vacation_days_cost || 0);
+        const saved = Math.round(Math.max(0, days - cost) * 10) / 10;
+        const ratio = Math.round((days / Math.max(0.5, cost)) * 100) / 100;
+        const inRec = nights >= recRange[0] && nights <= recRange[1] ? 1 : 0;
+        const prefSpan = ws <= startIso && we >= addDaysIso(endIso, -1) ? 1 : 0;
+        const key = [inRec, prefSpan, ratio, saved, -cost, nights];
+        if (bestKey === null || isTupleKeyGreater(key, bestKey)) {
+          bestKey = key;
+          bestSpan = [ws, we];
+        }
+      }
+    }
+    if (bestSpan) return bestSpan;
+    let wsFb = startIso;
+    while (isTlvYomKippurClosureClient(wsFb) || utcWeekdayMon0(wsFb) === 5) {
+      wsFb = addDaysIso(wsFb, -1);
+    }
+    let weFb = endIso;
+    while (isTlvYomKippurClosureClient(weFb) || utcWeekdayMon0(weFb) === 5) {
+      weFb = addDaysIso(weFb, 1);
+    }
+    return [wsFb, weFb];
+  }
+
+  function buildUpcomingWorkplaceCatalogClient(refIso) {
+    const curSy = inferSchoolYearForIso(refIso);
+    const y1 = Number(curSy.split('-')[0]);
+    const refYear = Number(refIso.slice(0, 4));
+    const winEnd = `${refYear + 1}${refIso.slice(4)}`;
+
+    const buildItem = (meta, groupId) => {
+      for (let i = 0; i < 3; i += 1) {
+        const syY1 = y1 + i;
+        const sy = `${syY1}-${syY1 + 1}`;
+        const hebYear = syY1 + 3761;
+        const yr = getWorkplaceHolidaySetsClient(hebYear);
+        let sIso = null;
+        let eIso = null;
+        if (meta.code === 'ROSH_HASHANAH') {
+          sIso = yr.rh1;
+          eIso = addDaysIso(yr.rh1, 1);
+        } else if (meta.code === 'FULL_TISHREI') {
+          sIso = yr.rh1;
+          eIso = addDaysIso(yr.rh1, 21);
+        } else if (meta.code === 'ROSH_HASHANAH_KIPPUR_BRIDGE') {
+          sIso = yr.rh1;
+          eIso = addDaysIso(yr.rh1, 9);
+        } else if (meta.code === 'YOM_KIPPUR_SUKKOT_BRIDGE') {
+          sIso = addDaysIso(yr.rh1, 9);
+          eIso = addDaysIso(yr.rh1, 21);
+        } else if (meta.code === 'SUKKOT') {
+          sIso = addDaysIso(yr.rh1, 14);
+          eIso = addDaysIso(yr.rh1, 21);
+        } else if (meta.code === 'PESACH') {
+          sIso = yr.pes1;
+          eIso = addDaysIso(yr.pes1, 6);
+        } else if (meta.code === 'YOM_HAATZMAUT') {
+          sIso = yr.atzmautIso;
+          eIso = yr.atzmautIso;
+        } else if (meta.code === 'SHAVUOT') {
+          sIso = yr.shavuotIso;
+          eIso = yr.shavuotIso;
+        }
+        if (!sIso || !eIso || eIso < refIso) continue;
+        const holidayDays = Math.max(1, diffDaysIso(sIso, eIso) + 1);
+        const coreEval = computeTripWorkdaysClient(sIso, eIso);
+        const isMega = groupId === 'MEGA_BRIDGES';
+        const recSpan = isMega
+          ? computeRecommendedMegaBridgeWindowClient(meta.code, sIso, eIso, meta.constituents)
+          : computeRecommendedWorkplaceWindowClient(sIso, eIso);
+        let recStart = recSpan[0];
+        let recEnd = recSpan[1];
+        while (isTlvYomKippurClosureClient(recStart)) recStart = addDaysIso(recStart, -1);
+        while (isTlvYomKippurClosureClient(recEnd)) recEnd = addDaysIso(recEnd, 1);
+        const recDays = Math.max(1, diffDaysIso(recStart, recEnd) + 1);
+        const recRange = WORKPLACE_RECOMMENDED_NIGHTS_CLIENT[meta.code] || [4, 7];
+        const recEval = computeTripWorkdaysClient(recStart, recEnd);
+        const recCost = Number(recEval.workplace_vacation_days_cost || 0);
+        const recSaved = Math.round(Math.max(0, recDays - recCost) * 10) / 10;
+        const recRatio = Math.round((recDays / Math.max(0.5, recCost)) * 100) / 100;
+        const merged = detectMergedWorkplaceHolidaysClient(recStart, recEnd);
+        const costStr = Number.isInteger(recCost) ? String(recCost) : String(Math.round(recCost * 10) / 10);
+        const targetYear = Number(sIso.slice(0, 4));
+        return {
+          id: `workplace_${hebYear}_${meta.code}`,
+          holiday_code: meta.code,
+          holiday_group: groupId,
+          is_mega_vacation: isMega,
+          name_he: meta.nameHe,
+          name_en: meta.nameEn,
+          target_year: targetYear,
+          school_year: sy,
+          start_date: sIso,
+          end_date: eIso,
+          holiday_days: holidayDays,
+          recommended_window_start: recStart,
+          recommended_window_end: recEnd,
+          recommended_trip_days: recDays,
+          recommended_min_nights: recRange[0],
+          recommended_max_nights: recRange[1],
+          recommended_workdays_cost: recCost,
+          recommended_workdays_saved: recSaved,
+          recommended_efficiency_ratio: recRatio,
+          workplace_workdays_cost: Number(coreEval.workplace_vacation_days_cost || 0),
+          merged_holidays: merged,
+          includes_yom_kippur_abroad: merged.some((m) => Boolean(m.is_stay_abroad_holiday)),
+          is_ongoing: sIso <= refIso && refIso <= eIso,
+          calendar_mode: 'WORKPLACE',
+          label_he: `${meta.nameHe} ${targetYear} (${recDays} ${recDays === 1 ? 'יום' : 'ימים'} · ${costStr} ${recCost === 1 ? 'יום חופש' : 'ימי חופש'})`,
+          label_en: `${meta.nameEn} ${targetYear} (${recDays} ${recDays === 1 ? 'day' : 'days'} · ${costStr} ${recCost === 1 ? 'workday' : 'workdays'})`
+        };
+      }
+      return null;
+    };
+
+    const individualItems = WORKPLACE_INDIVIDUAL_HOLIDAYS_CLIENT
+      .map((m) => buildItem(m, 'INDIVIDUAL_HOLIDAYS'))
+      .filter(Boolean)
+      .sort((a, b) => (a.start_date !== b.start_date ? (a.start_date < b.start_date ? -1 : 1) : (a.holiday_code < b.holiday_code ? -1 : 1)));
+
+    const megaItems = WORKPLACE_MEGA_BRIDGE_HOLIDAYS_CLIENT
+      .map((m) => ({ prio: m.prio, item: buildItem(m, 'MEGA_BRIDGES') }))
+      .filter((x) => Boolean(x.item))
+      .sort((a, b) => (a.item.target_year !== b.item.target_year ? a.item.target_year - b.item.target_year : a.prio - b.prio))
+      .map((x) => x.item);
+
+    const bestYearOption = {
+      id: 'workplace_best_year_maximizer',
+      holiday_code: 'BEST_YEAR_MAXIMIZER',
+      holiday_group: 'BEST_YEAR',
+      is_mega_vacation: false,
+      is_best_year_maximizer: true,
+      name_he: '✨ המיקסום הטוב ביותר בשנה הקרובה',
+      name_en: '✨ Best Maximization Next Year',
+      label_he: '✨ המיקסום הטוב ביותר בשנה הקרובה',
+      label_en: '✨ Best Maximization Next Year',
+      subtitle_he: 'סורק את כל חגי המשק ואיחודי החגים בשנה הקרובה',
+      subtitle_en: 'Scans all Israeli workplace holidays & bridges over the next 12 months',
+      start_date: refIso,
+      end_date: winEnd,
+      target_year: refYear + 1,
+      recommended_window_start: refIso,
+      recommended_window_end: winEnd,
+      recommended_min_nights: 3,
+      recommended_max_nights: 15,
+      merged_holidays: [],
+      includes_yom_kippur_abroad: false,
+      calendar_mode: 'WORKPLACE'
+    };
+
+    return {
+      best_year_option: bestYearOption,
+      holiday_groups: [
+        {
+          group_id: 'INDIVIDUAL_HOLIDAYS',
+          label_he: 'חגי משק בודדים',
+          label_en: 'Individual Market Holidays',
+          items: individualItems
+        },
+        {
+          group_id: 'MEGA_BRIDGES',
+          label_he: 'מגה-חופשות ואיחודי חגים',
+          label_en: 'Mega-Vacations & Holiday Bridges',
+          items: megaItems
+        }
+      ],
+      catalog_count: individualItems.length + megaItems.length,
+      catalog_items: [...individualItems, ...megaItems]
+    };
+  }
+
+  function formatCompactDateRange(startIso, endIso, isHe) {
+    if (!startIso || !endIso) return '';
+    const sParts = String(startIso).slice(0, 10).split('-').map(Number);
+    const eParts = String(endIso).slice(0, 10).split('-').map(Number);
+    if (sParts.length !== 3 || eParts.length !== 3) return `${startIso}–${endIso}`;
+    const [sy, sm, sd] = sParts;
+    const [ey, em, ed] = eParts;
+    const months = isHe ? SHORT_MONTHS_HE : SHORT_MONTHS_EN;
+    const sMon = months[(sm - 1) % 12] || String(sm);
+    const eMon = months[(em - 1) % 12] || String(em);
+    if (sy === ey && sm === em) {
+      return isHe ? `${sd}–${ed} ב${sMon} ${sy}` : `${sMon} ${sd}–${ed}, ${sy}`;
+    }
+    if (sy === ey) {
+      return isHe ? `${sd} ב${sMon} – ${ed} ב${eMon} ${sy}` : `${sMon} ${sd} – ${eMon} ${ed}, ${sy}`;
+    }
+    return isHe ? `${sd} ב${sMon} ${sy} – ${ed} ב${eMon} ${ey}` : `${sMon} ${sd}, ${sy} – ${eMon} ${ed}, ${ey}`;
+  }
+
   function projectSchoolYearPeriods(schoolYearStr) {
     if (BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr]) {
       return BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr];
@@ -797,6 +1110,10 @@
     lastSearchCalendarMode: 'WORKPLACE',
     lastPlanningMode: 'workplace',
     upcomingHolidays: [],
+    workplaceCatalog: null,
+    maxWorkdaysOffBudget: null,
+    workdaysBudgetExceeded: false,
+    activeHolidayGroup: null,
     userSelectedHoliday: false,
     userEditedMaxNights: false,
     userEditedMinNights: false,
@@ -1377,8 +1694,16 @@
     if (state.dateSelectionMode === 'HOLIDAY_DIRECT_INTENT') {
       const minN = Number((document.getElementById('input-min-nights') || {}).value || 4);
       const maxN = Number((document.getElementById('input-max-nights') || {}).value || 7);
-      const nightsLabel = isHe ? `🌙 ${minN}–${maxN} לילות` : `🌙 ${minN}–${maxN} nights`;
-      summaryEl.textContent = `${styleLabel} · ${nightsLabel}`;
+      const rangeLtr = `\u2066${minN}–${maxN}\u2069`;
+      const nightsLabel = isHe ? `🌙 ${rangeLtr} לילות` : `🌙 ${rangeLtr} nights`;
+      const isWp = isWorkplaceModeProfile(state.profile);
+      const budgetSuffix =
+        isWp && state.maxWorkdaysOffBudget !== null && Number.isFinite(state.maxWorkdaysOffBudget)
+          ? isHe
+            ? ` · 💼 \u2066≤${state.maxWorkdaysOffBudget}\u2069 ימי חופש`
+            : ` · 💼 \u2066≤${state.maxWorkdaysOffBudget}\u2069 workdays`
+          : '';
+      summaryEl.textContent = `${styleLabel} · ${nightsLabel}${budgetSuffix}`;
     } else {
       summaryEl.textContent = styleLabel;
     }
@@ -1874,46 +2199,327 @@
     return '';
   }
 
-  function applyHolidayDurationDefault(holidayDaysOrObj) {
+  let autoAdjustPulseTimer = null;
+
+  function pulseHolidayDurationAdjusted() {
+    const durEl = document.getElementById('controls-holiday-duration');
+    if (!durEl) return;
+    durEl.classList.remove('is-auto-adjusted');
+    void durEl.offsetWidth;
+    durEl.classList.add('is-auto-adjusted');
+    if (autoAdjustPulseTimer) clearTimeout(autoAdjustPulseTimer);
+    autoAdjustPulseTimer = setTimeout(() => {
+      durEl.classList.remove('is-auto-adjusted');
+    }, 900);
+  }
+
+  function applyHolidayDurationDefault(holidayDaysOrObj, opts) {
+    const options = opts || {};
+    const forceBoth = Boolean(options.forceBoth);
     const isObj = holidayDaysOrObj && typeof holidayDaysOrObj === 'object';
-    const calMode = isObj ? String(holidayDaysOrObj.calendarMode || '').toUpperCase() : '';
+    const calMode = isObj ? String(holidayDaysOrObj.calendarMode || holidayDaysOrObj.calendar_mode || '').toUpperCase() : '';
     const isWorkplace = calMode === 'WORKPLACE';
-    const coreDays = Math.max(
-      1,
-      Math.round(Number(isObj ? holidayDaysOrObj.holidayDays : holidayDaysOrObj) || 7)
-    );
-    const targetMaxRaw = isWorkplace
-      ? Number(holidayDaysOrObj.recommendedTripDays || coreDays)
-      : coreDays;
-    const daysNum = Math.min(45, Math.max(1, Math.round(targetMaxRaw || 7)));
-    const defaultMinCap = isWorkplace && coreDays <= 2 ? 2 : 4;
+    const holidayCode = isObj ? String(holidayDaysOrObj.holidayCode || holidayDaysOrObj.holiday_code || '').toUpperCase() : '';
     const maxInput = document.getElementById('input-max-nights');
     const minInput = document.getElementById('input-min-nights');
-    if (maxInput) {
+
+    if (isWorkplace) {
+      const recPair = WORKPLACE_RECOMMENDED_NIGHTS_CLIENT[holidayCode] || null;
+      const recMinRaw = isObj
+        ? (holidayDaysOrObj.recommendedMinNights ?? holidayDaysOrObj.recommended_min_nights ?? (recPair ? recPair[0] : null))
+        : null;
+      const recMaxRaw = isObj
+        ? (holidayDaysOrObj.recommendedMaxNights ?? holidayDaysOrObj.recommended_max_nights ?? (recPair ? recPair[1] : null))
+        : null;
+      const coreDays = Math.max(1, Math.round(Number(isObj ? (holidayDaysOrObj.holidayDays ?? holidayDaysOrObj.holiday_days) : holidayDaysOrObj) || 7));
+      const fallbackMax = Math.min(45, Math.max(1, Math.round(Number(isObj ? (holidayDaysOrObj.recommendedTripDays ?? holidayDaysOrObj.recommended_trip_days ?? coreDays) : coreDays) || 7)));
+      const fallbackMin = Math.min(coreDays <= 2 ? 2 : 4, fallbackMax);
+      const targetMin = Math.min(45, Math.max(1, Math.round(Number(recMinRaw ?? fallbackMin))));
+      const targetMax = Math.min(45, Math.max(targetMin, Math.round(Number(recMaxRaw ?? fallbackMax))));
+
+      if (forceBoth) {
+        if (minInput) minInput.value = String(targetMin);
+        if (maxInput) maxInput.value = String(targetMax);
+        pulseHolidayDurationAdjusted();
+      } else {
+        if (!state.userEditedMaxNights && maxInput) {
+          maxInput.value = String(targetMax);
+        }
+        if (!state.userEditedMinNights && minInput) {
+          const effMax = maxInput ? Number(maxInput.value || targetMax) : targetMax;
+          minInput.value = String(Math.min(targetMin, Math.max(1, effMax)));
+        }
+      }
+      syncSearchFiltersSummary();
+      return;
+    }
+
+    const coreDays = Math.max(
+      1,
+      Math.round(Number(isObj ? (holidayDaysOrObj.holidayDays ?? holidayDaysOrObj.holiday_days) : holidayDaysOrObj) || 7)
+    );
+    const daysNum = Math.min(45, Math.max(1, coreDays));
+    const defaultMinCap = 4;
+    if (maxInput && (forceBoth || !state.userEditedMaxNights)) {
       maxInput.value = String(daysNum);
     }
     if (minInput) {
-      if (!state.userEditedMinNights) {
+      if (forceBoth || !state.userEditedMinNights) {
         minInput.value = String(Math.min(defaultMinCap, daysNum));
-      } else if (Number(minInput.value || 1) > daysNum) {
+      } else if (Number(minInput.value || 1) > daysNum && !state.userEditedMaxNights) {
         minInput.value = String(daysNum);
       }
     }
     syncSearchFiltersSummary();
   }
 
+  function getActiveWorkplaceCatalog() {
+    if (
+      state.workplaceCatalog &&
+      Array.isArray(state.workplaceCatalog.holiday_groups) &&
+      state.workplaceCatalog.holiday_groups.length > 0
+    ) {
+      return state.workplaceCatalog;
+    }
+    const built = buildUpcomingWorkplaceCatalogClient(getAsOfOverrideIso() || getReferenceToday());
+    state.workplaceCatalog = built;
+    return built;
+  }
+
+  function findWorkplaceHolidayItem(code) {
+    const norm = String(code || '').trim().toUpperCase();
+    const cat = getActiveWorkplaceCatalog();
+    if (cat.best_year_option && cat.best_year_option.holiday_code === norm) {
+      return cat.best_year_option;
+    }
+    const found = (cat.catalog_items || []).find((it) => it.holiday_code === norm);
+    return found || null;
+  }
+
+  function syncBestYearQuickButton() {
+    const btn = document.getElementById('btn-best-year-quick');
+    if (!btn) return;
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const isHolidayMode = state.dateSelectionMode === 'HOLIDAY_DIRECT_INTENT';
+    const show = isWp && isHolidayMode;
+    btn.hidden = !show;
+    btn.style.display = show ? 'inline-flex' : 'none';
+    const selectEl = document.getElementById('select-direct-holiday');
+    const isActive = Boolean(show && selectEl && selectEl.value === 'BEST_YEAR_MAXIMIZER');
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  }
+
+  function renderWorkplaceHolidayBrief() {
+    const briefEl = document.getElementById('workplace-holiday-brief');
+    if (!briefEl) return;
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const isHolidayMode = state.dateSelectionMode === 'HOLIDAY_DIRECT_INTENT';
+    if (!isWp || !isHolidayMode) {
+      briefEl.hidden = true;
+      briefEl.style.display = 'none';
+      briefEl.innerHTML = '';
+      return;
+    }
+    const selectEl = document.getElementById('select-direct-holiday');
+    const code = (selectEl && selectEl.value) || 'PESACH';
+    const item = findWorkplaceHolidayItem(code);
+    if (!item) {
+      briefEl.hidden = true;
+      briefEl.style.display = 'none';
+      return;
+    }
+    const isHe = state.locale === 'he';
+    const recMin = item.recommended_min_nights || 3;
+    const recMax = item.recommended_max_nights || 15;
+    const nightsRangeHtml = `<strong dir="ltr">${escapeHtml(recMin)}–${escapeHtml(recMax)}</strong> ${isHe ? 'לילות' : 'nights'}`;
+
+    let bodyHtml = '';
+    let isFeatured = false;
+
+    if (code === 'BEST_YEAR_MAXIMIZER') {
+      isFeatured = true;
+      bodyHtml = `
+        <span class="brief-main-line">
+          ${
+            isHe
+              ? `✨ סורק את כל חגי המשק ואיחודי החגים בשנה הקרובה · טווח מומלץ: ${nightsRangeHtml}`
+              : `✨ Scans all Israeli workplace holidays & bridges over the next 12 months · Recommended: ${nightsRangeHtml}`
+          }
+        </span>
+      `;
+    } else if (item.holiday_group === 'MEGA_BRIDGES' || item.is_mega_vacation) {
+      isFeatured = true;
+      const mergedNames = (item.merged_holidays || []).map((m) =>
+        isHe ? (m.short_name_he || m.name_he) : (m.short_name_en || m.name_en)
+      );
+      const chainText = mergedNames.length > 0 ? mergedNames.join(' → ') : (isHe ? item.name_he : item.name_en);
+      const spanTxt = formatCompactDateRange(
+        item.recommended_window_start || item.start_date,
+        item.recommended_window_end || item.end_date,
+        isHe
+      );
+      bodyHtml = `
+        <span class="brief-main-line">
+          🌉 <strong>${escapeHtml(chainText)}</strong> · ${escapeHtml(spanTxt)} · ${isHe ? 'טווח מומלץ:' : 'Recommended:'} ${nightsRangeHtml}
+        </span>
+      `;
+    } else {
+      const spanTxt = formatCompactDateRange(
+        item.recommended_window_start || item.start_date,
+        item.recommended_window_end || item.end_date,
+        isHe
+      );
+      bodyHtml = `
+        <span class="brief-main-line">
+          📅 ${escapeHtml(spanTxt)} · ${isHe ? 'טווח מומלץ:' : 'Recommended:'} ${nightsRangeHtml}
+        </span>
+      `;
+    }
+
+    briefEl.classList.toggle('is-featured', isFeatured);
+    briefEl.innerHTML = bodyHtml;
+    briefEl.hidden = false;
+    briefEl.style.display = 'flex';
+  }
+
+  function syncWorkdaysBudgetUi() {
+    const budgetWrap = document.getElementById('controls-workday-budget');
+    const clearBtn = document.getElementById('btn-clear-workdays-budget');
+    const inputEl = document.getElementById('input-max-workdays-off');
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const isHolidayMode = state.dateSelectionMode === 'HOLIDAY_DIRECT_INTENT';
+    const show = isWp && isHolidayMode;
+
+    if (budgetWrap) {
+      budgetWrap.hidden = !show;
+      budgetWrap.style.display = show ? 'flex' : 'none';
+    }
+    const val = state.maxWorkdaysOffBudget;
+    const hasVal = val !== null && Number.isFinite(val);
+    if (inputEl && document.activeElement !== inputEl) {
+      inputEl.value = hasVal ? String(val) : '';
+    }
+    if (clearBtn) {
+      clearBtn.hidden = !hasVal;
+      clearBtn.style.display = hasVal ? 'inline-flex' : 'none';
+    }
+    document.querySelectorAll('#workday-budget-presets .budget-preset-pill').forEach((btn) => {
+      const presetRaw = btn.getAttribute('data-budget-preset');
+      const isMatch =
+        presetRaw === ''
+          ? !hasVal
+          : hasVal && Math.abs(Number(presetRaw) - val) < 1e-6;
+      btn.classList.toggle('active', isMatch);
+      btn.setAttribute('aria-pressed', isMatch ? 'true' : 'false');
+    });
+  }
+
+  function setWorkdaysBudgetValue(rawVal, triggerSearch) {
+    if (rawVal === null || rawVal === undefined || String(rawVal).trim() === '') {
+      state.maxWorkdaysOffBudget = null;
+    } else {
+      const parsed = Number(rawVal);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return;
+      }
+      state.maxWorkdaysOffBudget = Math.min(45, Math.round(parsed * 2) / 2);
+    }
+    syncWorkdaysBudgetUi();
+    syncSearchFiltersSummary();
+    if (triggerSearch) {
+      runVacationSearch();
+    }
+  }
+
+  function syncWorkplaceHolidayControlsVisibility() {
+    const isWp = isWorkplaceModeProfile(state.profile);
+    if (!isWp && state.maxWorkdaysOffBudget !== null) {
+      state.maxWorkdaysOffBudget = null;
+      const inputEl = document.getElementById('input-max-workdays-off');
+      if (inputEl) inputEl.value = '';
+    }
+    syncBestYearQuickButton();
+    renderWorkplaceHolidayBrief();
+    syncWorkdaysBudgetUi();
+  }
+
   function populateHolidaySelector(holidaysList, opts) {
     const options = opts || {};
     const selectEl = document.getElementById('select-direct-holiday');
-    if (!selectEl || !Array.isArray(holidaysList) || holidaysList.length === 0) return;
+    if (!selectEl) return;
 
     const prevVal = selectEl.value;
     const isHe = state.locale === 'he';
+    const fallbackCalMode = isWorkplaceModeProfile(state.profile) ? 'WORKPLACE' : 'MOE';
+
+    if (fallbackCalMode === 'WORKPLACE') {
+      const catalog = getActiveWorkplaceCatalog();
+      const bestOpt = catalog.best_year_option;
+      const groups = Array.isArray(catalog.holiday_groups) ? catalog.holiday_groups : [];
+      const indGroup = groups.find((g) => g.group_id === 'INDIVIDUAL_HOLIDAYS') || { items: [] };
+      const megaGroup = groups.find((g) => g.group_id === 'MEGA_BRIDGES') || { items: [] };
+      const allItems = [
+        ...(bestOpt ? [bestOpt] : []),
+        ...(indGroup.items || []),
+        ...(megaGroup.items || [])
+      ];
+      if (allItems.length === 0) return;
+
+      const hasPrev =
+        Boolean(options.preserveSelection) &&
+        allItems.some((h) => h.holiday_code === prevVal);
+      const defaultCode =
+        (indGroup.items && indGroup.items[0] && indGroup.items[0].holiday_code) ||
+        allItems[0].holiday_code;
+      const activeCode = hasPrev ? prevVal : defaultCode;
+
+      const buildOptionHtml = (h, grpTag) => {
+        const selAttr = h.holiday_code === activeCode ? ' selected' : '';
+        const text = isHe ? h.label_he : h.label_en;
+        const recDays = h.recommended_trip_days ?? h.holiday_days ?? 7;
+        const recMin = h.recommended_min_nights ?? (WORKPLACE_RECOMMENDED_NIGHTS_CLIENT[h.holiday_code] || [4, 7])[0];
+        const recMax = h.recommended_max_nights ?? (WORKPLACE_RECOMMENDED_NIGHTS_CLIENT[h.holiday_code] || [4, 7])[1];
+        const wpCostAttr = h.recommended_workdays_cost !== undefined && h.recommended_workdays_cost !== null ? String(h.recommended_workdays_cost) : '';
+        const wpSavedAttr = h.recommended_workdays_saved !== undefined && h.recommended_workdays_saved !== null ? String(h.recommended_workdays_saved) : '';
+        const wpRatioAttr = h.recommended_efficiency_ratio !== undefined && h.recommended_efficiency_ratio !== null ? String(h.recommended_efficiency_ratio) : '';
+        const ykAttr = h.includes_yom_kippur_abroad ? 'true' : 'false';
+        return `<option value="${escapeHtml(h.holiday_code)}"${selAttr} data-holiday-group="${escapeHtml(grpTag)}" data-year="${escapeHtml(h.target_year || '')}" data-days="${escapeHtml(h.holiday_days || recDays)}" data-rec-days="${escapeHtml(recDays)}" data-rec-min-nights="${escapeHtml(recMin)}" data-rec-max-nights="${escapeHtml(recMax)}" data-includes-yk-abroad="${ykAttr}" data-workdays-cost="${escapeHtml(wpCostAttr)}" data-workdays-saved="${escapeHtml(wpSavedAttr)}" data-efficiency-ratio="${escapeHtml(wpRatioAttr)}" data-calendar-mode="WORKPLACE" data-start="${escapeHtml(h.start_date || '')}" data-end="${escapeHtml(h.end_date || '')}" data-he="${escapeHtml(h.label_he)}" data-en="${escapeHtml(h.label_en)}">${escapeHtml(text)}</option>`;
+      };
+
+      const bestHtml = bestOpt ? buildOptionHtml(bestOpt, 'best_year') : '';
+      const indLabel = isHe ? '📅 חגי משק בודדים' : '📅 Individual Market Holidays';
+      const megaLabel = isHe ? '🌉 מגה-חופשות ואיחודי חגים' : '🌉 Mega-Vacations & Holiday Bridges';
+      const indHtml = (indGroup.items || []).length
+        ? `<optgroup label="${escapeHtml(indLabel)}" data-holiday-group="individual">${indGroup.items.map((h) => buildOptionHtml(h, 'individual')).join('')}</optgroup>`
+        : '';
+      const megaHtml = (megaGroup.items || []).length
+        ? `<optgroup label="${escapeHtml(megaLabel)}" data-holiday-group="mega_bridge">${megaGroup.items.map((h) => buildOptionHtml(h, 'mega_bridge')).join('')}</optgroup>`
+        : '';
+
+      selectEl.innerHTML = bestHtml + indHtml + megaHtml;
+      selectEl.value = activeCode;
+
+      const chosen = allItems.find((h) => h.holiday_code === activeCode) || allItems[0];
+      state.activeHolidayGroup = chosen ? chosen.holiday_group || null : null;
+      if (
+        options.applyDurationDefault ||
+        (!hasPrev && !state.userEditedMaxNights && !state.userEditedMinNights)
+      ) {
+        applyHolidayDurationDefault(chosen, { forceBoth: Boolean(options.forceBoth) });
+      }
+      syncBestYearQuickButton();
+      renderWorkplaceHolidayBrief();
+      updateActiveModeBadge();
+      return;
+    }
+
+    if (!Array.isArray(holidaysList) || holidaysList.length === 0) return;
+
     const hasPrev =
       Boolean(options.preserveSelection) &&
       holidaysList.some((h) => h.holiday_code === prevVal);
     const activeCode = hasPrev ? prevVal : holidaysList[0].holiday_code;
-    const fallbackCalMode = isWorkplaceModeProfile(state.profile) ? 'WORKPLACE' : 'MOE';
 
     selectEl.innerHTML = holidaysList
       .map((h) => {
@@ -1937,6 +2543,7 @@
       .join('');
 
     selectEl.value = activeCode;
+    state.activeHolidayGroup = null;
     if (options.applyDurationDefault || (!hasPrev && !state.userEditedMaxNights)) {
       const chosen = holidaysList.find((h) => h.holiday_code === activeCode) || holidaysList[0];
       applyHolidayDurationDefault({
@@ -1945,6 +2552,7 @@
         calendarMode: chosen.calendar_mode || fallbackCalMode
       });
     }
+    syncWorkplaceHolidayControlsVisibility();
   }
 
   function initDefaultManualDates() {
@@ -2789,6 +3397,31 @@
         `;
       })
       .join('');
+
+    const bridgesNoteEl = document.getElementById('workplace-calendar-bridges-note');
+    if (bridgesNoteEl) {
+      const isWp = isWorkplaceModeProfile(state.profile);
+      if (!isWp) {
+        bridgesNoteEl.hidden = true;
+        bridgesNoteEl.style.display = 'none';
+        bridgesNoteEl.innerHTML = '';
+      } else {
+        const cat = getActiveWorkplaceCatalog();
+        const megaGrp = (cat.holiday_groups || []).find((g) => g.group_id === 'MEGA_BRIDGES');
+        const megaList = (megaGrp && megaGrp.items) || [];
+        const megaSummary = megaList
+          .map((m) => `<strong>${escapeHtml(isHe ? m.name_he : m.name_en)}</strong> (${escapeHtml(m.recommended_min_nights)}–${escapeHtml(m.recommended_max_nights)} ${isHe ? 'לילות' : 'nights'})`)
+          .join(' · ');
+        bridgesNoteEl.innerHTML = `
+          <div class="bridges-note-title">
+            ${isHe ? '🌉 מגה-חופשות ואיחודי חגים בולטים:' : '🌉 Highlighted Mega-Vacations & Holiday Bridges:'}
+          </div>
+          <div class="bridges-note-body">${megaSummary}</div>
+        `;
+        bridgesNoteEl.hidden = false;
+        bridgesNoteEl.style.display = 'block';
+      }
+    }
   }
 
   const GOOGLE_FLIGHTS_PLACE_NAMES = {
@@ -3871,7 +4504,13 @@
     if (renderableProposals.length === 0) {
       const NO_SYNCED_FLIGHTS_TOKEN_HE = 'אין משיכה של טיסות מהשרת';
       const rawHe = String(state.statusMessageHe || '');
-      const isStandardUnsynced = !rawHe || rawHe.includes(NO_SYNCED_FLIGHTS_TOKEN_HE);
+      const isWpEmpty = isWorkplaceModeProfile(state.profile);
+      const hasBudgetActive =
+        isWpEmpty &&
+        state.maxWorkdaysOffBudget !== null &&
+        Number.isFinite(state.maxWorkdaysOffBudget);
+      const isBudgetEmpty = Boolean(hasBudgetActive && (state.workdaysBudgetExceeded || !rawHe.includes(NO_SYNCED_FLIGHTS_TOKEN_HE)));
+      const isStandardUnsynced = !isBudgetEmpty && (!rawHe || rawHe.includes(NO_SYNCED_FLIGHTS_TOKEN_HE));
       const selectDestEl = document.getElementById('select-destination');
       const chosenOpts = selectDestEl
         ? Array.from(selectDestEl.selectedOptions || []).filter(
@@ -3887,15 +4526,38 @@
                 .join(' · ')
             : '';
 
-      const badgeText = isHe ? '✈️ מחכה למשיכת טיסות' : '✈️ Awaiting Flight Sync';
-      const headlineText = isHe ? 'מחכה למשיכת טיסות' : 'Awaiting Flight Sync';
-      const subText = isStandardUnsynced
-        ? isHe
-          ? 'לא נמצאו מושבי בונוס פנויים במאגר עבור היעד והחופשה שנבחרו (מאגר טיסות הבונוס מתעדכן פעם ביום). מומלץ לנסות יעד נוסף או מועד חופשה אחר.'
-          : 'No open award seats are currently available in the database for the selected destination and holiday (the bonus flight database updates once daily). Try another destination or vacation window.'
-        : isHe
-          ? rawHe
-          : String(state.statusMessageEn || 'No matching flights found for the current search filters.');
+      const bStr = hasBudgetActive ? String(state.maxWorkdaysOffBudget) : '';
+      const badgeText = isBudgetEmpty
+        ? (isHe ? `💼 תקציב ימי חופש (≤${bStr})` : `💼 Workdays Budget (≤${bStr})`)
+        : (isHe ? '✈️ מחכה למשיכת טיסות' : '✈️ Awaiting Flight Sync');
+      const headlineText = isBudgetEmpty
+        ? (isHe ? 'אין חלונות בתקציב ימי החופש שנבחר' : 'No Windows Within Workdays Budget')
+        : (isHe ? 'מחכה למשיכת טיסות' : 'Awaiting Flight Sync');
+      const subText = isBudgetEmpty
+        ? (rawHe && isHe
+            ? rawHe
+            : (!isHe && state.statusMessageEn
+                ? String(state.statusMessageEn)
+                : (isHe
+                    ? `לא נמצאו חלונות טיסה בתקציב של עד ${bStr} ימי חופש מהעבודה עבור הבחירה הנוכחית. ניתן להסיר את המגבלה או לבחור ב״✨ המיקסום הטוב ביותר בשנה הקרובה״.`
+                    : `No flight windows matched a budget of up to ${bStr} workdays off for this selection. Clear the budget filter or try '✨ Best Maximization Next Year'.`)))
+        : isStandardUnsynced
+          ? isHe
+            ? 'לא נמצאו מושבי בונוס פנויים במאגר עבור היעד והחופשה שנבחרו (מאגר טיסות הבונוס מתעדכן פעם ביום). מומלץ לנסות יעד נוסף או מועד חופשה אחר.'
+            : 'No open award seats are currently available in the database for the selected destination and holiday (the bonus flight database updates once daily). Try another destination or vacation window.'
+          : isHe
+            ? rawHe
+            : String(state.statusMessageEn || 'No matching flights found for the current search filters.');
+
+      const budgetActionHtml = isBudgetEmpty
+        ? `
+          <div class="awaiting-flights-actions">
+            <button type="button" class="btn-secondary" id="btn-empty-clear-budget">
+              ${isHe ? 'הסרת מגבלת תקציב ימי החופש' : 'Clear workdays budget'}
+            </button>
+          </div>
+        `
+        : '';
 
       container.innerHTML = `
         <div class="awaiting-flights-showcase" role="status" aria-live="polite">
@@ -3906,6 +4568,7 @@
             </div>
             <h3 class="awaiting-flights-headline">${escapeHtml(headlineText)}</h3>
             <p class="awaiting-flights-sub">${escapeHtml(subText)}</p>
+            ${budgetActionHtml}
           </div>
         </div>
       `;
@@ -4285,6 +4948,41 @@
               : 'Trip Maximization Score (Workday Leverage + Award Seats + Climate)')
           : (isHe ? 'ציון התאמה משוקלל' : 'Overall Optimization Score');
 
+        const mergedHolidaysRaw =
+          isWorkplaceCard && Array.isArray(p.merged_holidays) && p.merged_holidays.length > 0
+            ? p.merged_holidays
+            : (isWorkplaceCard && it.departure_date && it.return_date
+                ? detectMergedWorkplaceHolidaysClient(it.departure_date, it.return_date)
+                : []);
+        const mergedStripHtml =
+          isWorkplaceCard && mergedHolidaysRaw.length > 0
+            ? (() => {
+                const isMergedCombo = mergedHolidaysRaw.length >= 2;
+                const spansYkAbroad = mergedHolidaysRaw.some((m) => Boolean(m.is_stay_abroad_holiday));
+                const chipsHtml = mergedHolidaysRaw
+                  .map((m) => {
+                    const chipLabel = isHe
+                      ? (m.short_name_he || m.name_he || m.code)
+                      : (m.short_name_en || m.name_en || m.code);
+                    return `<span class="merged-holiday-chip" data-holiday-code="${escapeHtml(m.code || '')}">${escapeHtml(chipLabel)}</span>`;
+                  })
+                  .join('<span class="merged-holiday-plus" aria-hidden="true">+</span>');
+                const prefixTxt = isMergedCombo
+                  ? (isHe ? '🌉 איחוד חגים:' : '🌉 Merged holidays:')
+                  : (isHe ? '🗓️ חג משק:' : '🗓️ Workplace holiday:');
+                const ykPillHtml = spansYkAbroad
+                  ? `<span class="merged-yk-pill">${isHe ? '✈️ שהייה בחו״ל בכיפור · חוסך יום חופש' : '✈️ Abroad over Yom Kippur · saves 1 workday'}</span>`
+                  : '';
+                return `
+                  <div class="card-merged-holidays-strip ${isMergedCombo ? 'is-mega-combo' : 'is-single-holiday'}" data-merged-holidays="true" data-merged-count="${mergedHolidaysRaw.length}"${spansYkAbroad ? ' data-yom-kippur-abroad="true"' : ''}>
+                    <span class="merged-holidays-label">${escapeHtml(prefixTxt)}</span>
+                    <span class="merged-holidays-chain">${chipsHtml}</span>
+                    ${ykPillHtml}
+                  </div>
+                `;
+              })()
+            : '';
+
         return `
           <article class="proposal-card tier-${escapeHtml(tierCode)}" data-strategy="${escapeHtml(strategyCode)}" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}" data-proposal-idx="${idx}">
             <div class="proposal-pass-grid">
@@ -4320,6 +5018,7 @@
                     <span class="route-iata" dir="ltr">${escapeHtml(returnOriginLabel)}</span>
                     <span class="route-date" dir="ltr">${escapeHtml(it.return_date)}</span>
                   </div>
+                  ${mergedStripHtml}
                 </div>
 
                 <div class="bonus-direction-block">
@@ -4385,8 +5084,12 @@
     const isHe = state.locale === 'he';
     const isWp = isWorkplaceModeProfile(state.profile);
     const mode = state.dateSelectionMode;
+    const selectEl = document.getElementById('select-direct-holiday');
+    const selectedCode = selectEl ? selectEl.value : '';
     if (mode === 'SPECIFIC_DATES') {
       badge.textContent = isHe ? 'תאריכים ידניים (±גמישות)' : 'Manual Dates (±Flex)';
+    } else if (isWp && selectedCode === 'BEST_YEAR_MAXIMIZER') {
+      badge.textContent = isHe ? 'מיקסום שנתי · כל חגי המשק' : 'Best Year · All Workplace Holidays';
     } else if (isWp) {
       badge.textContent = isHe ? 'חגי משק · יעילות ימי חופש' : 'Workplace Holidays · Max Leverage';
     } else {
@@ -4407,6 +5110,7 @@
     if (cHolidayDur) cHolidayDur.style.display = normMode === 'HOLIDAY_DIRECT_INTENT' ? 'grid' : 'none';
     if (cSpec) cSpec.style.display = normMode === 'SPECIFIC_DATES' ? 'grid' : 'none';
 
+    syncWorkplaceHolidayControlsVisibility();
     updateActiveModeBadge();
     syncSearchFiltersSummary();
     renderProfileControls();
@@ -4571,6 +5275,7 @@
             : 'School Vacations & Public / Workplace Holidays');
     }
 
+    syncWorkplaceHolidayControlsVisibility();
     updateActiveModeBadge();
   }
 
@@ -4594,6 +5299,11 @@
     });
 
     syncPlanningModeUi();
+    populateHolidaySelector(state.upcomingHolidays, {
+      preserveSelection: true,
+      applyDurationDefault: false
+    });
+    syncWorkplaceHolidayControlsVisibility();
 
     const vtTitle = document.getElementById('vacation-type-title');
     if (vtTitle) {
@@ -4636,7 +5346,7 @@
 
   function refreshClientHolidaysOnProfileEdit() {
     latestHolidayFetchSeq += 1;
-    const refIso = getReferenceToday();
+    const refIso = getAsOfOverrideIso() || getReferenceToday();
     const isWp = isWorkplaceModeProfile(state.profile);
     const nextMode = isWp ? 'workplace' : 'family';
     const modeChanged = state.lastPlanningMode !== nextMode;
@@ -4644,12 +5354,15 @@
     if (modeChanged && !state.userEditedMaxNights) {
       state.userEditedMinNights = false;
     }
-    state.upcomingHolidays = isWp
-      ? buildUpcomingWorkplaceHolidaysClient(refIso)
-      : buildUpcomingHolidaysClient(refIso, state.profile);
+    if (isWp) {
+      state.workplaceCatalog = buildUpcomingWorkplaceCatalogClient(refIso);
+      state.upcomingHolidays = buildUpcomingWorkplaceHolidaysClient(refIso);
+    } else {
+      state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    }
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: true,
-      applyDurationDefault: !state.userEditedMaxNights
+      applyDurationDefault: !state.userEditedMaxNights && !state.userEditedMinNights
     });
   }
 
@@ -4841,12 +5554,30 @@
         if (upcomingRes && Array.isArray(upcomingRes.holidays) && upcomingRes.holidays.length > 0) {
           fetchedHolidays = upcomingRes.holidays;
         }
+        if (
+          upcomingRes &&
+          Array.isArray(upcomingRes.holiday_groups) &&
+          upcomingRes.holiday_groups.length > 0
+        ) {
+          state.workplaceCatalog = {
+            best_year_option: upcomingRes.best_year_option || null,
+            holiday_groups: upcomingRes.holiday_groups,
+            catalog_count: upcomingRes.catalog_count || 0,
+            catalog_items: upcomingRes.catalog_items || []
+          };
+        } else {
+          state.workplaceCatalog = buildUpcomingWorkplaceCatalogClient(effectiveAsOf);
+        }
       } catch (_err) {
         if (myFetchSeq !== latestHolidayFetchSeq || isWorkplaceModeProfile(state.profile) !== isWp) return;
         fetchedHolidays = buildUpcomingWorkplaceHolidaysClient(effectiveAsOf);
+        state.workplaceCatalog = buildUpcomingWorkplaceCatalogClient(effectiveAsOf);
       }
       if (!fetchedHolidays || fetchedHolidays.length === 0) {
         fetchedHolidays = buildUpcomingWorkplaceHolidaysClient(effectiveAsOf);
+      }
+      if (!state.workplaceCatalog) {
+        state.workplaceCatalog = buildUpcomingWorkplaceCatalogClient(effectiveAsOf);
       }
     } else {
       const fwCsv = collectActiveFrameworksCsv();
@@ -4872,7 +5603,10 @@
     state.upcomingHolidays = fetchedHolidays;
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: state.userSelectedHoliday,
-      applyDurationDefault: (Boolean(applyDefaultNights) || modeChanged) && !state.userEditedMaxNights
+      applyDurationDefault:
+        (Boolean(applyDefaultNights) || modeChanged) &&
+        !state.userEditedMaxNights &&
+        !state.userEditedMinNights
     });
   }
 
@@ -4907,10 +5641,11 @@
     syncDestStateFromNativeSelect();
     renderDestinationMultiSelect();
     renderProfileControls();
-    state.upcomingHolidays = buildUpcomingWorkplaceHolidaysClient(refIso);
+    state.workplaceCatalog = buildUpcomingWorkplaceCatalogClient(getAsOfOverrideIso() || refIso);
+    state.upcomingHolidays = buildUpcomingWorkplaceHolidaysClient(getAsOfOverrideIso() || refIso);
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: state.userSelectedHoliday,
-      applyDurationDefault: !state.userEditedMaxNights
+      applyDurationDefault: !state.userEditedMaxNights && !state.userEditedMinNights
     });
 
     try {
@@ -5102,12 +5837,26 @@
       preferred_vacation_types: state.selectedVacationTypes || [],
       weather_filter_mode: weatherModeVal
     };
-    if (yearVal !== undefined && Number.isFinite(yearVal)) {
+    if (
+      holidayVal !== 'BEST_YEAR_MAXIMIZER' &&
+      yearVal !== undefined &&
+      Number.isFinite(yearVal)
+    ) {
       payload.direct_target_year = yearVal;
+    }
+    const isWpSearch = inlineChildren.length === 0;
+    if (isWpSearch) {
+      if (state.maxWorkdaysOffBudget !== null && Number.isFinite(state.maxWorkdaysOffBudget)) {
+        payload.max_workdays_off = state.maxWorkdaysOffBudget;
+      }
+      if (holidayVal === 'BEST_YEAR_MAXIMIZER') {
+        payload.as_of_date = getAsOfOverrideIso() || refIso;
+      }
     }
 
     state.validationErrorHe = null;
     state.validationErrorEn = null;
+    state.workdaysBudgetExceeded = false;
 
     try {
       const res = await apiSend('POST', '/api/v1/vacations/search', payload);
@@ -5122,6 +5871,7 @@
       };
       state.proposals = res.proposals || [];
       state.showAllProposals = false;
+      state.workdaysBudgetExceeded = Boolean(res.workdays_budget_exceeded);
       state.statusMessageHe = res.status_message_he || null;
       state.statusMessageEn = res.status_message_en || null;
       state.weatherFallbackMessageHe = res.weather_fallback_message_he || null;
@@ -5195,19 +5945,103 @@
     if (selectHolidayEl) {
       selectHolidayEl.addEventListener('change', () => {
         state.userSelectedHoliday = true;
+        state.userEditedMinNights = false;
         state.userEditedMaxNights = false;
         const opt = selectHolidayEl.selectedOptions && selectHolidayEl.selectedOptions[0];
         const days = opt && opt.dataset ? Number(opt.dataset.days || 7) : 7;
         const recDays =
           opt && opt.dataset && opt.dataset.recDays ? Number(opt.dataset.recDays) : days;
+        const recMin =
+          opt && opt.dataset && opt.dataset.recMinNights ? Number(opt.dataset.recMinNights) : undefined;
+        const recMax =
+          opt && opt.dataset && opt.dataset.recMaxNights ? Number(opt.dataset.recMaxNights) : undefined;
         const calMode =
           (opt && opt.dataset && opt.dataset.calendarMode) ||
           (isWorkplaceModeProfile(state.profile) ? 'WORKPLACE' : 'MOE');
-        applyHolidayDurationDefault({
-          holidayDays: days,
-          recommendedTripDays: recDays,
-          calendarMode: calMode
-        });
+        applyHolidayDurationDefault(
+          {
+            holidayCode: selectHolidayEl.value,
+            holidayDays: days,
+            recommendedTripDays: recDays,
+            recommendedMinNights: recMin,
+            recommendedMaxNights: recMax,
+            calendarMode: calMode
+          },
+          { forceBoth: true }
+        );
+        syncBestYearQuickButton();
+        renderWorkplaceHolidayBrief();
+        updateActiveModeBadge();
+      });
+    }
+
+    const btnBestYearQuick = document.getElementById('btn-best-year-quick');
+    if (btnBestYearQuick) {
+      btnBestYearQuick.addEventListener('click', () => {
+        if (!isWorkplaceModeProfile(state.profile)) return;
+        const sel = document.getElementById('select-direct-holiday');
+        if (!sel) return;
+        const hasBestYear = Array.from(sel.options || []).some((o) => o.value === 'BEST_YEAR_MAXIMIZER');
+        if (!hasBestYear) return;
+        sel.value = 'BEST_YEAR_MAXIMIZER';
+        state.userSelectedHoliday = true;
+        state.userEditedMinNights = false;
+        state.userEditedMaxNights = false;
+        const bestItem = findWorkplaceHolidayItem('BEST_YEAR_MAXIMIZER');
+        applyHolidayDurationDefault(
+          bestItem || {
+            holidayCode: 'BEST_YEAR_MAXIMIZER',
+            recommendedMinNights: 3,
+            recommendedMaxNights: 15,
+            calendarMode: 'WORKPLACE'
+          },
+          { forceBoth: true }
+        );
+        syncBestYearQuickButton();
+        renderWorkplaceHolidayBrief();
+        updateActiveModeBadge();
+        runVacationSearch();
+      });
+    }
+
+    const budgetPresetsWrap = document.getElementById('workday-budget-presets');
+    if (budgetPresetsWrap) {
+      budgetPresetsWrap.addEventListener('click', (ev) => {
+        const pill =
+          ev.target && typeof ev.target.closest === 'function'
+            ? ev.target.closest('.budget-preset-pill')
+            : null;
+        if (!pill) return;
+        const presetVal = pill.getAttribute('data-budget-preset');
+        setWorkdaysBudgetValue(presetVal === '' ? null : presetVal, true);
+      });
+    }
+
+    const inputMaxWorkdaysEl = document.getElementById('input-max-workdays-off');
+    if (inputMaxWorkdaysEl) {
+      inputMaxWorkdaysEl.addEventListener('input', () => {
+        const raw = String(inputMaxWorkdaysEl.value || '').trim();
+        if (raw === '') {
+          setWorkdaysBudgetValue(null, false);
+        } else {
+          const parsed = Number(raw);
+          if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 45) {
+            state.maxWorkdaysOffBudget = parsed;
+            syncWorkdaysBudgetUi();
+            syncSearchFiltersSummary();
+          }
+        }
+      });
+      inputMaxWorkdaysEl.addEventListener('change', () => {
+        const raw = String(inputMaxWorkdaysEl.value || '').trim();
+        setWorkdaysBudgetValue(raw === '' ? null : raw, true);
+      });
+    }
+
+    const btnClearBudget = document.getElementById('btn-clear-workdays-budget');
+    if (btnClearBudget) {
+      btnClearBudget.addEventListener('click', () => {
+        setWorkdaysBudgetValue(null, true);
       });
     }
 
@@ -5384,6 +6218,7 @@
         syncPlanningModeUi();
         renderProfileControls();
         renderCalendarTable();
+        renderWorkplaceCalendarTable();
         setProfileSheetOpen(false);
         await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
         await runVacationSearch();
@@ -5681,6 +6516,7 @@
         renderProfileControls();
         refreshClientHolidaysOnProfileEdit();
         renderCalendarTable();
+        renderWorkplaceCalendarTable();
       });
     }
 
@@ -5796,6 +6632,11 @@
         setProfileSheetOpen(true, { focusMatmid: true, opener: focusMatmidBtn });
         return;
       }
+      const clearBudgetEmptyBtn = target.closest('#btn-empty-clear-budget');
+      if (clearBudgetEmptyBtn) {
+        setWorkdaysBudgetValue(null, true);
+        return;
+      }
       const toggleFeedBtn = target.closest('[data-toggle-all-proposals]');
       if (toggleFeedBtn) {
         state.showAllProposals = !state.showAllProposals;
@@ -5832,6 +6673,7 @@
         renderProfileControls();
         refreshClientHolidaysOnProfileEdit();
         renderCalendarTable();
+        renderWorkplaceCalendarTable();
       }
     });
 
