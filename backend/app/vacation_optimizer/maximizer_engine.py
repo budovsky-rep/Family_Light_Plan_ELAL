@@ -13,10 +13,12 @@ Implements `VacationMaximizerEngine` supporting:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Optional
 
 from backend.app.calendar_engine.moe_calendar_service import (
+    HebrewCalendarRuleProjector,
+    IsraeliWorkplaceCalendarService,
     MoECalendarService,
     normalize_school_year,
 )
@@ -31,6 +33,7 @@ from backend.app.schemas.domain import (
     FlightSearchQuery,
     MoEFrameworkType,
     MoEVacationWindow,
+    compute_workday_efficiency_score,
 )
 
 AUTUMN_WINTER_HOLIDAY_CODES: set[str] = {
@@ -40,6 +43,88 @@ AUTUMN_WINTER_HOLIDAY_CODES: set[str] = {
     "YOM_KIPPUR_SUKKOT_BRIDGE",
     "HANUKKAH",
 }
+
+
+def is_workplace_mode_profile(profile: Optional[FamilyProfile]) -> bool:
+    """Return True iff the traveler profile has 0 children (Israeli workplace mode)."""
+    return profile is None or len(profile.children) == 0
+
+
+def compute_workday_efficiency_metrics(
+    start_date: date,
+    end_date: date,
+    *,
+    shift_penalty: float = 0.0,
+    has_tlv_closure_endpoints: bool = False,
+) -> dict[str, Any]:
+    """Compute Israeli workplace workday cost, saved workdays, leverage ratio, and `[0, 100]` score."""
+    wp = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost(
+        start_date, end_date
+    )
+    trip_days = max(1, (end_date - start_date).days + 1)
+    workdays_cost = float(wp["workplace_vacation_days_cost"])
+    workdays_saved = round(max(0.0, trip_days - workdays_cost), 1)
+    eff_ratio = round(trip_days / max(0.5, workdays_cost), 2)
+    eff_score = compute_workday_efficiency_score(
+        trip_days,
+        workdays_cost,
+        shift_penalty=shift_penalty,
+        has_tlv_closure=has_tlv_closure_endpoints,
+    )
+    return {
+        **wp,
+        "trip_calendar_days": trip_days,
+        "workdays_saved_count": workdays_saved,
+        "workday_efficiency_ratio": eff_ratio,
+        "workday_efficiency_score": eff_score,
+        "is_zero_workday_trip": workdays_cost == 0.0,
+    }
+
+
+def _project_legacy_holiday_span_no_db(
+    holiday_code: str, target_year: int
+) -> Optional[tuple[date, date]]:
+    """Project date bounds for legacy MoE-only holiday codes purely via Hebrew calendar math (zero DB)."""
+    code = str(holiday_code or "").strip().upper()
+    yr = int(target_year)
+    if code == "HANUKKAH":
+        han_start, han_end, _ = HebrewCalendarRuleProjector.hanukkah_vacation_dates(
+            yr + 3761
+        )
+        return (han_start, han_end)
+    if code == "PURIM":
+        pes1 = HebrewCalendarRuleProjector.pesach_first_day(yr + 3760)
+        return (pes1 - timedelta(days=30), pes1 - timedelta(days=29))
+    if code == "LAG_BAOMER":
+        pes1 = HebrewCalendarRuleProjector.pesach_first_day(yr + 3760)
+        lag = pes1 + timedelta(days=33)
+        return (lag, lag)
+    if code == "SUMMER_JUNE_20_30":
+        june_20 = date(yr, 6, 20)
+        if june_20.weekday() == 5:
+            start_d = date(yr, 6, 19)
+        elif june_20.weekday() == 4:
+            start_d = date(yr, 6, 20)
+        else:
+            start_d = date(yr, 6, 21)
+        return (start_d, date(yr, 6, 30))
+    if code == "SUMMER_JULY":
+        return (date(yr, 7, 1), date(yr, 7, 31))
+    if code == "SUMMER_AUGUST":
+        return (date(yr, 8, 1), date(yr, 8, 31))
+    return None
+
+
+def _resolve_legacy_upcoming_target_year_no_db(
+    holiday_code: str, as_of_date: Optional[date] = None
+) -> Optional[int]:
+    """Find the earliest upcoming target year for a legacy holiday code without touching the DB."""
+    ref_date = as_of_date or datetime.now(UTC).date()
+    for yr in (ref_date.year - 1, ref_date.year, ref_date.year + 1, ref_date.year + 2):
+        span = _project_legacy_holiday_span_no_db(holiday_code, yr)
+        if span is not None and span[1] >= ref_date:
+            return yr
+    return None
 
 
 def resolve_holiday_direct_intent_school_year(
@@ -119,6 +204,91 @@ class VacationMaximizerEngine:
         has_tlv_closure_endpoints = self.calendar_service.is_tlv_airport_closed(
             s_date
         ) or self.calendar_service.is_tlv_airport_closed(e_date)
+
+        shift_penalty = (
+            1.5 * float(max(0, int(mode1_shift_days or 0)))
+            if (mode1_shift_days is not None or window_set_type == "SPECIFIC_USER_WINDOW")
+            else 0.0
+        )
+        wp_metrics = compute_workday_efficiency_metrics(
+            s_date,
+            e_date,
+            shift_penalty=shift_penalty,
+            has_tlv_closure_endpoints=has_tlv_closure_endpoints,
+        )
+
+        # Workplace Mode (0 children): pure Israeli statutory workplace calendar & workday efficiency
+        if is_workplace_mode_profile(profile):
+            detected_wp_holidays: list[str] = list(associated_holidays or [])
+            sy_candidates = {
+                self.calendar_service.infer_school_year_for_date(s_date),
+                self.calendar_service.infer_school_year_for_date(e_date),
+            }
+            group_map = {
+                "SUKKOT_I": "SUKKOT",
+                "CHOL_HAMOED_SUKKOT": "SUKKOT",
+                "SIMCHAT_TORAH": "SUKKOT",
+                "PESACH_I": "PESACH",
+                "CHOL_HAMOED_PESACH": "PESACH",
+                "PESACH_VII": "PESACH",
+            }
+            for sy in sorted(sy_candidates):
+                for entry in IsraeliWorkplaceCalendarService.get_workplace_holidays_for_school_year(
+                    sy
+                ):
+                    w_start = date.fromisoformat(str(entry["start_date"]))
+                    w_end = date.fromisoformat(str(entry["end_date"]))
+                    if w_start <= e_date and w_end >= s_date:
+                        raw_code = str(entry["holiday_code"]).upper()
+                        grouped_code = group_map.get(raw_code, raw_code)
+                        if grouped_code not in detected_wp_holidays:
+                            detected_wp_holidays.append(grouped_code)
+
+            has_val = float(wp_metrics["workday_efficiency_score"])
+            resolved_set_type = (
+                "STRICT_INTERSECTION" if window_set_type == "AUTO" else window_set_type
+            )
+            cost_str = f"{wp_metrics['workplace_vacation_days_cost']:g}"
+            saved_str = f"{wp_metrics['workdays_saved_count']:g}"
+            ratio_str = f"{wp_metrics['workday_efficiency_ratio']:.2f}"
+            zero_note = (
+                " (ללא ימי חופש מהעבודה)"
+                if wp_metrics["is_zero_workday_trip"]
+                else ""
+            )
+            explanation_he = (
+                f"חלון חופשה בן {trip_nights} לילות ({wp_metrics['trip_calendar_days']} ימים, "
+                f"{s_date.isoformat()} עד {e_date.isoformat()}): "
+                f"{cost_str} ימי חופש מהעבודה{zero_note}, "
+                f"נחסכו {saved_str} ימי עבודה (יחס ×{ratio_str}), "
+                f"יעילות ימי חופש={has_val:.1f}/100."
+            )
+            return CandidateVacationWindow(
+                start_date=s_date,
+                end_date=e_date,
+                trip_nights=trip_nights,
+                window_set_type=resolved_set_type,
+                associated_holiday_codes=detected_wp_holidays,
+                school_absence_penalty=0.0,
+                childcare_coverage_gain=1.0,
+                holiday_alignment_score=has_val,
+                per_child_impact=[],
+                total_school_days_missed_across_children=0,
+                max_single_child_school_days_missed=0,
+                bridge_days_used=0,
+                has_tlv_airport_closure_on_endpoints=has_tlv_closure_endpoints,
+                has_bagrut_blackout=False,
+                explanation_summary_he=explanation_he,
+                calendar_mode="WORKPLACE",
+                trip_calendar_days=int(wp_metrics["trip_calendar_days"]),
+                workplace_vacation_days_cost=float(
+                    wp_metrics["workplace_vacation_days_cost"]
+                ),
+                workdays_saved_count=float(wp_metrics["workdays_saved_count"]),
+                workday_efficiency_ratio=float(wp_metrics["workday_efficiency_ratio"]),
+                workday_efficiency_score=has_val,
+                is_zero_workday_trip=bool(wp_metrics["is_zero_workday_trip"]),
+            )
 
         # Canonical Worked Examples 2A, 3, 4A, 6 child-impact alignment flags
         is_ex2a = s_date == date(2026, 12, 10) and e_date == date(2026, 12, 14)
@@ -363,6 +533,15 @@ class VacationMaximizerEngine:
             has_tlv_airport_closure_on_endpoints=has_tlv_closure_endpoints,
             has_bagrut_blackout=has_bagrut_blackout,
             explanation_summary_he=explanation_he,
+            calendar_mode="MOE",
+            trip_calendar_days=int(wp_metrics["trip_calendar_days"]),
+            workplace_vacation_days_cost=float(
+                wp_metrics["workplace_vacation_days_cost"]
+            ),
+            workdays_saved_count=float(wp_metrics["workdays_saved_count"]),
+            workday_efficiency_ratio=float(wp_metrics["workday_efficiency_ratio"]),
+            workday_efficiency_score=float(wp_metrics["workday_efficiency_score"]),
+            is_zero_workday_trip=bool(wp_metrics["is_zero_workday_trip"]),
         )
 
     def generate_candidate_windows(
@@ -439,6 +618,19 @@ class VacationMaximizerEngine:
                     continue
                 candidates[(s_d, e_d)] = cand
 
+        if is_workplace_mode_profile(profile):
+            return sorted(
+                candidates.values(),
+                key=lambda w: (
+                    w.start_date == dep_base and w.end_date == ret_base,
+                    float(w.workday_efficiency_score or 0.0),
+                    float(w.workday_efficiency_ratio or 0.0),
+                    -float(w.workplace_vacation_days_cost or 0.0),
+                    -abs(w.trip_nights - base_nights),
+                ),
+                reverse=True,
+            )
+
         return sorted(
             candidates.values(),
             key=lambda w: (
@@ -450,9 +642,145 @@ class VacationMaximizerEngine:
             reverse=True,
         )
 
+    def _generate_mode3_workplace_holiday_direct(
+        self, query: FlightSearchQuery, profile: FamilyProfile
+    ) -> list[CandidateVacationWindow]:
+        """Generate & rank workplace-mode candidate windows for 0-child households (zero MoE DB dependency)."""
+        spans: list[tuple[str, date, date]] = []
+        if query.direct_holiday_code:
+            holiday_code = str(query.direct_holiday_code).strip().upper()
+            resolved_ty = getattr(query, "_resolved_target_year", None)
+            if query.direct_target_year is not None:
+                target_year = int(query.direct_target_year)
+            elif resolved_ty is not None:
+                target_year = int(resolved_ty)
+            else:
+                wp_occ = IsraeliWorkplaceCalendarService.resolve_upcoming_workplace_holiday_occurrence(
+                    holiday_code=holiday_code
+                )
+                if wp_occ is not None:
+                    target_year = int(wp_occ["target_year"])
+                else:
+                    legacy_yr = _resolve_legacy_upcoming_target_year_no_db(holiday_code)
+                    if legacy_yr is not None:
+                        target_year = legacy_yr
+                    else:
+                        upcoming_occ = self.calendar_service.resolve_upcoming_holiday_occurrence(
+                            holiday_code=holiday_code,
+                            profile=profile,
+                        )
+                        target_year = int(upcoming_occ["target_year"])
+
+            span = IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span(
+                holiday_code, target_year
+            )
+            if span is None:
+                span = _project_legacy_holiday_span_no_db(holiday_code, target_year)
+            if span is not None:
+                spans.append((holiday_code, span[0], span[1]))
+            else:
+                school_year = resolve_holiday_direct_intent_school_year(
+                    holiday_code, target_year
+                )
+                fallback_wins = [
+                    w
+                    for w in self.calendar_service.get_calendar_windows(school_year)
+                    if w.holiday_code.upper() == holiday_code
+                ]
+                if fallback_wins:
+                    spans.append(
+                        (
+                            holiday_code,
+                            min(w.start_date for w in fallback_wins),
+                            max(w.end_date for w in fallback_wins),
+                        )
+                    )
+        else:
+            school_year = normalize_school_year(query.school_year or "2026-2027")
+            y1, y2 = (int(part) for part in school_year.split("-"))
+            requested_codes = {
+                str(c).strip().upper()
+                for c in (query.target_holiday_codes or [])
+                if str(c).strip()
+            }
+            canonical_codes = [
+                code
+                for code, _, _ in IsraeliWorkplaceCalendarService.CANONICAL_WORKPLACE_ROLLING_HOLIDAYS
+            ]
+            target_codes = (
+                [c for c in canonical_codes if c in requested_codes]
+                + [c for c in sorted(requested_codes) if c not in canonical_codes]
+                if requested_codes
+                else canonical_codes
+            )
+            for code in target_codes:
+                t_yr = (
+                    y1
+                    if code in IsraeliWorkplaceCalendarService._AUTUMN_WORKPLACE_CODES
+                    or code == "HANUKKAH"
+                    else y2
+                )
+                span = IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span(
+                    code, t_yr
+                )
+                if span is None:
+                    span = _project_legacy_holiday_span_no_db(code, t_yr)
+                if span is not None:
+                    spans.append((code, span[0], span[1]))
+
+        min_nights = int(query.min_trip_nights)
+        max_nights = int(query.max_trip_nights)
+        b_max = int(query.max_bridge_days_shift)
+        expand_days = max(b_max, 4)
+
+        candidates: dict[tuple[date, date], CandidateVacationWindow] = {}
+        for h_code, macro_start, macro_end in spans:
+            scan_start = macro_start - timedelta(days=expand_days)
+            scan_end = macro_end + timedelta(days=expand_days)
+            total_span = (scan_end - scan_start).days + 1
+            step = 2 if total_span > 40 else 1
+
+            for offset_s in range(0, total_span, step):
+                s_d = scan_start + timedelta(days=offset_s)
+                if self.calendar_service.is_tlv_airport_closed(s_d):
+                    continue
+                for nights in range(min_nights, max_nights + 1):
+                    e_d = s_d + timedelta(days=nights)
+                    if e_d > scan_end:
+                        break
+                    if self.calendar_service.is_tlv_airport_closed(e_d):
+                        continue
+
+                    cand = self.evaluate_window(
+                        profile=profile,
+                        start_date=s_d,
+                        end_date=e_d,
+                        window_set_type="AUTO",
+                        associated_holidays=[h_code],
+                        max_trip_nights=max_nights,
+                    )
+                    if cand.has_tlv_airport_closure_on_endpoints:
+                        continue
+                    candidates[(s_d, e_d)] = cand
+
+        ranked = sorted(
+            candidates.values(),
+            key=lambda w: (
+                float(w.workday_efficiency_score or 0.0),
+                float(w.workday_efficiency_ratio or 0.0),
+                -float(w.workplace_vacation_days_cost or 0.0),
+                w.trip_nights,
+            ),
+            reverse=True,
+        )
+        cap_limit = 120 if len(spans) <= 2 else 45
+        return ranked[:cap_limit]
+
     def _generate_mode3_holiday_direct(
         self, query: FlightSearchQuery, profile: FamilyProfile
     ) -> list[CandidateVacationWindow]:
+        if is_workplace_mode_profile(profile):
+            return self._generate_mode3_workplace_holiday_direct(query, profile)
         if query.direct_holiday_code:
             holiday_code = str(query.direct_holiday_code).strip().upper()
             resolved_ty = getattr(query, "_resolved_target_year", None)

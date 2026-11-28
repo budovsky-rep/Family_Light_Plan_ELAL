@@ -4316,5 +4316,357 @@ class TestRun14WorkplaceHolidayCalendarAndCost(unittest.TestCase):
                 self.assertEqual(len(ath_jtr), 0, f"Unexpected ATH/JTR open-jaw in {dest_filter}")
 
 
+class TestRun18WorkplacePlannerAndApi(unittest.TestCase):
+    """Run 18 F1–F4: Workplace calendar endpoints, 0-child ranking/tie-breakers, Run 11 invariance & bidirectional toggle."""
+
+    _FORBIDDEN_SCHOOL_AND_PRICE_TEXT = (
+        "$",
+        "¢",
+        "הערכת",
+        "חיסכון",
+        "מזומן",
+        "Est. Cash",
+        "נקודות:",
+        "בי״ס",
+        'בי"ס',
+        "בית ספר",
+        "מוסדות החינוך",
+        "משרד החינוך",
+        "חיסור",
+        "ניצנים",
+        "בוגרים",
+    )
+    _FORBIDDEN_PTO_KEYS = (
+        "total_vacation_days",
+        "parent_pto_days_used",
+        "pto_efficiency_ratio",
+        "vacation_utilization_score",
+    )
+
+    def test_run18_workplace_upcoming_api_and_moe_default_preservation(self) -> None:
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "run18_up.db")
+
+            # 1. GET /api/v1/workplace-calendar/upcoming
+            resp_wp = client.get("/api/v1/workplace-calendar/upcoming?as_of=2026-11-28")
+            self.assertEqual(resp_wp.status_code, 200)
+            self.assertIn("no-store", str(resp_wp.headers.get("Cache-Control", "")))
+            wp_json = resp_wp.json()
+            self.assertEqual(wp_json["calendar_mode"], "WORKPLACE")
+            self.assertEqual(wp_json["as_of_date"], "2026-11-28")
+            self.assertEqual(wp_json["window_end_date"], "2027-11-28")
+            self.assertEqual(wp_json["count"], 6)
+            self.assertEqual(
+                {h["holiday_code"] for h in wp_json["holidays"]},
+                {
+                    "ROSH_HASHANAH",
+                    "YOM_KIPPUR_SUKKOT_BRIDGE",
+                    "SUKKOT",
+                    "PESACH",
+                    "YOM_HAATZMAUT",
+                    "SHAVUOT",
+                },
+            )
+            for h in wp_json["holidays"]:
+                for bad in self._FORBIDDEN_SCHOOL_AND_PRICE_TEXT:
+                    self.assertNotIn(bad, f"{h['name_he']} {h['label_he']}")
+
+            # 2. Leap day as_of & malformed as_of -> 422 with private headers
+            resp_leap = client.get("/api/v1/workplace-calendar/upcoming?as_of=2028-02-29")
+            self.assertEqual(resp_leap.status_code, 200)
+            self.assertEqual(resp_leap.json()["window_end_date"], "2029-02-28")
+
+            resp_bad = client.get("/api/v1/workplace-calendar/upcoming?as_of=not-a-date")
+            self.assertEqual(resp_bad.status_code, 422)
+            self.assertIn("no-store", str(resp_bad.headers.get("Cache-Control", "")))
+
+            # 3. Route-order regression: GET /api/v1/workplace-calendar/2026-2027 stays 200 with count=10
+            resp_sy = client.get("/api/v1/workplace-calendar/2026-2027")
+            self.assertEqual(resp_sy.status_code, 200)
+            self.assertEqual(resp_sy.json()["count"], 10)
+
+            # 4. GET /api/v1/moe-calendar/upcoming default & ?calendar_mode=moe stay 11 unchanged
+            for url in (
+                "/api/v1/moe-calendar/upcoming?as_of=2026-11-28",
+                "/api/v1/moe-calendar/upcoming?as_of=2026-11-28&calendar_mode=moe",
+            ):
+                resp_moe = client.get(url)
+                self.assertEqual(resp_moe.status_code, 200)
+                self.assertEqual(resp_moe.json()["count"], 11)
+
+            # 5. GET /api/v1/moe-calendar/upcoming?calendar_mode=workplace matches /workplace-calendar/upcoming
+            resp_compat = client.get(
+                "/api/v1/moe-calendar/upcoming?as_of=2026-11-28&calendar_mode=workplace"
+            )
+            self.assertEqual(resp_compat.status_code, 200)
+            self.assertEqual(resp_compat.json(), wp_json)
+
+            # 6. Invalid calendar_mode -> 422
+            resp_inv = client.get("/api/v1/moe-calendar/upcoming?calendar_mode=invalid_mode")
+            self.assertEqual(resp_inv.status_code, 422)
+
+    def test_run18_zero_children_search_ranking_points_and_commercial_tiebreak_and_run11_invariance(
+        self,
+    ) -> None:
+        from backend.app.main import VacationPlannerTestClient
+        from backend.app.schemas.domain import ElAlBonusAvailability, FamilyProfile
+        from backend.app.storage_cache.seed_data import DESTINATION_CATALOG
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "run18_rank.db"
+            client = VacationPlannerTestClient(db_path=db_path)
+
+            # A. Short 1-day workplace holiday (YOM_HAATZMAUT 2027) omitting min_trip_nights
+            #    auto-defaults min_trip_nights to 2 so 3-night (4-day, 1.0 workday, 4.00x) bridges are discovered!
+            resp_atz = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                    "direct_holiday_code": "YOM_HAATZMAUT",
+                    "direct_target_year": 2027,
+                    "max_trip_nights": 4,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["ATH"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(resp_atz.status_code, 200)
+            atz_json = resp_atz.json()
+            self.assertEqual(atz_json["calendar_mode"], "WORKPLACE")
+            self.assertEqual(atz_json["query"]["min_trip_nights"], 2)
+            self.assertGreater(atz_json["count"], 0)
+            for p in atz_json["proposals"]:
+                self.assertEqual(p["calendar_mode"], "WORKPLACE")
+                self.assertEqual(
+                    p["combined_trip_optimization_score"],
+                    round(0.55 * p["holiday_alignment_score"] + 0.45 * p["flight_bonus_value_score"], 1),
+                )
+                self.assertEqual(p["holiday_alignment_score"], p["workday_efficiency_score"])
+                for bad in self._FORBIDDEN_SCHOOL_AND_PRICE_TEXT:
+                    self.assertNotIn(bad, p["explanation_summary_he"])
+                for bad_k in self._FORBIDDEN_PTO_KEYS:
+                    self.assertNotIn(bad_k, p)
+
+            # B. Non-cash points tie-breaker for EL_AL_ONLY + Run 11 cash-reference invariance
+            repo_pts = SQLiteRepository(":memory:", auto_seed=False)
+            try:
+                repo_pts.upsert_elal_bonus(
+                    [
+                        ElAlBonusAvailability(
+                            id="LY_ATH_OUT",
+                            flight_number="LY541",
+                            origin_iata="TLV",
+                            destination_iata="ATH",
+                            direction="OUTBOUND",
+                            flight_date=date(2027, 4, 22),
+                            departure_time_local="08:00",
+                            arrival_time_local="10:15",
+                            economy_award_seats=4,
+                            economy_seats_is_two_plus=True,
+                            economy_points_per_pax=8000,
+                            taxes_usd_per_pax=40.0,
+                            source_url="https://www.elal.com/rbddataclients/#live",
+                            expires_at="2099-12-31T23:59:59Z",
+                        ),
+                        ElAlBonusAvailability(
+                            id="LY_ATH_IN",
+                            flight_number="LY542",
+                            origin_iata="ATH",
+                            destination_iata="TLV",
+                            direction="INBOUND",
+                            flight_date=date(2027, 4, 28),
+                            departure_time_local="18:00",
+                            arrival_time_local="20:10",
+                            economy_award_seats=4,
+                            economy_seats_is_two_plus=True,
+                            economy_points_per_pax=8000,
+                            taxes_usd_per_pax=40.0,
+                            source_url="https://www.elal.com/rbddataclients/#live",
+                            expires_at="2099-12-31T23:59:59Z",
+                        ),
+                        ElAlBonusAvailability(
+                            id="LY_FCO_OUT",
+                            flight_number="LY381",
+                            origin_iata="TLV",
+                            destination_iata="FCO",
+                            direction="OUTBOUND",
+                            flight_date=date(2027, 4, 22),
+                            departure_time_local="08:00",
+                            arrival_time_local="10:40",
+                            economy_award_seats=4,
+                            economy_seats_is_two_plus=True,
+                            economy_points_per_pax=16000,
+                            taxes_usd_per_pax=45.0,
+                            source_url="https://www.elal.com/rbddataclients/#live",
+                            expires_at="2099-12-31T23:59:59Z",
+                        ),
+                        ElAlBonusAvailability(
+                            id="LY_FCO_IN",
+                            flight_number="LY382",
+                            origin_iata="FCO",
+                            destination_iata="TLV",
+                            direction="INBOUND",
+                            flight_date=date(2027, 4, 28),
+                            departure_time_local="18:00",
+                            arrival_time_local="22:20",
+                            economy_award_seats=4,
+                            economy_seats_is_two_plus=True,
+                            economy_points_per_pax=16000,
+                            taxes_usd_per_pax=45.0,
+                            source_url="https://www.elal.com/rbddataclients/#live",
+                            expires_at="2099-12-31T23:59:59Z",
+                        ),
+                    ]
+                )
+                planner_pts = BonusVacationPlannerService(repository=repo_pts)
+                p0 = FamilyProfile(adults_count=2, matmid_points_balance=100000, children=[])
+                q_pts = {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-04-22",
+                    "specific_return_date": "2027-04-28",
+                    "flex_days_plus_minus": 0,
+                    "airline_selection_mode": "EL_AL_ONLY",
+                    "destination_iatas": ["FCO", "ATH"],
+                }
+                res_before = planner_pts.search_vacations(q_pts, profile=p0)
+                self.assertGreaterEqual(len(res_before), 2)
+                # Equal HAS (82.5) and FBVS (100.0): lower-points ATH (16,000 RT) ranks ahead of FCO (32,000 RT)
+                self.assertEqual(res_before[0].itinerary.destination_iata, "ATH")
+                order_before = [
+                    (p.itinerary.destination_iata, p.combined_trip_optimization_score, p.workday_efficiency_score)
+                    for p in res_before
+                ]
+
+                # Mutate cash benchmarks & taxes -> EL_AL_ONLY order & scores MUST be 100% invariant
+                orig_ath_cash = DESTINATION_CATALOG["ATH"].get("cash_benchmark_usd")
+                orig_fco_cash = DESTINATION_CATALOG["FCO"].get("cash_benchmark_usd")
+                try:
+                    DESTINATION_CATALOG["ATH"]["cash_benchmark_usd"] = 9999.0
+                    DESTINATION_CATALOG["FCO"]["cash_benchmark_usd"] = 50.0
+                    res_after = planner_pts.search_vacations(q_pts, profile=p0)
+                    order_after = [
+                        (p.itinerary.destination_iata, p.combined_trip_optimization_score, p.workday_efficiency_score)
+                        for p in res_after
+                    ]
+                    self.assertEqual(order_before, order_after)
+                finally:
+                    if orig_ath_cash is not None:
+                        DESTINATION_CATALOG["ATH"]["cash_benchmark_usd"] = orig_ath_cash
+                    if orig_fco_cash is not None:
+                        DESTINATION_CATALOG["FCO"]["cash_benchmark_usd"] = orig_fco_cash
+
+                # Zero-DDL SQLite reload roundtrip
+                reloaded = repo_pts.get_proposal_by_id(res_before[0].id)
+                self.assertIsNotNone(reloaded)
+                self.assertEqual(reloaded.calendar_mode, "WORKPLACE")
+                self.assertEqual(reloaded.trip_calendar_days, 7)
+                self.assertEqual(reloaded.workdays_saved_count, 5.5)
+                self.assertEqual(reloaded.workday_efficiency_ratio, 4.67)
+                self.assertEqual(reloaded.workday_efficiency_score, 82.5)
+                self.assertFalse(reloaded.is_zero_workday_trip)
+            finally:
+                repo_pts.close()
+
+            # C. ALL_AIRLINES commercial search: cheaper commercial fare breaks equal-efficiency ties
+            #    while SQLite `flight_itineraries.total_out_of_pocket_cash_usd` stays strictly 0.0!
+            resp_comm = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-04-22",
+                    "specific_return_date": "2027-04-28",
+                    "flex_days_plus_minus": 0,
+                    "airline_selection_mode": "ALL_AIRLINES",
+                    "destination_iatas": ["ATH", "JFK"],
+                    "inline_profile": {"adults_count": 2, "children": []},
+                },
+            )
+            self.assertEqual(resp_comm.status_code, 200)
+            comm_json = resp_comm.json()
+            self.assertEqual(comm_json["calendar_mode"], "WORKPLACE")
+            self.assertGreaterEqual(comm_json["count"], 2)
+            # ATH commercial fare is much lower than JFK for the exact same dates (equal workday efficiency)
+            self.assertEqual(comm_json["proposals"][0]["itinerary"]["destination_iata"], "ATH")
+            for p in comm_json["proposals"]:
+                self.assertEqual(p["flight_bonus_value_score"], 0.0)
+                self.assertNotIn("total_out_of_pocket_cash_usd", p["itinerary"])
+                for bad in self._FORBIDDEN_SCHOOL_AND_PRICE_TEXT:
+                    self.assertNotIn(bad, p["explanation_summary_he"])
+
+            with client.router.repository.connection() as conn:
+                nonzero = conn.execute(
+                    "SELECT COUNT(*) FROM flight_itineraries WHERE total_out_of_pocket_cash_usd != 0.0"
+                ).fetchone()[0]
+                self.assertEqual(nonzero, 0)
+
+    def test_run18_bidirectional_children_toggle_switches_calendar_mode_ranking_and_copy(
+        self,
+    ) -> None:
+        from backend.app.main import VacationPlannerTestClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = VacationPlannerTestClient(db_path=Path(tmpdir) / "run18_toggle.db")
+            base_payload = {
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "min_trip_nights": 5,
+                "max_trip_nights": 8,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO"],
+            }
+
+            # 0 children -> WORKPLACE mode
+            r_wp1 = client.post(
+                "/api/v1/vacations/search",
+                json={**base_payload, "inline_profile": {"adults_count": 2, "children": []}},
+            )
+            self.assertEqual(r_wp1.status_code, 200)
+            b_wp1 = r_wp1.json()
+            self.assertEqual(b_wp1["calendar_mode"], "WORKPLACE")
+            self.assertGreater(b_wp1["count"], 0)
+            self.assertTrue(all(p["calendar_mode"] == "WORKPLACE" for p in b_wp1["proposals"]))
+            self.assertIn("יעילות ימי חופש=", b_wp1["proposals"][0]["explanation_summary_he"])
+            self.assertNotIn("בי״ס", b_wp1["proposals"][0]["explanation_summary_he"])
+            # Top workplace Pesach proposal uses statutory Pesach week (low workdays cost, high efficiency)
+            self.assertLessEqual(b_wp1["proposals"][0]["workplace_vacation_days_cost"], 2.5)
+            self.assertGreaterEqual(b_wp1["proposals"][0]["workday_efficiency_score"], 75.0)
+
+            # Toggle 0 -> 1 child -> MOE mode
+            r_moe = client.post(
+                "/api/v1/vacations/search",
+                json={
+                    **base_payload,
+                    "inline_profile": {
+                        "adults_count": 2,
+                        "children": [
+                            {"child_age_years": 8, "framework_type": "ELEMENTARY_1_3"}
+                        ],
+                    },
+                },
+            )
+            self.assertEqual(r_moe.status_code, 200)
+            b_moe = r_moe.json()
+            self.assertEqual(b_moe["calendar_mode"], "MOE")
+            self.assertGreater(b_moe["count"], 0)
+            self.assertTrue(all(p["calendar_mode"] == "MOE" for p in b_moe["proposals"]))
+            self.assertIn("התאמת חופשת בי״ס=", b_moe["proposals"][0]["explanation_summary_he"])
+
+            # Toggle 1 -> 0 children -> back to WORKPLACE mode identically
+            r_wp2 = client.post(
+                "/api/v1/vacations/search",
+                json={**base_payload, "inline_profile": {"adults_count": 2, "children": []}},
+            )
+            self.assertEqual(r_wp2.status_code, 200)
+            b_wp2 = r_wp2.json()
+            self.assertEqual(b_wp2["calendar_mode"], "WORKPLACE")
+            self.assertEqual(
+                [p["workday_efficiency_score"] for p in b_wp1["proposals"]],
+                [p["workday_efficiency_score"] for p in b_wp2["proposals"]],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

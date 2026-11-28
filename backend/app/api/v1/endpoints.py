@@ -1323,6 +1323,23 @@ class VacationPlannerAPIRouter:
 
         return FamilyProfile.from_dict(prof_dict), has_persisted
 
+    def _build_workplace_upcoming_payload(self, ref_d: date) -> dict[str, Any]:
+        """Build the rolling 1-year Israeli workplace holiday payload for `ref_d`."""
+        holidays = self.calendar_service.get_upcoming_workplace_holidays_for_rolling_year(
+            as_of_date=ref_d
+        )
+        try:
+            win_end = ref_d.replace(year=ref_d.year + 1)
+        except ValueError:
+            win_end = ref_d + timedelta(days=365)
+        return {
+            "as_of_date": ref_d.isoformat(),
+            "window_end_date": win_end.isoformat(),
+            "calendar_mode": "WORKPLACE",
+            "count": len(holidays),
+            "holidays": holidays,
+        }
+
     def dispatch(
         self,
         method: str,
@@ -1350,6 +1367,10 @@ class VacationPlannerAPIRouter:
             or (
                 method_u == "GET"
                 and path.startswith("/api/v1/moe-calendar/")
+            )
+            or (
+                method_u == "GET"
+                and path.startswith("/api/v1/workplace-calendar/")
             )
             or path.startswith("/api/v1/vacations/")
         )
@@ -1640,16 +1661,30 @@ class VacationPlannerAPIRouter:
             if method_u == "GET" and path == "/api/v1/moe-calendar/upcoming":
                 if "profile_id" in q_params:
                     _validate_optional_str(q_params["profile_id"], "profile_id", max_len=128)
-                session = self.auth_service.resolve_session(request_headers)
-                profile, _ = self._build_effective_request_profile(
-                    session=session,
-                    frameworks_csv=q_params.get("frameworks"),
-                )
                 as_of_raw = q_params.get("as_of")
                 ref_d = (
                     _parse_iso_date_strict(as_of_raw, "as_of")
                     if as_of_raw
                     else datetime.now(UTC).date()
+                )
+                calendar_mode_raw = q_params.get("calendar_mode")
+                if calendar_mode_raw is not None and str(calendar_mode_raw).strip() != "":
+                    cm_norm = str(calendar_mode_raw).strip().upper()
+                    if cm_norm not in ("MOE", "WORKPLACE"):
+                        raise ValueError(
+                            f"Invalid calendar_mode: {calendar_mode_raw!r}. Allowed: ['moe', 'workplace']"
+                        )
+                    if cm_norm == "WORKPLACE":
+                        wp_up_payload = self._build_workplace_upcoming_payload(ref_d)
+                        return (
+                            200,
+                            private_json_headers,
+                            json.dumps(wp_up_payload, ensure_ascii=False),
+                        )
+                session = self.auth_service.resolve_session(request_headers)
+                profile, _ = self._build_effective_request_profile(
+                    session=session,
+                    frameworks_csv=q_params.get("frameworks"),
                 )
                 holidays = self.calendar_service.get_upcoming_holidays_for_rolling_year(
                     as_of_date=ref_d, profile=profile
@@ -1724,7 +1759,24 @@ class VacationPlannerAPIRouter:
                     json.dumps(timeline_payload, ensure_ascii=False),
                 )
 
-            # 5b. GET /api/v1/workplace-calendar/{school_year}
+            # 5b. GET /api/v1/workplace-calendar/upcoming
+            if method_u == "GET" and path == "/api/v1/workplace-calendar/upcoming":
+                if "profile_id" in q_params:
+                    _validate_optional_str(q_params["profile_id"], "profile_id", max_len=128)
+                as_of_raw = q_params.get("as_of")
+                ref_d = (
+                    _parse_iso_date_strict(as_of_raw, "as_of")
+                    if as_of_raw
+                    else datetime.now(UTC).date()
+                )
+                wp_up_payload = self._build_workplace_upcoming_payload(ref_d)
+                return (
+                    200,
+                    private_json_headers,
+                    json.dumps(wp_up_payload, ensure_ascii=False),
+                )
+
+            # 5c. GET /api/v1/workplace-calendar/{school_year}
             if method_u == "GET" and path.startswith("/api/v1/workplace-calendar/"):
                 school_year_raw = path[len("/api/v1/workplace-calendar/") :]
                 norm_year = _validate_school_year_strict(school_year_raw)
@@ -1954,6 +2006,9 @@ class VacationPlannerAPIRouter:
                 if not isinstance(json_body, dict):
                     raise ValueError("Request body must be a JSON object")
                 body = dict(json_body)
+                min_nights_was_omitted = (
+                    "min_trip_nights" not in body and "max_trip_nights" in body
+                )
                 _validate_search_payload_strict(body)
                 if body.get("overlap_policy") in (
                     "CAMP_AWARE_ALL_CHILDREN_OFF",
@@ -1984,6 +2039,15 @@ class VacationPlannerAPIRouter:
                     session=session,
                     body=body,
                 )
+                calendar_mode = "WORKPLACE" if len(profile.children) == 0 else "MOE"
+                if (
+                    calendar_mode == "WORKPLACE"
+                    and min_nights_was_omitted
+                    and query.date_selection_mode == DateSelectionMode.HOLIDAY_DIRECT_INTENT
+                    and str(query.direct_holiday_code or "").strip().upper()
+                    in ("ROSH_HASHANAH", "YOM_HAATZMAUT", "SHAVUOT")
+                ):
+                    query.min_trip_nights = min(2, int(query.max_trip_nights))
                 expanded_dests = self.elal_adapter.expand_metro_iatas(
                     query.destination_iatas
                 )
@@ -2020,6 +2084,7 @@ class VacationPlannerAPIRouter:
                     query_dict["direct_target_year"] = resolved_ty
                 resp_payload = {
                     "query": query_dict,
+                    "calendar_mode": calendar_mode,
                     "expanded_destinations": expanded_dests,
                     "count": len(proposals),
                     "live_fetch_mode": live_mode,

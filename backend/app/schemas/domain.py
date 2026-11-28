@@ -246,6 +246,37 @@ DIRECT_HOLIDAY_CODES = (
     "SUMMER_JULY",
     "SUMMER_AUGUST",
 )
+CALENDAR_MODES = ("MOE", "WORKPLACE")
+WORKPLACE_HOLIDAY_CODES = (
+    "ROSH_HASHANAH",
+    "YOM_KIPPUR_SUKKOT_BRIDGE",
+    "SUKKOT",
+    "PESACH",
+    "YOM_HAATZMAUT",
+    "SHAVUOT",
+)
+
+
+def compute_workday_efficiency_score(
+    trip_calendar_days: int,
+    workdays_cost: float,
+    shift_penalty: float = 0.0,
+    has_tlv_closure: bool = False,
+) -> float:
+    """Canonical monotonic [0.0, 100.0] workday-efficiency score for Israeli workplace mode."""
+    if has_tlv_closure or int(trip_calendar_days) <= 0:
+        return 0.0
+    days = max(1, int(trip_calendar_days))
+    cost = max(0.0, float(workdays_cost))
+    ratio = round(days / max(0.5, cost), 2)
+    saved_fraction = max(0.0, min(1.0, (days - cost) / float(days)))
+    ratio_bonus = (
+        1.0 if cost == 0.0 else min(1.0, max(0.0, (ratio - 1.0) / 4.0))
+    )
+    raw_score = (
+        100.0 * (0.70 * saved_fraction + 0.30 * ratio_bonus) - float(shift_penalty)
+    )
+    return round(min(100.0, max(0.0, raw_score)), 1)
 
 
 def classify_passenger_type(child_age_years: int, infant_seat: bool = False) -> str:
@@ -1854,6 +1885,12 @@ class VacationOptionProposal(_DomainModelBase):
     official_holiday_workdays_saved_count: int = 0
     weekend_days_count: int = 0
     holiday_or_weekend_days_count: int = 0
+    calendar_mode: Optional[str] = None
+    trip_calendar_days: int = 0
+    workdays_saved_count: float = 0.0
+    workday_efficiency_ratio: float = 0.0
+    workday_efficiency_score: Optional[float] = None
+    is_zero_workday_trip: bool = False
     created_at: Optional[str] = field(default_factory=_now_iso)
 
     def __post_init__(self) -> None:
@@ -1924,6 +1961,16 @@ class VacationOptionProposal(_DomainModelBase):
             self.itinerary = FlightItinerary.from_dict(self.itinerary)
         if self.itinerary is not None and not self.itinerary_id:
             self.itinerary_id = self.itinerary.id
+        has_workplace_expl = "יעילות ימי חופש=" in str(self.explanation_summary_he or "")
+        if self.calendar_mode is None or str(self.calendar_mode).strip() == "":
+            self.calendar_mode = "WORKPLACE" if has_workplace_expl else "MOE"
+        else:
+            self.calendar_mode = (
+                "WORKPLACE"
+                if str(self.calendar_mode).strip().upper() == "WORKPLACE"
+                else "MOE"
+            )
+
         if (
             self.itinerary is not None
             and self.itinerary.departure_date is not None
@@ -1948,6 +1995,31 @@ class VacationOptionProposal(_DomainModelBase):
             self.holiday_or_weekend_days_count = int(
                 wp_eval["holiday_or_weekend_days_count"]
             )
+            self.trip_calendar_days = max(
+                1, (self.itinerary.return_date - self.itinerary.departure_date).days + 1
+            )
+            self.workdays_saved_count = round(
+                max(0.0, self.trip_calendar_days - self.workplace_vacation_days_cost), 1
+            )
+            self.workday_efficiency_ratio = round(
+                self.trip_calendar_days / max(0.5, self.workplace_vacation_days_cost), 2
+            )
+            self.is_zero_workday_trip = bool(self.workplace_vacation_days_cost == 0.0)
+            if self.workday_efficiency_score is None:
+                if self.calendar_mode == "WORKPLACE" and (
+                    self.holiday_alignment_score > 0.0 or has_workplace_expl
+                ):
+                    self.workday_efficiency_score = round(
+                        min(100.0, max(0.0, float(self.holiday_alignment_score))), 1
+                    )
+                else:
+                    self.workday_efficiency_score = compute_workday_efficiency_score(
+                        self.trip_calendar_days, self.workplace_vacation_days_cost
+                    )
+            else:
+                self.workday_efficiency_score = round(
+                    min(100.0, max(0.0, float(self.workday_efficiency_score))), 1
+                )
         else:
             self.workplace_vacation_days_cost = round(
                 float(self.workplace_vacation_days_cost or 0.0), 1
@@ -1962,6 +2034,53 @@ class VacationOptionProposal(_DomainModelBase):
                 self.holiday_or_weekend_days_count
                 or (self.official_holiday_workdays_saved_count + self.weekend_days_count)
             )
+            self.trip_calendar_days = max(0, int(self.trip_calendar_days or 0))
+            if self.trip_calendar_days > 0:
+                self.workdays_saved_count = round(
+                    max(0.0, self.trip_calendar_days - self.workplace_vacation_days_cost),
+                    1,
+                )
+                self.workday_efficiency_ratio = round(
+                    self.trip_calendar_days
+                    / max(0.5, self.workplace_vacation_days_cost),
+                    2,
+                )
+                self.is_zero_workday_trip = bool(
+                    self.workplace_vacation_days_cost == 0.0
+                )
+                if self.workday_efficiency_score is None:
+                    if self.calendar_mode == "WORKPLACE" and (
+                        self.holiday_alignment_score > 0.0 or has_workplace_expl
+                    ):
+                        self.workday_efficiency_score = round(
+                            min(100.0, max(0.0, float(self.holiday_alignment_score))),
+                            1,
+                        )
+                    else:
+                        self.workday_efficiency_score = (
+                            compute_workday_efficiency_score(
+                                self.trip_calendar_days,
+                                self.workplace_vacation_days_cost,
+                            )
+                        )
+                else:
+                    self.workday_efficiency_score = round(
+                        min(100.0, max(0.0, float(self.workday_efficiency_score))), 1
+                    )
+            else:
+                self.workdays_saved_count = round(
+                    float(self.workdays_saved_count or 0.0), 1
+                )
+                self.workday_efficiency_ratio = round(
+                    float(self.workday_efficiency_ratio or 0.0), 2
+                )
+                self.is_zero_workday_trip = _parse_bool(
+                    self.is_zero_workday_trip, False
+                )
+                self.workday_efficiency_score = round(
+                    min(100.0, max(0.0, float(self.workday_efficiency_score or 0.0))),
+                    1,
+                )
         if not self.created_at:
             self.created_at = _now_iso()
 
@@ -1998,6 +2117,12 @@ class VacationOptionProposal(_DomainModelBase):
             "official_holiday_workdays_saved_count": self.official_holiday_workdays_saved_count,
             "weekend_days_count": self.weekend_days_count,
             "holiday_or_weekend_days_count": self.holiday_or_weekend_days_count,
+            "calendar_mode": self.calendar_mode,
+            "trip_calendar_days": self.trip_calendar_days,
+            "workdays_saved_count": self.workdays_saved_count,
+            "workday_efficiency_ratio": self.workday_efficiency_ratio,
+            "workday_efficiency_score": self.workday_efficiency_score,
+            "is_zero_workday_trip": self.is_zero_workday_trip,
             "created_at": self.created_at,
         }
 
@@ -2071,6 +2196,20 @@ class VacationOptionProposal(_DomainModelBase):
             weekend_days_count=int(data.get("weekend_days_count", 0) or 0),
             holiday_or_weekend_days_count=int(
                 data.get("holiday_or_weekend_days_count", 0) or 0
+            ),
+            calendar_mode=data.get("calendar_mode"),
+            trip_calendar_days=int(data.get("trip_calendar_days", 0) or 0),
+            workdays_saved_count=float(data.get("workdays_saved_count", 0.0) or 0.0),
+            workday_efficiency_ratio=float(
+                data.get("workday_efficiency_ratio", 0.0) or 0.0
+            ),
+            workday_efficiency_score=(
+                float(data["workday_efficiency_score"])
+                if data.get("workday_efficiency_score") is not None
+                else None
+            ),
+            is_zero_workday_trip=_parse_bool(
+                data.get("is_zero_workday_trip", False), False
             ),
             created_at=data.get("created_at") or _now_iso(),
         )
@@ -2183,6 +2322,13 @@ class CandidateVacationWindow(_DomainModelBase):
     has_tlv_airport_closure_on_endpoints: bool = False
     has_bagrut_blackout: bool = False
     explanation_summary_he: str = ""
+    calendar_mode: str = "MOE"
+    trip_calendar_days: int = 0
+    workplace_vacation_days_cost: Optional[float] = None
+    workdays_saved_count: Optional[float] = None
+    workday_efficiency_ratio: Optional[float] = None
+    workday_efficiency_score: Optional[float] = None
+    is_zero_workday_trip: Optional[bool] = None
 
     def __post_init__(self) -> None:
         self.start_date = _parse_date(self.start_date)
@@ -2215,6 +2361,57 @@ class CandidateVacationWindow(_DomainModelBase):
             self.has_tlv_airport_closure_on_endpoints, False
         )
         self.has_bagrut_blackout = _parse_bool(self.has_bagrut_blackout, False)
+        self.calendar_mode = (
+            "WORKPLACE"
+            if str(self.calendar_mode or "MOE").strip().upper() == "WORKPLACE"
+            else "MOE"
+        )
+        self.trip_calendar_days = max(1, (self.end_date - self.start_date).days + 1)
+        if self.workplace_vacation_days_cost is None:
+            from backend.app.calendar_engine.moe_calendar_service import (
+                IsraeliWorkplaceCalendarService,
+            )
+
+            wp_eval = IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost(
+                self.start_date, self.end_date
+            )
+            self.workplace_vacation_days_cost = float(
+                wp_eval["workplace_vacation_days_cost"]
+            )
+        else:
+            self.workplace_vacation_days_cost = round(
+                max(0.0, float(self.workplace_vacation_days_cost)), 1
+            )
+        if self.workdays_saved_count is None:
+            self.workdays_saved_count = round(
+                max(0.0, self.trip_calendar_days - self.workplace_vacation_days_cost), 1
+            )
+        else:
+            self.workdays_saved_count = round(
+                max(0.0, float(self.workdays_saved_count)), 1
+            )
+        if self.workday_efficiency_ratio is None:
+            self.workday_efficiency_ratio = round(
+                self.trip_calendar_days / max(0.5, self.workplace_vacation_days_cost), 2
+            )
+        else:
+            self.workday_efficiency_ratio = round(
+                max(0.0, float(self.workday_efficiency_ratio)), 2
+            )
+        if self.is_zero_workday_trip is None:
+            self.is_zero_workday_trip = bool(self.workplace_vacation_days_cost == 0.0)
+        else:
+            self.is_zero_workday_trip = _parse_bool(self.is_zero_workday_trip, False)
+        if self.workday_efficiency_score is None:
+            self.workday_efficiency_score = compute_workday_efficiency_score(
+                self.trip_calendar_days,
+                self.workplace_vacation_days_cost,
+                has_tlv_closure=self.has_tlv_airport_closure_on_endpoints,
+            )
+        else:
+            self.workday_efficiency_score = round(
+                min(100.0, max(0.0, float(self.workday_efficiency_score))), 1
+            )
 
     @property
     def SAP(self) -> float:
@@ -2245,6 +2442,13 @@ class CandidateVacationWindow(_DomainModelBase):
             "has_tlv_airport_closure_on_endpoints": self.has_tlv_airport_closure_on_endpoints,
             "has_bagrut_blackout": self.has_bagrut_blackout,
             "explanation_summary_he": self.explanation_summary_he,
+            "calendar_mode": self.calendar_mode,
+            "trip_calendar_days": self.trip_calendar_days,
+            "workplace_vacation_days_cost": self.workplace_vacation_days_cost,
+            "workdays_saved_count": self.workdays_saved_count,
+            "workday_efficiency_ratio": self.workday_efficiency_ratio,
+            "workday_efficiency_score": self.workday_efficiency_score,
+            "is_zero_workday_trip": self.is_zero_workday_trip,
         }
 
     @classmethod
@@ -2287,6 +2491,33 @@ class CandidateVacationWindow(_DomainModelBase):
             ),
             has_bagrut_blackout=_parse_bool(data.get("has_bagrut_blackout", False)),
             explanation_summary_he=str(data.get("explanation_summary_he") or ""),
+            calendar_mode=str(data.get("calendar_mode") or "MOE"),
+            trip_calendar_days=int(data.get("trip_calendar_days") or 0),
+            workplace_vacation_days_cost=(
+                float(data["workplace_vacation_days_cost"])
+                if data.get("workplace_vacation_days_cost") is not None
+                else None
+            ),
+            workdays_saved_count=(
+                float(data["workdays_saved_count"])
+                if data.get("workdays_saved_count") is not None
+                else None
+            ),
+            workday_efficiency_ratio=(
+                float(data["workday_efficiency_ratio"])
+                if data.get("workday_efficiency_ratio") is not None
+                else None
+            ),
+            workday_efficiency_score=(
+                float(data["workday_efficiency_score"])
+                if data.get("workday_efficiency_score") is not None
+                else None
+            ),
+            is_zero_workday_trip=(
+                _parse_bool(data["is_zero_workday_trip"])
+                if data.get("is_zero_workday_trip") is not None
+                else None
+            ),
         )
 
 

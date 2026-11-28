@@ -1,7 +1,7 @@
 {
-  "name": "breezyflights — מתכנן חופשות משפחתיות חכם",
+  "name": "breezyflights — מתכנן חופשות חכם",
   "short_name": "breezyflights",
-  "description": "אפליקציית תכנון חופשות משפחתיות עצמאית לפי לוח חופשות משרד החינוך וכרטיסי בונוס",
+  "description": "אפליקציית תכנון חופשות עצמאית לפי חגי המשק, לוח החופשות וכרטיסי בונוס",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

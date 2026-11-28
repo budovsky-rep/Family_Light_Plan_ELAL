@@ -1767,6 +1767,29 @@ class BonusVacationPlannerService:
             weather_note = f", WSS={wss:.1f}"
         weather_tail = f" | {weather_summary_he}" if weather_summary_he else ""
 
+        if getattr(window, "calendar_mode", "MOE") == "WORKPLACE":
+            trip_days = window.trip_calendar_days or (
+                (window.end_date - window.start_date).days + 1
+            )
+            wp_cost = float(window.workplace_vacation_days_cost or 0.0)
+            wp_saved = float(window.workdays_saved_count or 0.0)
+            wp_ratio = float(window.workday_efficiency_ratio or 0.0)
+            workdays_seg = (
+                f"0 ימי חופש מהעבודה (נחסכו {wp_saved:g} ימים · יחס ×{wp_ratio:.1f})"
+                if window.is_zero_workday_trip
+                else f"{wp_cost:g} ימי חופש מהעבודה (נחסכו {wp_saved:g} ימים · יחס ×{wp_ratio:.1f})"
+            )
+            return (
+                f"{itinerary.destination_city_he} ({itinerary.destination_iata}) | "
+                f"{window.start_date.isoformat()} עד {window.end_date.isoformat()} "
+                f"({itinerary.trip_nights} לילות, {trip_days} ימים) | "
+                f"{workdays_seg} | "
+                f"אסטרטגיה: {strat_display}{open_jaw_note} | "
+                f"{coverage_he} | "
+                f"ציונים: יעילות ימי חופש={window.holiday_alignment_score:.1f}/100, FBVS={fbvs}{weather_note}, CTOS={ctos}"
+                f"{weather_tail}"
+            )
+
         return (
             f"{itinerary.destination_city_he} ({itinerary.destination_iata}) | "
             f"{window.start_date.isoformat()} עד {window.end_date.isoformat()} "
@@ -2154,12 +2177,14 @@ class BonusVacationPlannerService:
                     seen_pairs.add(pair)
                     selected.append(w)
 
-        # 1. Include any canonical benchmark windows present in `all_windows`
-        for w in all_windows:
-            pair = (w.start_date, w.end_date)
-            if pair in canonical_pairs and pair not in seen_pairs:
-                seen_pairs.add(pair)
-                selected.append(w)
+        # 1. Include any canonical MoE benchmark windows present in `all_windows` (only for families with children)
+        is_workplace_mode = len(profile.children) == 0
+        if not is_workplace_mode:
+            for w in all_windows:
+                pair = (w.start_date, w.end_date)
+                if pair in canonical_pairs and pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    selected.append(w)
 
         # 2. Fill with top-ranked windows by HAS
         max_windows = 8 if len(expanded_destinations) <= 3 else (4 if len(expanded_destinations) <= 6 else 2)
@@ -2183,6 +2208,11 @@ class BonusVacationPlannerService:
     ) -> list[VacationOptionProposal]:
         """Execute end-to-end vacation search across Date Modes 1/2/3 and Airline Modes 1/2."""
         matmid_override: Optional[int] = None
+        min_nights_omitted = (
+            isinstance(query_data, dict)
+            and "min_trip_nights" not in query_data
+            and "max_trip_nights" in query_data
+        )
         if isinstance(query_data, dict):
             q_dict = dict(query_data)
             if (
@@ -2273,6 +2303,16 @@ class BonusVacationPlannerService:
                     "passenger_loyalty_wallets": [],
                 }
             )
+
+        is_workplace_mode = len(active_profile.children) == 0
+        if (
+            is_workplace_mode
+            and min_nights_omitted
+            and query.date_selection_mode == DateSelectionMode.HOLIDAY_DIRECT_INTENT
+            and str(query.direct_holiday_code or "").strip().upper()
+            in ("ROSH_HASHANAH", "YOM_HAATZMAUT", "SHAVUOT")
+        ):
+            query.min_trip_nights = min(2, int(query.max_trip_nights))
 
         if persist_results:
             existing_db_prof = (
@@ -2438,6 +2478,7 @@ class BonusVacationPlannerService:
                 )
 
         raw_proposals: list[VacationOptionProposal] = []
+        commercial_fare_by_prop_id: dict[str, float] = {}
         active_oj_pairs: list[tuple[str, str]] = (
             [
                 (d_out, d_in)
@@ -2499,13 +2540,15 @@ class BonusVacationPlannerService:
                             )
                             if itin_dict is not None:
                                 itin = FlightItinerary.from_dict(itin_dict)
-                                raw_proposals.append(
-                                    self._make_proposal_from_itinerary(
-                                        query=query,
-                                        window=window,
-                                        itinerary=itin,
-                                        n_seated=n_seated,
-                                    )
+                                prop = self._make_proposal_from_itinerary(
+                                    query=query,
+                                    window=window,
+                                    itinerary=itin,
+                                    n_seated=n_seated,
+                                )
+                                raw_proposals.append(prop)
+                                commercial_fare_by_prop_id[prop.id] = float(
+                                    offer.get("total_out_of_pocket_cash_usd", 0.0)
                                 )
                         continue
 
@@ -2611,13 +2654,15 @@ class BonusVacationPlannerService:
                         )
                         if itin_dict is not None:
                             itin = FlightItinerary.from_dict(itin_dict)
-                            raw_proposals.append(
-                                self._make_proposal_from_itinerary(
-                                    query=query,
-                                    window=window,
-                                    itinerary=itin,
-                                    n_seated=n_seated,
-                                )
+                            prop = self._make_proposal_from_itinerary(
+                                query=query,
+                                window=window,
+                                itinerary=itin,
+                                n_seated=n_seated,
+                            )
+                            raw_proposals.append(prop)
+                            commercial_fare_by_prop_id[prop.id] = float(
+                                offer.get("total_out_of_pocket_cash_usd", 0.0)
                             )
 
             # Synthesize Open-Jaw Bonus pairings across compatible regional clusters (e.g. MXP <-> FCO)
@@ -2776,6 +2821,43 @@ class BonusVacationPlannerService:
                 )
             else:
                 tie_breakers = (len(strategy_rank), 0, "", "", "", "", "", "", "")
+            if is_workplace_mode:
+                if airline_mode == "EL_AL_ONLY" and query.search_elal_bonus_tickets:
+                    pts = itin.min_points_per_bonus_ticket if itin is not None else None
+                    price_tie: tuple[Any, ...] = (
+                        (0, int(pts)) if (pts is not None and pts > 0) else (1, 0)
+                    )
+                else:
+                    fare = commercial_fare_by_prop_id.get(p.id)
+                    price_tie = (
+                        (0, round(float(fare), 2)) if fare is not None else (1, 0.0)
+                    )
+                eff_score = float(
+                    p.workday_efficiency_score
+                    if p.workday_efficiency_score is not None
+                    else p.holiday_alignment_score
+                )
+                if has_weather_filter:
+                    return (
+                        0 if p.weather_suitability_score >= effective_tau else 1,
+                        -p.combined_trip_optimization_score,
+                        -p.weather_suitability_score,
+                        -eff_score,
+                        -p.flight_bonus_value_score,
+                        -float(p.workday_efficiency_ratio),
+                        float(p.workplace_vacation_days_cost),
+                        price_tie,
+                        *tie_breakers,
+                    )
+                return (
+                    -p.combined_trip_optimization_score,
+                    -eff_score,
+                    -p.flight_bonus_value_score,
+                    -float(p.workday_efficiency_ratio),
+                    float(p.workplace_vacation_days_cost),
+                    price_tie,
+                    *tie_breakers,
+                )
             if has_weather_filter:
                 return (
                     0 if p.weather_suitability_score >= effective_tau else 1,
@@ -2812,7 +2894,8 @@ class BonusVacationPlannerService:
             )
             is_open_jaw_p = p.itinerary.destination_iata != p.itinerary.return_origin_iata
             is_canonical_window = (
-                not has_weather_filter
+                not is_workplace_mode
+                and not has_weather_filter
                 and (
                     p.itinerary.departure_date,
                     p.itinerary.return_date,
@@ -2920,5 +3003,15 @@ class BonusVacationPlannerService:
             combined_trip_optimization_score=ctos,
             explanation_summary_he=explanation,
             itinerary=itinerary,
+            calendar_mode=window.calendar_mode,
+            trip_calendar_days=window.trip_calendar_days,
+            workdays_saved_count=float(window.workdays_saved_count or 0.0),
+            workday_efficiency_ratio=float(window.workday_efficiency_ratio or 0.0),
+            workday_efficiency_score=(
+                float(window.workday_efficiency_score)
+                if window.workday_efficiency_score is not None
+                else None
+            ),
+            is_zero_workday_trip=bool(window.is_zero_workday_trip),
             created_at=_now_iso(),
         )

@@ -2498,6 +2498,19 @@ html[dir="rtl"] .profile-collapsible:not([open]) > summary .sub-panel-title-text
   text-align: start;
 }
 
+[data-planning-mode="workplace"] .children-empty-hint {
+  background: var(--pine-tint);
+  border-color: var(--pine-border);
+  border-inline-start: 3px solid var(--pine-bridge);
+  color: var(--ink-flightdeck);
+}
+
+[data-planning-mode="workplace"] #active-mode-badge {
+  background: var(--pine-tint);
+  border-color: var(--pine-border);
+  color: var(--pine-bridge);
+}
+
 /* 48px Household Summary Bar & <1180px Bottom-Sheet Profile Drawer */
 .household-summary-bar {
   min-height: 48px;
@@ -3067,6 +3080,58 @@ body.is-keyboard-open .profile-sheet-footer {
   color: var(--pine-bridge);
 }
 
+.stub-kpi-grid .kpi-cell-head {
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.stub-kpi-grid .kpi-cell-label {
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.kpi-efficiency-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-inline-start: auto;
+  padding-block: 0;
+  padding-inline: 5px;
+  border-radius: 999px;
+  background: var(--pine-tint);
+  border: 1px solid var(--pine-border);
+  color: var(--pine-bridge);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tag);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+.kpi-efficiency-pill-zero {
+  font-family: var(--font-body);
+  background: var(--pine-bridge);
+  border-color: var(--pine-bridge);
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+.kpi-saved-paren {
+  font-family: var(--font-body);
+  font-size: var(--fs-tag);
+  font-weight: 600;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+
+.kpi-saved-positive {
+  color: var(--pine-bridge);
+}
+
 .pass-kpi-grid {
   position: relative;
   z-index: 16;
@@ -3472,6 +3537,15 @@ body.is-keyboard-open .profile-sheet-footer {
   max-width: 100%;
   border-radius: 10px;
   line-height: 1.3;
+}
+
+#zone-calendar[data-calendar-mode="workplace"] #calendar-col-moe,
+#zone-calendar[data-calendar-mode="workplace"] #btn-sync-moe-year {
+  display: none;
+}
+
+#zone-calendar[data-calendar-mode="workplace"] .calendar-dual-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Admin-Only Flight-Deck Bonus Sync Telemetry (Yearly 12-Period Horizon) */
@@ -4974,6 +5048,51 @@ body.is-keyboard-open .profile-sheet-footer {
     font-size: 0.94rem;
   }
 
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table {
+    display: table;
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table thead {
+    display: table-header-group;
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table tbody {
+    display: table-row-group;
+    padding: 0;
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table tbody tr {
+    display: table-row;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table th,
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table td {
+    display: table-cell;
+    padding-block: 8px;
+    padding-inline: 10px;
+    border-block-end: 1px solid var(--border-subtle);
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table td[data-label]::before {
+    content: none;
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table thead th {
+    position: sticky;
+    top: 0;
+    background-color: var(--surface-recessed);
+    color: var(--ink-flightdeck);
+    font-weight: 700;
+    z-index: 3;
+  }
+
+  #zone-calendar[data-calendar-mode="workplace"] .work-holiday-table td[dir="ltr"] .work-cell-val {
+    white-space: nowrap;
+  }
+
   .booking-handoff-sheet-handle {
     display: none;
   }
@@ -5208,6 +5327,10 @@ body.is-keyboard-open .profile-sheet-footer {
     inset-block-end: auto;
     max-height: calc(100dvh - 92px);
     inset-inline: 20px;
+  }
+
+  #zone-calendar.is-calendar-open[data-calendar-mode="workplace"] {
+    max-width: 960px;
   }
 
   .admin-periods-grid {

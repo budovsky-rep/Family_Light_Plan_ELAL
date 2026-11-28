@@ -381,7 +381,7 @@
 
         <div id="controls-holiday-direct" class="form-grid" style="display: none;">
           <div class="form-field">
-            <label for="select-direct-holiday" data-he="חג / חופשה בשנה הקרובה:" data-en="Upcoming Holiday (Next 12 Months):">חג / חופשה בשנה הקרובה:</label>
+            <label id="label-direct-holiday" for="select-direct-holiday" data-he="חג / חופשה בשנה הקרובה:" data-en="Upcoming Holiday (Next 12 Months):">חג / חופשה בשנה הקרובה:</label>
             <select id="select-direct-holiday">
               <option value="HANUKKAH" selected data-year="2026" data-days="7" data-he="חופשת חנוכה 2026 (7 ימים)" data-en="Hanukkah Break 2026 (7 days)">חופשת חנוכה 2026 (7 ימים)</option>
               <option value="PURIM" data-year="2027" data-days="2" data-he="חופשת פורים 2027 (2 ימים)" data-en="Purim Break 2027 (2 days)">חופשת פורים 2027 (2 ימים)</option>
@@ -585,7 +585,7 @@
         <!-- Children Ages & Optional Frameworks List -->
         <details class="sub-panel-section profile-collapsible" open>
           <summary class="sub-panel-header">
-            <strong class="sub-panel-title-text" data-he="👶 ילדים ומסגרות חינוך (אופציונלי בתאריכים ידניים)" data-en="👶 Children &amp; MoE Frameworks (Optional in Manual Dates)">👶 ילדים ומסגרות חינוך (אופציונלי בתאריכים ידניים)</strong>
+            <strong id="profile-children-summary-title" class="sub-panel-title-text" data-he="👶 ילדים ומסגרות חינוך (אופציונלי בתאריכים ידניים)" data-en="👶 Children &amp; MoE Frameworks (Optional in Manual Dates)">👶 ילדים ומסגרות חינוך (אופציונלי בתאריכים ידניים)</strong>
             <button type="button" class="btn-secondary btn-compact-action" id="btn-add-child" data-he="+ ילד/ה" data-en="+ Add Child">+ ילד/ה</button>
           </summary>
           <div id="children-list-container" class="compact-profile-list"></div>
@@ -608,7 +608,7 @@
         </div>
         <div id="admin-bonus-sync-slot" class="admin-bonus-sync-slot" hidden style="display: none;"></div>
         <div class="proposals-grid" id="proposals-container">
-          <p data-he="מחשב חלופות חופשה משפחתית וכרטיסי בונוס..." data-en="Computing family vacation &amp; award seat proposals...">מחשב חלופות חופשה משפחתית וכרטיסי בונוס...</p>
+          <p data-he="מחשב חלופות חופשה וכרטיסי בונוס..." data-en="Computing vacation &amp; award seat proposals...">מחשב חלופות חופשה וכרטיסי בונוס...</p>
         </div>
       </section>
 

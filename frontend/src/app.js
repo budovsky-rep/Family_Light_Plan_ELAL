@@ -41,6 +41,15 @@
     { code: 'SUMMER_AUGUST', nameHe: 'החופש הגדול — אוגוסט', nameEn: 'Summer Break — August' }
   ];
 
+  const CANONICAL_WORKPLACE_ROLLING_HOLIDAYS = [
+    { code: 'ROSH_HASHANAH', nameHe: 'ראש השנה', nameEn: 'Rosh Hashanah', autumn: true },
+    { code: 'YOM_KIPPUR_SUKKOT_BRIDGE', nameHe: 'גשר כיפור–סוכות', nameEn: 'Yom Kippur–Sukkot Bridge', autumn: true },
+    { code: 'SUKKOT', nameHe: 'סוכות וחול המועד', nameEn: 'Sukkot & Chol HaMoed', autumn: true },
+    { code: 'PESACH', nameHe: 'פסח וחול המועד', nameEn: 'Passover & Chol HaMoed', autumn: false },
+    { code: 'YOM_HAATZMAUT', nameHe: 'יום העצמאות (גשר סופ״ש)', nameEn: 'Independence Day Bridge', autumn: false },
+    { code: 'SHAVUOT', nameHe: 'חג השבועות (סופ״ש ארוך)', nameEn: 'Shavuot Long Weekend', autumn: false }
+  ];
+
   const ALL_8_FRAMEWORKS = [
     'DAYCARE_SUPERVISED',
     'MUNICIPAL_GAN',
@@ -445,6 +454,138 @@
     });
   }
 
+  function isTupleKeyGreater(a, b) {
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return a[i] > b[i];
+    }
+    return false;
+  }
+
+  function computeRecommendedWorkplaceWindowClient(startIso, endIso) {
+    const coreDays = Math.max(1, diffDaysIso(startIso, endIso) + 1);
+    if (coreDays >= 4) {
+      return [startIso, endIso];
+    }
+    let bestKey = null;
+    let bestSpan = [startIso, endIso];
+    [4, 5].forEach((length) => {
+      for (let offset = 0; offset <= length - coreDays; offset += 1) {
+        const ws = addDaysIso(startIso, -offset);
+        const we = addDaysIso(ws, length - 1);
+        if (we < endIso) continue;
+        const ev = computeTripWorkdaysClient(ws, we);
+        const cost = Number(ev.workplace_vacation_days_cost || 0);
+        const ratio = Math.round((length / Math.max(0.5, cost)) * 100) / 100;
+        const weWd = utcWeekdayMon0(we);
+        const wsWd = utcWeekdayMon0(ws);
+        const wkndEndBonus = weWd === 5 || weWd === 6 ? 1 : 0;
+        const nonFriStart = wsWd !== 4 ? 1 : 0;
+        const key = [ratio, -cost, length, wkndEndBonus, nonFriStart, -offset];
+        if (bestKey === null || isTupleKeyGreater(key, bestKey)) {
+          bestKey = key;
+          bestSpan = [ws, we];
+        }
+      }
+    });
+    return bestSpan;
+  }
+
+  function buildUpcomingWorkplaceHolidaysClient(refIso) {
+    const curSy = inferSchoolYearForIso(refIso);
+    const y1 = Number(curSy.split('-')[0]);
+    const upcoming = [];
+
+    CANONICAL_WORKPLACE_ROLLING_HOLIDAYS.forEach((meta) => {
+      for (let i = 0; i < 3; i += 1) {
+        const syY1 = y1 + i;
+        const sy = `${syY1}-${syY1 + 1}`;
+        const hebYear = syY1 + 3761;
+        const yr = getWorkplaceHolidaySetsClient(hebYear);
+        let sIso = null;
+        let eIso = null;
+        if (meta.code === 'ROSH_HASHANAH') {
+          sIso = yr.rh1;
+          eIso = addDaysIso(yr.rh1, 1);
+        } else if (meta.code === 'YOM_KIPPUR_SUKKOT_BRIDGE') {
+          sIso = addDaysIso(yr.rh1, 9);
+          eIso = addDaysIso(yr.rh1, 21);
+        } else if (meta.code === 'SUKKOT') {
+          sIso = addDaysIso(yr.rh1, 14);
+          eIso = addDaysIso(yr.rh1, 21);
+        } else if (meta.code === 'PESACH') {
+          sIso = yr.pes1;
+          eIso = addDaysIso(yr.pes1, 6);
+        } else if (meta.code === 'YOM_HAATZMAUT') {
+          sIso = yr.atzmautIso;
+          eIso = yr.atzmautIso;
+        } else if (meta.code === 'SHAVUOT') {
+          sIso = yr.shavuotIso;
+          eIso = yr.shavuotIso;
+        }
+        if (!sIso || !eIso) continue;
+        if (eIso >= refIso) {
+          const holidayDays = Math.max(1, diffDaysIso(sIso, eIso) + 1);
+          let officialHolidayDays = 0;
+          let cholHamoedDays = 0;
+          for (let k = 0; k < holidayDays; k += 1) {
+            const dIso = addDaysIso(sIso, k);
+            if (yr.officialSet.has(dIso)) officialHolidayDays += 1;
+            if (yr.cholSet.has(dIso)) cholHamoedDays += 1;
+          }
+          const coreEval = computeTripWorkdaysClient(sIso, eIso);
+          const recSpan = computeRecommendedWorkplaceWindowClient(sIso, eIso);
+          const recStart = recSpan[0];
+          const recEnd = recSpan[1];
+          const recDays = Math.max(1, diffDaysIso(recStart, recEnd) + 1);
+          const recEval = computeTripWorkdaysClient(recStart, recEnd);
+          const recCost = Number(recEval.workplace_vacation_days_cost || 0);
+          const recSaved = Math.round(Math.max(0, recDays - recCost) * 10) / 10;
+          const recRatio = Math.round((recDays / Math.max(0.5, recCost)) * 100) / 100;
+          const costStr = Number.isInteger(recCost)
+            ? String(recCost)
+            : String(Math.round(recCost * 10) / 10);
+          const costUnitHe = recCost === 1 ? 'יום חופש' : 'ימי חופש';
+          const costUnitEn = recCost === 1 ? 'workday' : 'workdays';
+          const dayWordHe = recDays === 1 ? 'יום' : 'ימים';
+          const dayWordEn = recDays === 1 ? 'day' : 'days';
+          const targetYear = Number(sIso.slice(0, 4));
+          upcoming.push({
+            holiday_code: meta.code,
+            name_he: meta.nameHe,
+            name_en: meta.nameEn,
+            target_year: targetYear,
+            school_year: sy,
+            start_date: sIso,
+            end_date: eIso,
+            holiday_days: holidayDays,
+            recommended_window_start: recStart,
+            recommended_window_end: recEnd,
+            recommended_trip_days: recDays,
+            recommended_workdays_cost: recCost,
+            recommended_workdays_saved: recSaved,
+            recommended_efficiency_ratio: recRatio,
+            workplace_workdays_cost: Number(coreEval.workplace_vacation_days_cost || 0),
+            official_holiday_days: officialHolidayDays,
+            chol_hamoed_days: cholHamoedDays,
+            is_ongoing: sIso <= refIso && refIso <= eIso,
+            calendar_mode: 'WORKPLACE',
+            label_he: `${meta.nameHe} ${targetYear} (${recDays} ${dayWordHe} · ${costStr} ${costUnitHe})`,
+            label_en: `${meta.nameEn} ${targetYear} (${recDays} ${dayWordEn} · ${costStr} ${costUnitEn})`
+          });
+          break;
+        }
+      }
+    });
+
+    upcoming.sort((a, b) => {
+      if (a.start_date !== b.start_date) return a.start_date < b.start_date ? -1 : 1;
+      if (a.end_date !== b.end_date) return a.end_date < b.end_date ? -1 : 1;
+      if (a.holiday_days !== b.holiday_days) return a.holiday_days - b.holiday_days;
+      return a.holiday_code < b.holiday_code ? -1 : 1;
+    });
+    return upcoming;
+  }
+
   function projectSchoolYearPeriods(schoolYearStr) {
     if (BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr]) {
       return BUNDLED_SCHOOL_YEAR_PERIODS[schoolYearStr];
@@ -597,6 +738,10 @@
     };
   }
 
+  function isWorkplaceModeProfile(profileObj) {
+    return !profileObj || !Array.isArray(profileObj.children) || profileObj.children.length === 0;
+  }
+
   function generateClientChildId() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       return `child-${crypto.randomUUID()}`;
@@ -649,6 +794,8 @@
     profile: createCleanGuestProfile(),
     profileDirty: false,
     lastSearchProfile: null,
+    lastSearchCalendarMode: 'WORKPLACE',
+    lastPlanningMode: 'workplace',
     upcomingHolidays: [],
     userSelectedHoliday: false,
     userEditedMaxNights: false,
@@ -659,6 +806,7 @@
   };
 
   let latestSearchSeq = 0;
+  let latestHolidayFetchSeq = 0;
 
   function syncVacationTypePills() {
     const activeSet = new Set(state.selectedVacationTypes || []);
@@ -784,6 +932,7 @@
       if (willOpen) {
         renderCalendarTable();
         renderWorkplaceCalendarTable();
+        syncPlanningModeUi();
         calZone.removeAttribute('hidden');
         calZone.style.display = 'flex';
         calZone.classList.add('is-calendar-open');
@@ -822,15 +971,20 @@
 
     const btnTop = document.getElementById('btn-toggle-calendar');
     if (btnTop) {
+      const isWpCal = isWorkplaceModeProfile(state.profile);
       btnTop.classList.toggle('active', willOpen);
       btnTop.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
       btnTop.textContent = willOpen
         ? isHe
           ? '📅 הסתר לוח'
           : '📅 Hide Calendar'
-        : isHe
-          ? '📅 לוח חופשות'
-          : '📅 MoE Calendar';
+        : isWpCal
+          ? isHe
+            ? '📅 לוח חגי המשק'
+            : '📅 Workplace Holidays'
+          : isHe
+            ? '📅 לוח חופשות'
+            : '📅 MoE Calendar';
     }
     const dockCalBtn = document.getElementById('btn-mobile-dock-calendar');
     if (dockCalBtn) {
@@ -1720,8 +1874,19 @@
     return '';
   }
 
-  function applyHolidayDurationDefault(holidayDays) {
-    const daysNum = Math.min(45, Math.max(1, Math.round(Number(holidayDays) || 7)));
+  function applyHolidayDurationDefault(holidayDaysOrObj) {
+    const isObj = holidayDaysOrObj && typeof holidayDaysOrObj === 'object';
+    const calMode = isObj ? String(holidayDaysOrObj.calendarMode || '').toUpperCase() : '';
+    const isWorkplace = calMode === 'WORKPLACE';
+    const coreDays = Math.max(
+      1,
+      Math.round(Number(isObj ? holidayDaysOrObj.holidayDays : holidayDaysOrObj) || 7)
+    );
+    const targetMaxRaw = isWorkplace
+      ? Number(holidayDaysOrObj.recommendedTripDays || coreDays)
+      : coreDays;
+    const daysNum = Math.min(45, Math.max(1, Math.round(targetMaxRaw || 7)));
+    const defaultMinCap = isWorkplace && coreDays <= 2 ? 2 : 4;
     const maxInput = document.getElementById('input-max-nights');
     const minInput = document.getElementById('input-min-nights');
     if (maxInput) {
@@ -1729,7 +1894,7 @@
     }
     if (minInput) {
       if (!state.userEditedMinNights) {
-        minInput.value = String(Math.min(4, daysNum));
+        minInput.value = String(Math.min(defaultMinCap, daysNum));
       } else if (Number(minInput.value || 1) > daysNum) {
         minInput.value = String(daysNum);
       }
@@ -1748,19 +1913,37 @@
       Boolean(options.preserveSelection) &&
       holidaysList.some((h) => h.holiday_code === prevVal);
     const activeCode = hasPrev ? prevVal : holidaysList[0].holiday_code;
+    const fallbackCalMode = isWorkplaceModeProfile(state.profile) ? 'WORKPLACE' : 'MOE';
 
     selectEl.innerHTML = holidaysList
       .map((h) => {
         const selAttr = h.holiday_code === activeCode ? ' selected' : '';
         const text = isHe ? h.label_he : h.label_en;
-        return `<option value="${escapeHtml(h.holiday_code)}"${selAttr} data-year="${escapeHtml(h.target_year)}" data-days="${escapeHtml(h.holiday_days)}" data-start="${escapeHtml(h.start_date)}" data-end="${escapeHtml(h.end_date)}" data-he="${escapeHtml(h.label_he)}" data-en="${escapeHtml(h.label_en)}">${escapeHtml(text)}</option>`;
+        const recDays = h.recommended_trip_days !== undefined && h.recommended_trip_days !== null
+          ? h.recommended_trip_days
+          : h.holiday_days;
+        const calMode = h.calendar_mode || fallbackCalMode;
+        const wpCostAttr = h.recommended_workdays_cost !== undefined && h.recommended_workdays_cost !== null
+          ? String(h.recommended_workdays_cost)
+          : '';
+        const wpSavedAttr = h.recommended_workdays_saved !== undefined && h.recommended_workdays_saved !== null
+          ? String(h.recommended_workdays_saved)
+          : '';
+        const wpRatioAttr = h.recommended_efficiency_ratio !== undefined && h.recommended_efficiency_ratio !== null
+          ? String(h.recommended_efficiency_ratio)
+          : '';
+        return `<option value="${escapeHtml(h.holiday_code)}"${selAttr} data-year="${escapeHtml(h.target_year)}" data-days="${escapeHtml(h.holiday_days)}" data-rec-days="${escapeHtml(recDays)}" data-workdays-cost="${escapeHtml(wpCostAttr)}" data-workdays-saved="${escapeHtml(wpSavedAttr)}" data-efficiency-ratio="${escapeHtml(wpRatioAttr)}" data-calendar-mode="${escapeHtml(calMode)}" data-start="${escapeHtml(h.start_date)}" data-end="${escapeHtml(h.end_date)}" data-he="${escapeHtml(h.label_he)}" data-en="${escapeHtml(h.label_en)}">${escapeHtml(text)}</option>`;
       })
       .join('');
 
     selectEl.value = activeCode;
-    if (options.applyDurationDefault) {
+    if (options.applyDurationDefault || (!hasPrev && !state.userEditedMaxNights)) {
       const chosen = holidaysList.find((h) => h.holiday_code === activeCode) || holidaysList[0];
-      applyHolidayDurationDefault(chosen.holiday_days);
+      applyHolidayDurationDefault({
+        holidayDays: chosen.holiday_days,
+        recommendedTripDays: chosen.recommended_trip_days,
+        calendarMode: chosen.calendar_mode || fallbackCalMode
+      });
     }
   }
 
@@ -1786,12 +1969,13 @@
 
     const summaryText = document.getElementById('household-summary-text');
     if (summaryText) {
+      const partyIcon = kids === 0 ? '👥' : '👨‍👩‍👧‍👦';
       const aNum = `<span class="num">${escapeHtml(adults)}</span>`;
       const kNum = `<span class="num">${escapeHtml(kids)}</span>`;
       const pNum = `<span class="num">${escapeHtml(matmidTotal.toLocaleString())}</span>`;
       summaryText.innerHTML = isHe
-        ? `👨‍👩‍👧‍👦 ${aNum} מבוגרים · ${kNum} ילדים · 💳 ${pNum} מתמיד`
-        : `👨‍👩‍👧‍👦 ${aNum} Adults · ${kNum} Kids · 💳 ${pNum} Matmid`;
+        ? `${partyIcon} ${aNum} מבוגרים · ${kNum} ילדים · 💳 ${pNum} מתמיד`
+        : `${partyIcon} ${aNum} Adults · ${kNum} Kids · 💳 ${pNum} Matmid`;
     }
   }
 
@@ -2131,10 +2315,14 @@
         const holidayNames = isHe ? p.holidaysHe : p.holidaysEn;
         const holidaySuffix = p.hasHoliday && holidayNames.length > 0 ? ` · ${holidayNames.join(', ')}` : '';
         const cellTitle = `${p.periodKey} — ${stTitle}${syncShort}${holidaySuffix}`;
-        const holidayTip =
-          holidayNames.length > 0
-            ? (isHe ? `חופשות מוסדות חינוך: ${holidayNames.join(' · ')}` : `School holidays: ${holidayNames.join(' · ')}`)
-            : (isHe ? 'חופשת מוסדות חינוך בחודש זה' : 'School holiday in this month');
+        const isWpAdmin = isWorkplaceModeProfile(state.profile);
+        const holidayTip = isWpAdmin
+          ? (holidayNames.length > 0
+              ? (isHe ? `חופשות במשק: ${holidayNames.join(' · ')}` : `Workplace holidays: ${holidayNames.join(' · ')}`)
+              : (isHe ? 'חופשות במשק בחודש זה' : 'Workplace holidays in this month'))
+          : (holidayNames.length > 0
+              ? (isHe ? `חופשות מוסדות חינוך: ${holidayNames.join(' · ')}` : `School holidays: ${holidayNames.join(' · ')}`)
+              : (isHe ? 'חופשת מוסדות חינוך בחודש זה' : 'School holiday in this month'));
         const holidayMark = p.hasHoliday
           ? `<span class="admin-period-holiday" title="${escapeHtml(holidayTip)}" aria-hidden="true">✦</span>`
           : '';
@@ -2387,8 +2575,8 @@
       const isOptionalMode = state.dateSelectionMode === 'SPECIFIC_DATES';
       if (!state.profile.children || state.profile.children.length === 0) {
         const emptyHint = isHe
-          ? 'אין ילדים מוגדרים כרגע — לחצו "+ ילד/ה" להוספת גיל ומסגרת חינוך.'
-          : 'No children added yet — click "+ Add Child" to add ages & school frameworks.';
+          ? 'ללא ילדים — פועל אוטומטית מצב חגי המשק ומיקסום אורך הטיול ביחס לימי חופש מהעבודה. לחצו "+ ילד/ה" למעבר לתכנון לפי גילאי ילדים.'
+          : '0 children — automatically optimizing around Israeli workplace holidays & workday efficiency. Click "+ Add Child" to switch to family planning.';
         childrenContainer.innerHTML = `<p class="children-empty-hint">${escapeHtml(emptyHint)}</p>`;
         return;
       }
@@ -2461,19 +2649,33 @@
     const tbody = document.getElementById('moe-calendar-tbody');
     const syncBadge = document.getElementById('calendar-sync-badge');
     if (!tbody) return;
+    const isHe = state.locale === 'he';
+    const isWp = isWorkplaceModeProfile(state.profile);
     if (!state.calendarData) {
       tbody.innerHTML = '';
-      if (syncBadge) syncBadge.textContent = '';
+      if (syncBadge) {
+        if (isWp) {
+          const fallbackSy = inferSchoolYearForIso(getReferenceToday());
+          const wpLabel = isHe ? 'לוח חגים ומועדים במשק' : 'Statutory Workplace Calendar';
+          syncBadge.innerHTML = `<span class="num" dir="ltr">${escapeHtml(fallbackSy)}</span> | ${escapeHtml(wpLabel)}`;
+        } else {
+          syncBadge.textContent = '';
+        }
+      }
       return;
     }
 
-    const isHe = state.locale === 'he';
     if (syncBadge) {
-      const syncSourceLabel = state.calendarData.calendar_sync_source === 'OFFICIAL_MOE_CIRCULAR'
-        ? (isHe ? 'חוזר מנכ״ל משרד החינוך' : 'Official MoE Circular')
-        : state.calendarData.calendar_sync_source;
-      // School year stays in the telemetry face; the worded source label renders in the body face
-      syncBadge.innerHTML = `<span class="num" dir="ltr">${escapeHtml(state.calendarData.school_year)}</span> | ${escapeHtml(syncSourceLabel)}`;
+      if (isWp) {
+        const wpLabel = isHe ? 'לוח חגים ומועדים במשק' : 'Statutory Workplace Calendar';
+        syncBadge.innerHTML = `<span class="num" dir="ltr">${escapeHtml(state.calendarData.school_year)}</span> | ${escapeHtml(wpLabel)}`;
+      } else {
+        const syncSourceLabel = state.calendarData.calendar_sync_source === 'OFFICIAL_MOE_CIRCULAR'
+          ? (isHe ? 'חוזר מנכ״ל משרד החינוך' : 'Official MoE Circular')
+          : state.calendarData.calendar_sync_source;
+        // School year stays in the telemetry face; the worded source label renders in the body face
+        syncBadge.innerHTML = `<span class="num" dir="ltr">${escapeHtml(state.calendarData.school_year)}</span> | ${escapeHtml(syncSourceLabel)}`;
+      }
     }
 
     const windows = state.calendarData.windows || [];
@@ -3360,7 +3562,25 @@
     WINTER_FESTIVE: 'illuminated winter markets, outdoor ice rinks, festive plazas, and warm indoor museums'
   };
 
-  function renderWeatherTooltipHtml(tooltipId, wm, cityTitle, wssVal, isHe) {
+  const WEATHER_STYLE_ACTIVITIES_FALLBACK_WORKPLACE_HE = {
+    BEACH_AND_POOL: 'רחצה בחופים, בריכות, טיילת חוף ושייט רגוע',
+    NATURE_TRIP: 'מסלולי הליכה, תצפיות פנורמיות ושמורות טבע',
+    URBAN_CULTURE: 'שיטוט בעיר העתיקה, מוזיאונים, שווקים ובתי קפה',
+    FAMILY_ATTRACTIONS_PARKS: 'פארקי חוויה, אקווריומים, מוזיאוני מדע ואטרקציות מובילות',
+    SNOW_AND_SKI: 'מדרונות גלישה לכל הרמות, רכבלים ועיירות אלפיניות',
+    WINTER_FESTIVE: 'דוכני חורף מוארים, החלקה על הקרח, מדרחובים חגיגיים ומוזיאונים חמימים'
+  };
+
+  const WEATHER_STYLE_ACTIVITIES_FALLBACK_WORKPLACE_EN = {
+    BEACH_AND_POOL: 'beaches, resort pools, waterfront promenades, and boat outings',
+    NATURE_TRIP: 'scenic trails, panoramic viewpoints, national parks, and nature reserves',
+    URBAN_CULTURE: 'historic old-town walks, museums, local markets, and neighborhood cafes',
+    FAMILY_ATTRACTIONS_PARKS: 'theme parks, science museums, aquariums, and headline attractions',
+    SNOW_AND_SKI: 'ski slopes, alpine cable cars, and cozy mountain villages',
+    WINTER_FESTIVE: 'illuminated winter markets, outdoor ice rinks, festive plazas, and warm indoor museums'
+  };
+
+  function renderWeatherTooltipHtml(tooltipId, wm, cityTitle, wssVal, isHe, isWorkplaceMode) {
     const highC = Number(wm.avg_day_high_c ?? wm.avg_max_temp_c ?? 0).toFixed(1);
     const lowC = Number(wm.avg_night_low_c ?? wm.avg_min_temp_c ?? 0).toFixed(1);
     const sunH = Number(wm.sunshine_hours_per_day || 0).toFixed(1);
@@ -3376,13 +3596,23 @@
       : (wm.weather_summary_en ||
           `Expected weather: ${highC}°C day / ${lowC}°C night${seaC ? `, sea ${seaC}°C` : ''}, about ${sunH}h daily sunshine and about ${rainD} expected rain days (${wssVal.toFixed(0)}/100).`);
 
+    const fallbackMapHe = isWorkplaceMode
+      ? WEATHER_STYLE_ACTIVITIES_FALLBACK_WORKPLACE_HE
+      : WEATHER_STYLE_ACTIVITIES_FALLBACK_HE;
+    const fallbackMapEn = isWorkplaceMode
+      ? WEATHER_STYLE_ACTIVITIES_FALLBACK_WORKPLACE_EN
+      : WEATHER_STYLE_ACTIVITIES_FALLBACK_EN;
+    const fallbackDefaultEn = isWorkplaceMode
+      ? 'local sights and outings'
+      : 'local sights and family outings';
+
     const fallbackStyles = recList.length > 0 ? recList.slice(0, 2) : [primaryStyle];
     const fallbackRecText = isHe
       ? fallbackStyles
           .map((vt) => {
             const code = String(vt || '').toUpperCase();
             const lbl = formatVacationTypeBadge(code);
-            const idea = WEATHER_STYLE_ACTIVITIES_FALLBACK_HE[code] || '';
+            const idea = fallbackMapHe[code] || '';
             return idea ? `${lbl} — ${idea}` : lbl;
           })
           .join(' · ')
@@ -3391,7 +3621,7 @@
           .map((vt) => {
             const code = String(vt || '').toUpperCase();
             const lbl = formatVacationTypeBadge(code);
-            const idea = WEATHER_STYLE_ACTIVITIES_FALLBACK_EN[code] || 'local sights and family outings';
+            const idea = fallbackMapEn[code] || fallbackDefaultEn;
             return `${lbl} (${idea})`;
           })
           .join(' · ') +
@@ -3436,31 +3666,54 @@
     `;
   }
 
-  function buildKpiExplanations(p, it, dirInfo, seatedCount, hasVal, schoolMissed, fbvsVal, wpInfo, isHe) {
+  function buildKpiExplanations(p, it, dirInfo, seatedCount, hasVal, schoolMissed, fbvsVal, wpInfo, isHe, leverageInfo) {
     const totalDays = Math.max(1, diffDaysIso(it.departure_date, it.return_date) + 1);
     const wCost = Number((wpInfo && wpInfo.workplace_vacation_days_cost) ?? 0);
     const workdaysStr = Number.isInteger(wCost) ? String(wCost) : wCost.toFixed(1);
     const regWorkCnt = Number((wpInfo && wpInfo.regular_workdays_count) ?? 0);
     const cholWorkCnt = Number((wpInfo && wpInfo.chol_hamoed_workdays_count) ?? 0);
     const freeWorkCnt = Number((wpInfo && wpInfo.holiday_or_weekend_days_count) ?? 0);
+    const isWpCard = Boolean(leverageInfo && leverageInfo.isWorkplaceCard);
 
-    const workCalc = isHe
-      ? `מחושב לפי לוח עבודה ישראלי קבוע א׳–ה׳ על פני ${totalDays} ימי טיול: ${regWorkCnt} ימי עבודה רגילים (1.0), ${cholWorkCnt} ימי חול המועד (0.5), ו-${freeWorkCnt} ימי שישי-שבת וחג שבתון (0) ← ${workdaysStr} ימי חופש לנוסע/ת עובד/ת.`
-      : `Computed on the fixed Sun–Thu Israeli workplace calendar across ${totalDays} trip days: ${regWorkCnt} regular workdays (1.0), ${cholWorkCnt} Chol HaMoed half-days (0.5), and ${freeWorkCnt} Fri–Sat/official holiday days (0) → ${workdaysStr} days off per working traveler.`;
-
+    let workTitle = isHe ? 'חופשת עבודה (ימי חופש מהעבודה)' : 'Workdays Off (Per Working Traveler)';
+    let workCalc = '';
     let workMeaning = '';
-    if (wCost === 0) {
-      workMeaning = isHe
-        ? `ניצול מלא של סופ״ש וחגי שבתון במשק — 0 ימי חופשת עבודה לעובד/ת יחיד/ה עבור ${totalDays} ימי טיול.`
-        : `Full weekend and statutory holiday coverage — 0 workplace vacation days needed per working traveler across ${totalDays} trip days.`;
-    } else if (freeWorkCnt > 0 || cholWorkCnt > 0) {
-      workMeaning = isHe
-        ? `ניצול יעיל של סופ״ש ומועדי המשק — נדרשים ${workdaysStr} ימי חופשת עבודה בלבד לעובד/ת יחיד/ה עבור ${totalDays} ימי חופשה (אינו תלוי במספר הטסים).`
-        : `Efficient weekend and holiday bridge — requires ${workdaysStr} workplace vacation day(s) per working traveler for a ${totalDays}-day trip (independent of party size).`;
+
+    if (isWpCard) {
+      workTitle = isHe ? 'חופשת עבודה ויעילות ימי חופש' : 'Workdays Off & Trip Leverage';
+      if (leverageInfo.isZeroWorkday) {
+        workCalc = isHe
+          ? `לוח עבודה ישראלי א׳–ה׳ על פני ${totalDays} ימי טיול: 0 רגילים, 0 חוה״מ, ${freeWorkCnt} סופ״ש/שבתון (0) ← 0 ימי חופש (נחסכו כל ${totalDays} הימים).`
+          : `Sun–Thu Israeli workplace calendar over ${totalDays} trip days: 0 regular, 0 Chol HaMoed, ${freeWorkCnt} Fri–Sat/holiday (0) → 0 days off (all ${totalDays} days covered).`;
+        workMeaning = isHe
+          ? `מקסום מלא — ${totalDays} ימי חופשה ב-0 ימי חופש מהעבודה. יעילות ימי החופש מובילה את הדירוג המשוקלל לצד מושבי הבונוס ואקלים.`
+          : `Maximum leverage — ${totalDays} trip days for 0 workdays off. Workday efficiency leads the weighted ranking score alongside award seats and climate.`;
+      } else {
+        workCalc = isHe
+          ? `לוח עבודה ישראלי א׳–ה׳ על פני ${totalDays} ימי טיול: ${regWorkCnt} רגילים (1), ${cholWorkCnt} חוה״מ (0.5), ${freeWorkCnt} סופ״ש/שבתון (0) ← ${workdaysStr} ימי חופש (יחס ×${leverageInfo.effRatioDisplay}, נחסכו ${leverageInfo.savedStr} ימים).`
+          : `Sun–Thu Israeli workplace calendar over ${totalDays} trip days: ${regWorkCnt} regular (1), ${cholWorkCnt} Chol HaMoed (0.5), ${freeWorkCnt} Fri–Sat/holiday (0) → ${workdaysStr} days off (×${leverageInfo.effRatioDisplay} ratio, ${leverageInfo.savedStr} saved).`;
+        workMeaning = isHe
+          ? `כל יום חופש מהעבודה מניב ×${leverageInfo.effRatioDisplay} ימי טיול (${leverageInfo.savedStr} ימים נחסכו בסופ״ש ובחגי המשק). יעילות ימי החופש מובילה את הדירוג המשוקלל לצד מושבי הבונוס ואקלים.`
+          : `Each workday off yields ×${leverageInfo.effRatioDisplay} trip days (${leverageInfo.savedStr} days covered by weekends & statutory holidays). Workday efficiency leads the weighted ranking score alongside award seats and climate.`;
+      }
     } else {
-      workMeaning = isHe
-        ? `התאריכים נופלים על ימי עבודה רגילים במשק — נדרשים ${workdaysStr} ימי חופשת עבודה לעובד/ת יחיד/ה עבור ${totalDays} ימי טיול.`
-        : `Dates fall on regular Sun–Thu workdays — requires ${workdaysStr} workplace vacation day(s) per working traveler across ${totalDays} trip days.`;
+      workCalc = isHe
+        ? `מחושב לפי לוח עבודה ישראלי קבוע א׳–ה׳ על פני ${totalDays} ימי טיול: ${regWorkCnt} ימי עבודה רגילים (1.0), ${cholWorkCnt} ימי חול המועד (0.5), ו-${freeWorkCnt} ימי שישי-שבת וחג שבתון (0) ← ${workdaysStr} ימי חופש לנוסע/ת עובד/ת.`
+        : `Computed on the fixed Sun–Thu Israeli workplace calendar across ${totalDays} trip days: ${regWorkCnt} regular workdays (1.0), ${cholWorkCnt} Chol HaMoed half-days (0.5), and ${freeWorkCnt} Fri–Sat/official holiday days (0) → ${workdaysStr} days off per working traveler.`;
+
+      if (wCost === 0) {
+        workMeaning = isHe
+          ? `ניצול מלא של סופ״ש וחגי שבתון במשק — 0 ימי חופשת עבודה לעובד/ת יחיד/ה עבור ${totalDays} ימי טיול.`
+          : `Full weekend and statutory holiday coverage — 0 workplace vacation days needed per working traveler across ${totalDays} trip days.`;
+      } else if (freeWorkCnt > 0 || cholWorkCnt > 0) {
+        workMeaning = isHe
+          ? `ניצול יעיל של סופ״ש ומועדי המשק — נדרשים ${workdaysStr} ימי חופשת עבודה בלבד לעובד/ת יחיד/ה עבור ${totalDays} ימי חופשה (אינו תלוי במספר הטסים).`
+          : `Efficient weekend and holiday bridge — requires ${workdaysStr} workplace vacation day(s) per working traveler for a ${totalDays}-day trip (independent of party size).`;
+      } else {
+        workMeaning = isHe
+          ? `התאריכים נופלים על ימי עבודה רגילים במשק — נדרשים ${workdaysStr} ימי חופשת עבודה לעובד/ת יחיד/ה עבור ${totalDays} ימי טיול.`
+          : `Dates fall on regular Sun–Thu workdays — requires ${workdaysStr} workplace vacation day(s) per working traveler across ${totalDays} trip days.`;
+      }
     }
     const impacts = Array.isArray(p && p.per_child_impact) ? p.per_child_impact : [];
     const fwImpacts = impacts.filter((c) => c && c.framework_type);
@@ -3564,8 +3817,8 @@
         : 'Full award seat coverage (100/100) — enough open bonus seats for every seated traveler both ways.';
     } else if (fbvsNum >= 50) {
       bonusMeaning = isHe
-        ? `כיסוי בונוס משמעותי (${fbvsStr}/100) — מושבי הבונוס מכסים כיוון מלא או חלק מהמשפחה בשני הכיוונים (בסימון \u20662+\u2069 ייתכן שיש מושבים נוספים).`
-        : `Substantial award seat coverage (${fbvsStr}/100) — open bonus seats cover one full leg or part of the family both ways (2+ flights may hold more seats).`;
+        ? `כיסוי בונוס משמעותי (${fbvsStr}/100) — מושבי הבונוס מכסים כיוון מלא או ${isWpCard ? 'חלק מהנוסעים' : 'חלק מהמשפחה'} בשני הכיוונים (בסימון \u20662+\u2069 ייתכן שיש מושבים נוספים).`
+        : `Substantial award seat coverage (${fbvsStr}/100) — open bonus seats cover one full leg or ${isWpCard ? 'part of your party' : 'part of the family'} both ways (2+ flights may hold more seats).`;
     } else {
       bonusMeaning = isHe
         ? `כיסוי בונוס חלקי (${fbvsStr}/100) — מספר מושבי הבונוס הפתוחים נמוך ממספר הנוסעים הזקוקים למושב.`
@@ -3584,7 +3837,7 @@
         meaning: bonusMeaning
       },
       workdaysCost: {
-        title: isHe ? 'חופשת עבודה (ימי חופש מהעבודה)' : 'Workdays Off (Per Working Traveler)',
+        title: workTitle,
         calc: workCalc,
         meaning: workMeaning
       }
@@ -3732,6 +3985,16 @@
         const destIcon = DESTINATION_ICONS[it.destination_iata] || '✈️';
         const cityTitle = isHe ? (it.destination_city_he || it.destination_iata) : (it.destination_city_en || it.destination_iata);
 
+        const cardProfile = state.lastSearchProfile || state.profile;
+        const hasChildrenInSearch = state.lastSearchProfile
+          ? Array.isArray(state.lastSearchProfile.children) &&
+            state.lastSearchProfile.children.length > 0
+          : Array.isArray(p && p.per_child_impact)
+            ? p.per_child_impact.length > 0
+            : Array.isArray(state.profile && state.profile.children) &&
+              state.profile.children.length > 0;
+        const isWorkplaceCard = !hasChildrenInSearch;
+
         let topStyleChipHtml = '';
         let stubWeatherHtml = '';
         if (wm) {
@@ -3761,7 +4024,8 @@
             wm,
             cityTitle,
             wssVal,
-            isHe
+            isHe,
+            isWorkplaceCard
           );
           stubWeatherHtml = `
                 <div class="stub-weather-card" data-weather-compact="true" data-weather-score="${wssVal.toFixed(0)}" tabindex="0" aria-describedby="${tipIdWeather}">
@@ -3785,14 +4049,6 @@
                 </div>`;
         }
 
-        const cardProfile = state.lastSearchProfile || state.profile;
-        const hasChildrenInSearch = state.lastSearchProfile
-          ? Array.isArray(state.lastSearchProfile.children) &&
-            state.lastSearchProfile.children.length > 0
-          : Array.isArray(p && p.per_child_impact)
-            ? p.per_child_impact.length > 0
-            : Array.isArray(state.profile && state.profile.children) &&
-              state.profile.children.length > 0;
         const paxInfo = buildHouseholdPassengerSummary(cardProfile, it, isHe);
         const seatedCount = paxInfo.seatedCount;
 
@@ -3818,6 +4074,37 @@
         const wCost = Number(wpFallback.workplace_vacation_days_cost || 0);
         const workdaysStr = Number.isInteger(wCost) ? String(wCost) : wCost.toFixed(1);
 
+        const tripDays =
+          p && p.trip_calendar_days !== undefined && p.trip_calendar_days !== null
+            ? Math.max(1, Number(p.trip_calendar_days))
+            : Math.max(1, diffDaysIso(it.departure_date, it.return_date) + 1);
+        const workdaysSaved =
+          p && p.workdays_saved_count !== undefined && p.workdays_saved_count !== null
+            ? Math.max(0, Math.round(Number(p.workdays_saved_count) * 10) / 10)
+            : Math.max(0, Math.round((tripDays - wCost) * 10) / 10);
+        const isZeroWorkday =
+          p && p.is_zero_workday_trip !== undefined && p.is_zero_workday_trip !== null
+            ? Boolean(p.is_zero_workday_trip)
+            : wCost === 0;
+        const effRatioRaw =
+          p && p.workday_efficiency_ratio !== undefined && p.workday_efficiency_ratio !== null
+            ? Number(p.workday_efficiency_ratio)
+            : Math.round((tripDays / Math.max(0.5, wCost)) * 100) / 100;
+        const effRatioDisplay = effRatioRaw.toFixed(1);
+        const effRatioAttr = effRatioRaw.toFixed(2);
+        const savedStr = Number.isInteger(workdaysSaved)
+          ? String(workdaysSaved)
+          : workdaysSaved.toFixed(1);
+
+        const leverageInfo = {
+          isWorkplaceCard,
+          tripDays,
+          workdaysSaved,
+          effRatioDisplay,
+          isZeroWorkday,
+          savedStr
+        };
+
         const tierCode = p.recommendation_tier || (idx === 0 ? 'RECOMMENDED' : idx < 4 ? 'TOP_CHOICE' : 'ALTERNATIVE');
         const fbvsVal = p.flight_bonus_value_score ?? p.family_bonus_value_score ?? 0;
         const hasVal = Number(p.holiday_alignment_score ?? 0).toFixed(1);
@@ -3837,7 +4124,8 @@
           schoolMissed,
           fbvsVal,
           wpFallback,
-          isHe
+          isHe,
+          leverageInfo
         );
         const tipIdWork = `kpi-tip-work-${idx}`;
         const workdaysTooltipHtml = renderKpiTooltipHtml(
@@ -3850,13 +4138,34 @@
         const workUnitTxt = isHe
           ? (wCost === 1 ? 'יום חופש' : 'ימי חופש')
           : (wCost === 1 ? 'day' : 'days');
+        const effPillCls = isZeroWorkday
+          ? 'kpi-efficiency-pill kpi-efficiency-pill-zero'
+          : 'kpi-efficiency-pill';
+        const effPillText = isZeroWorkday
+          ? (isHe ? '✨ 0 ימי חופש' : '✨ 0 Workdays')
+          : `×${effRatioDisplay}`;
+        const effPillHtml = isWorkplaceCard
+          ? `<span class="${effPillCls}" data-kpi-efficiency="true" data-workday-ratio="${escapeHtml(effRatioAttr)}"${isZeroWorkday ? '' : ' dir="ltr"'}>${escapeHtml(effPillText)}</span>`
+          : '';
+        const savedParenCls =
+          workdaysSaved > 0 ? 'kpi-saved-paren kpi-saved-positive' : 'kpi-saved-paren';
+        const savedParenText =
+          workdaysSaved > 0
+            ? (isHe
+                ? (workdaysSaved === 1 ? 'נחסך יום 1' : `נחסכו ${savedStr} ימים`)
+                : `${savedStr} saved`)
+            : (isHe ? '0 נחסכו' : '0 saved');
+        const savedParenHtml = isWorkplaceCard
+          ? ` <span class="${savedParenCls}" data-workdays-saved="${escapeHtml(savedStr)}">(${escapeHtml(savedParenText)})</span>`
+          : '';
         const workdaysCellHtml = `
                   <div class="score-pill kpi-cell" data-kpi="workdays-cost" data-workdays="${escapeHtml(workdaysStr)}" tabindex="0" aria-describedby="${tipIdWork}">
                     <div class="kpi-cell-head">
                       <span class="kpi-cell-label">💼 ${isHe ? 'חופשת עבודה' : 'Workdays Off'}</span>
                       <span class="kpi-info-cue" aria-hidden="true">ⓘ</span>
+                      ${effPillHtml}
                     </div>
-                    <strong class="kpi-cell-val"><span class="num" dir="ltr">${escapeHtml(workdaysStr)}</span> <span class="kpi-workdays-unit">${escapeHtml(workUnitTxt)}</span></strong>
+                    <strong class="kpi-cell-val"><span class="num" dir="ltr">${escapeHtml(workdaysStr)}</span> <span class="kpi-workdays-unit">${escapeHtml(workUnitTxt)}</span>${savedParenHtml}</strong>
                     ${workdaysTooltipHtml}
                   </div>`;
         const pairedVacationAttr = hasChildrenInSearch ? ' data-paired-vacation="true"' : '';
@@ -3970,6 +4279,12 @@
             `
           : '';
 
+        const ctosTitleText = isWorkplaceCard
+          ? (isHe
+              ? 'ציון מיקסום חופשה (יעילות ימי חופש מהעבודה + זמינות בונוס + אקלים)'
+              : 'Trip Maximization Score (Workday Leverage + Award Seats + Climate)')
+          : (isHe ? 'ציון התאמה משוקלל' : 'Overall Optimization Score');
+
         return `
           <article class="proposal-card tier-${escapeHtml(tierCode)}" data-strategy="${escapeHtml(strategyCode)}" data-bonus-directions="${escapeHtml(dirInfo.dirAttr)}" data-proposal-idx="${idx}">
             <div class="proposal-pass-grid">
@@ -4027,7 +4342,7 @@
 
               <div class="proposal-pass-stub">
                 <div class="stub-score-header">
-                  <div class="stub-ctos-badge" dir="ltr" title="${isHe ? 'ציון התאמה משוקלל' : 'Overall Optimization Score'}">
+                  <div class="stub-ctos-badge" dir="ltr" title="${escapeHtml(ctosTitleText)}">
                     <span>⭐</span>
                     <span class="stub-ctos-num">${Number(p.combined_trip_optimization_score || 0).toFixed(1)}</span>
                     <span class="stub-ctos-max">/100</span>
@@ -4068,9 +4383,12 @@
     const badge = document.getElementById('active-mode-badge');
     if (!badge) return;
     const isHe = state.locale === 'he';
+    const isWp = isWorkplaceModeProfile(state.profile);
     const mode = state.dateSelectionMode;
     if (mode === 'SPECIFIC_DATES') {
       badge.textContent = isHe ? 'תאריכים ידניים (±גמישות)' : 'Manual Dates (±Flex)';
+    } else if (isWp) {
+      badge.textContent = isHe ? 'חגי משק · יעילות ימי חופש' : 'Workplace Holidays · Max Leverage';
     } else {
       badge.textContent = isHe ? 'תכנון לפי חג (שנה קדימה)' : 'Rolling 1-Year Holiday';
     }
@@ -4094,6 +4412,168 @@
     renderProfileControls();
   }
 
+  function syncPlanningModeUi() {
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const isHe = state.locale === 'he';
+    const modeStr = isWp ? 'workplace' : 'family';
+
+    const shell = document.getElementById('dashboard-shell');
+    if (shell) {
+      shell.setAttribute('data-planning-mode', modeStr);
+    }
+
+    const calZone = document.getElementById('zone-calendar');
+    if (calZone) {
+      calZone.setAttribute('data-calendar-mode', modeStr);
+    }
+    const moeCol = document.getElementById('calendar-col-moe');
+    if (moeCol) {
+      if (isWp) moeCol.setAttribute('aria-hidden', 'true');
+      else moeCol.removeAttribute('aria-hidden');
+    }
+    const btnSyncMoe = document.getElementById('btn-sync-moe-year');
+    if (btnSyncMoe) {
+      btnSyncMoe.hidden = isWp;
+      if (isWp) btnSyncMoe.setAttribute('aria-hidden', 'true');
+      else btnSyncMoe.removeAttribute('aria-hidden');
+    }
+
+    document.title = isWp
+      ? (isHe
+          ? 'breezyflights | מתכנן חופשות חכם לפי חגי המשק וכרטיסי בונוס אל על'
+          : 'breezyflights | Smart Workplace Holiday & EL AL Award Planner')
+      : (isHe
+          ? 'breezyflights | מתכנן חופשות משפחתיות חכם וכרטיסי בונוס אל על'
+          : 'breezyflights | Smart Family Vacation & EL AL Award Planner');
+
+    const headerTitleLocal = document.getElementById('header-title-local');
+    if (headerTitleLocal) {
+      headerTitleLocal.textContent = isWp
+        ? (isHe ? 'מתכנן חופשות חכם' : 'Smart Vacation Planner')
+        : (isHe ? 'מתכנן חופשות משפחתיות חכם' : 'Smart Family Vacation Planner');
+    }
+    const headerSubtitle = document.getElementById('header-subtitle');
+    if (headerSubtitle) {
+      headerSubtitle.textContent = isWp
+        ? (isHe
+            ? 'תכנון חופשות לפי חגי המשק, מיקסום אורך הטיול לימי חופש וכרטיסי בונוס באל על'
+            : 'Maximize trip length per workday off around Israeli workplace holidays & EL AL award seats')
+        : (isHe
+            ? 'תכנון חופשות לפי לוח משרד החינוך, קייטנות ניצנים וכרטיסי בונוס באל על'
+            : 'Plan around official MoE school breaks, Nitzanim camps & EL AL Matmid award seats');
+    }
+
+    const btnToggleCal = document.getElementById('btn-toggle-calendar');
+    if (btnToggleCal && !state.isCalendarVisible) {
+      btnToggleCal.textContent = isWp
+        ? (isHe ? '📅 לוח חגי המשק' : '📅 Workplace Holidays')
+        : (isHe ? '📅 לוח חופשות' : '📅 MoE Calendar');
+    }
+
+    const heroSection = document.getElementById('vacation-hero');
+    if (heroSection) {
+      heroSection.setAttribute(
+        'aria-label',
+        isWp
+          ? (isHe
+              ? 'פתיח breezyflights לתכנון חופשות לפי חגי המשק'
+              : 'breezyflights Israeli workplace holiday vacation planner overview')
+          : (isHe
+              ? 'פתיח breezyflights לתכנון חופשות משפחתיות'
+              : 'breezyflights family vacation planner overview')
+      );
+    }
+    const heroEyebrow = document.getElementById('hero-eyebrow');
+    if (heroEyebrow) {
+      heroEyebrow.innerHTML = isWp
+        ? (isHe
+            ? '🏝️ <span class="hero-eyebrow-short">חופשות חכמות</span><span class="hero-eyebrow-sub">חגי המשק · יותר טיול בפחות ימי חופש</span>'
+            : '🏝️ <span class="hero-eyebrow-short">Smart Escapes</span><span class="hero-eyebrow-sub">Israeli Workplace Holidays · Max Workday Leverage</span>')
+        : (isHe
+            ? '🏝️ <span class="hero-eyebrow-short">חופשות חכמות</span><span class="hero-eyebrow-sub">תכנון חכם לחופשה המשפחתית הבאה</span>'
+            : '🏝️ <span class="hero-eyebrow-short">Smart Escapes</span><span class="hero-eyebrow-sub">Smart Family Vacation Planning</span>');
+    }
+    const heroHeadline = document.getElementById('hero-headline');
+    if (heroHeadline) {
+      heroHeadline.textContent = isWp
+        ? (isHe
+            ? 'הפכו כל חג במשק לחופשה ארוכה במינימום ימי חופש'
+            : 'Turn Every Workplace Holiday Into a Longer Escape With Minimal Days Off')
+        : (isHe
+            ? 'הפכו כל חופשת בית ספר לחופשה משפחתית חלומית'
+            : 'Turn Every School Break Into a Dream Family Escape');
+    }
+    const heroLead = document.getElementById('hero-lead');
+    if (heroLead) {
+      heroLead.textContent = isWp
+        ? (isHe
+            ? 'הצלבה חכמה בין חגי המשק הישראלי, גשרי סופ״ש וחול המועד ומושבי בונוס מנתב״ג לכל היעדים הפתוחים.'
+            : 'Smart cross-matching of Israeli statutory workplace holidays, weekend & Chol HaMoed bridges, and EL AL Matmid award seats from TLV across all open destinations.')
+        : (isHe
+            ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס מנתב״ג לכל היעדים הפתוחים.'
+            : 'Smart cross-matching of official MoE school breaks, Nitzanim camps, and EL AL Matmid award seats from TLV across all open destinations.');
+    }
+
+    const labelDirectHoliday = document.getElementById('label-direct-holiday');
+    if (labelDirectHoliday) {
+      labelDirectHoliday.textContent = isWp
+        ? (isHe ? 'חג במשק בשנה הקרובה:' : 'Upcoming Workplace Holiday (Next 12 Months):')
+        : (isHe ? 'חג / חופשה בשנה הקרובה:' : 'Upcoming Holiday (Next 12 Months):');
+    }
+
+    const btnRunSearch = document.getElementById('btn-run-search');
+    if (btnRunSearch) {
+      btnRunSearch.textContent = isWp
+        ? (isHe ? '✈️ חפש אפשרויות חופשה וכרטיסי בונוס' : '✈️ Search Award Vacations')
+        : (isHe ? '✈️ חפש אפשרויות חופשה וכרטיסי בונוס' : '✈️ Search Family Award Vacations');
+    }
+
+    const zProfile = document.getElementById('zone-profile-title');
+    if (zProfile) {
+      zProfile.textContent = isWp
+        ? (isHe ? 'הרכב הנוסעים ויתרת מתמיד' : 'Travelers & Matmid Balance')
+        : (isHe ? 'פרופיל משפחה, גילאי ילדים ויתרת מתמיד' : 'Family Profile, Children & Matmid Balance');
+    }
+
+    const childrenSummaryTitle = document.getElementById('profile-children-summary-title');
+    if (childrenSummaryTitle) {
+      childrenSummaryTitle.textContent = isWp
+        ? (isHe ? '👶 ילדים (0 — מצב חגי משק אוטומטי)' : '👶 Children (0 — Auto Workplace Holidays Mode)')
+        : (isHe
+            ? '👶 ילדים ומסגרות חינוך (אופציונלי בתאריכים ידניים)'
+            : '👶 Children & MoE Frameworks (Optional in Manual Dates)');
+    }
+
+    const btnApplyProfile = document.getElementById('btn-apply-profile-sheet');
+    if (btnApplyProfile) {
+      btnApplyProfile.textContent = isWp
+        ? (isHe ? '✓ עדכן הרכב נוסעים והצג חופשות' : '✓ Apply Travelers & Show Vacations')
+        : (isHe ? '✓ עדכן הרכב משפחה והצג חופשות' : '✓ Apply Family & Show Vacations');
+    }
+
+    const authDeleteConfirmText = document.getElementById('auth-delete-confirm-text');
+    if (authDeleteConfirmText) {
+      authDeleteConfirmText.textContent = isWp
+        ? (isHe
+            ? 'למחוק לצמיתות את נתוני הפרופיל השמורים בחשבון?'
+            : 'Permanently delete your saved profile data?')
+        : (isHe
+            ? 'למחוק לצמיתות את נתוני המשפחה השמורים בחשבון?'
+            : 'Permanently delete your saved family data?');
+    }
+
+    const calTitle = document.getElementById('zone-calendar-title');
+    if (calTitle) {
+      calTitle.textContent = isWp
+        ? (isHe ? 'לוח חגים ומועדים במשק הישראלי' : 'Israeli Public & Workplace Holidays')
+        : (isHe
+            ? 'לוח חופשות משרד החינוך ולוח חגים ומועדים במשק'
+            : 'School Vacations & Public / Workplace Holidays');
+    }
+
+    updateActiveModeBadge();
+  }
+
   function applyLocaleStrings() {
     const isHe = state.locale === 'he';
     const dataAttr = isHe ? 'data-he' : 'data-en';
@@ -4113,40 +4593,8 @@
       }
     });
 
-    document.title = isHe
-      ? 'breezyflights | מתכנן חופשות משפחתיות חכם וכרטיסי בונוס אל על'
-      : 'breezyflights | Smart Family Vacation & EL AL Award Planner';
+    syncPlanningModeUi();
 
-    const headerTitleLocal = document.getElementById('header-title-local');
-    if (headerTitleLocal) {
-      headerTitleLocal.textContent = isHe
-        ? 'מתכנן חופשות משפחתיות חכם'
-        : 'Smart Family Vacation Planner';
-    }
-    const headerSubtitle = document.getElementById('header-subtitle');
-    if (headerSubtitle) {
-      headerSubtitle.textContent = isHe
-        ? 'תכנון חופשות לפי לוח משרד החינוך, קייטנות ניצנים וכרטיסי בונוס באל על'
-        : 'Plan around official MoE school breaks, Nitzanim camps & EL AL Matmid award seats';
-    }
-    const heroEyebrow = document.getElementById('hero-eyebrow');
-    if (heroEyebrow) {
-      heroEyebrow.innerHTML = isHe
-        ? '🏝️ <span class="hero-eyebrow-short">חופשות חכמות</span><span class="hero-eyebrow-sub">תכנון חכם לחופשה המשפחתית הבאה</span>'
-        : '🏝️ <span class="hero-eyebrow-short">Smart Escapes</span><span class="hero-eyebrow-sub">Smart Family Vacation Planning</span>';
-    }
-    const heroHeadline = document.getElementById('hero-headline');
-    if (heroHeadline) {
-      heroHeadline.textContent = isHe
-        ? 'הפכו כל חופשת בית ספר לחופשה משפחתית חלומית'
-        : 'Turn Every School Break Into a Dream Family Escape';
-    }
-    const heroLead = document.getElementById('hero-lead');
-    if (heroLead) {
-      heroLead.textContent = isHe
-        ? 'הצלבה חכמה בין לוח החופשות של משרד החינוך, קייטנות ניצנים ומושבי בונוס מנתב״ג לכל היעדים הפתוחים.'
-        : 'Smart cross-matching of official MoE school breaks, Nitzanim camps, and EL AL Matmid award seats from TLV across all open destinations.';
-    }
     const vtTitle = document.getElementById('vacation-type-title');
     if (vtTitle) {
       vtTitle.textContent = isHe
@@ -4165,14 +4613,7 @@
         ? 'חיפוש חופשה וכרטיסי בונוס'
         : 'Vacation & Award Flight Search';
     }
-    const zProfile = document.getElementById('zone-profile-title');
-    if (zProfile) {
-      zProfile.textContent = isHe
-        ? 'פרופיל משפחה, גילאי ילדים ויתרת מתמיד'
-        : 'Family Profile, Children & Matmid Balance';
-    }
 
-    updateActiveModeBadge();
     syncSearchFiltersSummary();
     renderDestinationMultiSelect();
     setCalendarVisibility(state.isCalendarVisible, { focusContent: false, restoreFocus: false });
@@ -4194,8 +4635,18 @@
   }
 
   function refreshClientHolidaysOnProfileEdit() {
+    latestHolidayFetchSeq += 1;
     const refIso = getReferenceToday();
-    state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const nextMode = isWp ? 'workplace' : 'family';
+    const modeChanged = state.lastPlanningMode !== nextMode;
+    state.lastPlanningMode = nextMode;
+    if (modeChanged && !state.userEditedMaxNights) {
+      state.userEditedMinNights = false;
+    }
+    state.upcomingHolidays = isWp
+      ? buildUpcomingWorkplaceHolidaysClient(refIso)
+      : buildUpcomingHolidaysClient(refIso, state.profile);
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: true,
       applyDurationDefault: !state.userEditedMaxNights
@@ -4312,17 +4763,22 @@
     state.validationErrorEn = null;
     state.profile = createCleanGuestProfile();
     state.profileDirty = false;
+    state.lastPlanningMode = 'workplace';
+    state.userSelectedHoliday = false;
+    state.userEditedMaxNights = false;
+    state.userEditedMinNights = false;
     state.calendarData = null;
     state.proposals = [];
     state.lastSearchProfile = null;
     state.showAllProposals = false;
 
     await scrubBrowserClientState();
+    syncPlanningModeUi();
     renderProfileControls();
     renderCalendarTable();
     renderWorkplaceCalendarTable();
     renderProposals();
-    await refreshUpcomingHolidaysFromServer(false);
+    await refreshUpcomingHolidaysFromServer(true);
     await loadCalendarForSchoolYear();
     await runVacationSearch();
   }
@@ -4333,6 +4789,10 @@
       await apiSend('DELETE', '/api/v1/profile', {});
       state.profile = createCleanGuestProfile();
       state.profileDirty = false;
+      state.lastPlanningMode = 'workplace';
+      state.userSelectedHoliday = false;
+      state.userEditedMaxNights = false;
+      state.userEditedMinNights = false;
       state.calendarData = null;
       state.confirmingDeleteProfile = false;
       state.validationErrorHe = null;
@@ -4341,13 +4801,14 @@
       state.lastSearchProfile = null;
       state.showAllProposals = false;
       state.saveFeedbackHe = '✓ הנתונים השמורים נמחקו מהחשבון.';
-      state.saveFeedbackEn = '✓ Saved family data deleted from your account.';
+      state.saveFeedbackEn = '✓ Saved profile data deleted from your account.';
       await scrubBrowserClientState();
+      syncPlanningModeUi();
       renderProfileControls();
       renderCalendarTable();
       renderWorkplaceCalendarTable();
       renderProposals();
-      await refreshUpcomingHolidaysFromServer(false);
+      await refreshUpcomingHolidaysFromServer(true);
       await loadCalendarForSchoolYear();
       await runVacationSearch();
     } catch (err) {
@@ -4358,27 +4819,60 @@
   }
 
   async function refreshUpcomingHolidaysFromServer(applyDefaultNights) {
+    const myFetchSeq = ++latestHolidayFetchSeq;
     const refIso = getReferenceToday();
     const asOfOverride = getAsOfOverrideIso();
     const effectiveAsOf = asOfOverride || refIso;
-    const fwCsv = collectActiveFrameworksCsv();
-    const qs = fwCsv
-      ? `?as_of=${encodeURIComponent(effectiveAsOf)}&frameworks=${encodeURIComponent(fwCsv)}`
-      : `?as_of=${encodeURIComponent(effectiveAsOf)}`;
-    try {
-      const upcomingRes = await apiGet(`/api/v1/moe-calendar/upcoming${qs}`);
-      if (upcomingRes && Array.isArray(upcomingRes.holidays) && upcomingRes.holidays.length > 0) {
-        state.upcomingHolidays = upcomingRes.holidays;
+    const isWp = isWorkplaceModeProfile(state.profile);
+    const nextMode = isWp ? 'workplace' : 'family';
+    const modeChanged = state.lastPlanningMode !== nextMode;
+    state.lastPlanningMode = nextMode;
+    if (modeChanged && !state.userEditedMaxNights) {
+      state.userEditedMinNights = false;
+    }
+
+    let fetchedHolidays = null;
+    if (isWp) {
+      try {
+        const upcomingRes = await apiGet(
+          `/api/v1/workplace-calendar/upcoming?as_of=${encodeURIComponent(effectiveAsOf)}`
+        );
+        if (myFetchSeq !== latestHolidayFetchSeq || isWorkplaceModeProfile(state.profile) !== isWp) return;
+        if (upcomingRes && Array.isArray(upcomingRes.holidays) && upcomingRes.holidays.length > 0) {
+          fetchedHolidays = upcomingRes.holidays;
+        }
+      } catch (_err) {
+        if (myFetchSeq !== latestHolidayFetchSeq || isWorkplaceModeProfile(state.profile) !== isWp) return;
+        fetchedHolidays = buildUpcomingWorkplaceHolidaysClient(effectiveAsOf);
       }
-    } catch (_err) {
-      state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+      if (!fetchedHolidays || fetchedHolidays.length === 0) {
+        fetchedHolidays = buildUpcomingWorkplaceHolidaysClient(effectiveAsOf);
+      }
+    } else {
+      const fwCsv = collectActiveFrameworksCsv();
+      const qs = fwCsv
+        ? `?as_of=${encodeURIComponent(effectiveAsOf)}&frameworks=${encodeURIComponent(fwCsv)}`
+        : `?as_of=${encodeURIComponent(effectiveAsOf)}`;
+      try {
+        const upcomingRes = await apiGet(`/api/v1/moe-calendar/upcoming${qs}`);
+        if (myFetchSeq !== latestHolidayFetchSeq || isWorkplaceModeProfile(state.profile) !== isWp) return;
+        if (upcomingRes && Array.isArray(upcomingRes.holidays) && upcomingRes.holidays.length > 0) {
+          fetchedHolidays = upcomingRes.holidays;
+        }
+      } catch (_err) {
+        if (myFetchSeq !== latestHolidayFetchSeq || isWorkplaceModeProfile(state.profile) !== isWp) return;
+        fetchedHolidays = buildUpcomingHolidaysClient(effectiveAsOf, state.profile);
+      }
+      if (!fetchedHolidays || fetchedHolidays.length === 0) {
+        fetchedHolidays = buildUpcomingHolidaysClient(effectiveAsOf, state.profile);
+      }
     }
-    if (!state.upcomingHolidays || state.upcomingHolidays.length === 0) {
-      state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
-    }
+
+    if (myFetchSeq !== latestHolidayFetchSeq || isWorkplaceModeProfile(state.profile) !== isWp) return;
+    state.upcomingHolidays = fetchedHolidays;
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: state.userSelectedHoliday,
-      applyDurationDefault: Boolean(applyDefaultNights) && !state.userEditedMaxNights
+      applyDurationDefault: (Boolean(applyDefaultNights) || modeChanged) && !state.userEditedMaxNights
     });
   }
 
@@ -4408,10 +4902,12 @@
     state.lastSearchProfile = null;
     state.showAllProposals = false;
     state.profile = createCleanGuestProfile();
+    state.lastPlanningMode = 'workplace';
+    syncPlanningModeUi();
     syncDestStateFromNativeSelect();
     renderDestinationMultiSelect();
     renderProfileControls();
-    state.upcomingHolidays = buildUpcomingHolidaysClient(refIso, state.profile);
+    state.upcomingHolidays = buildUpcomingWorkplaceHolidaysClient(refIso);
     populateHolidaySelector(state.upcomingHolidays, {
       preserveSelection: state.userSelectedHoliday,
       applyDurationDefault: !state.userEditedMaxNights
@@ -4484,8 +4980,13 @@
             savedDraft.passenger_loyalty_wallets = [];
             state.profile = savedDraft;
             state.profileDirty = false;
-            state.saveFeedbackHe = '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
-            state.saveFeedbackEn = '✓ Family profile saved to your account.';
+            const isWpSaved = isWorkplaceModeProfile(state.profile);
+            state.saveFeedbackHe = isWpSaved
+              ? '✓ הפרופיל נשמר בחשבון שלך.'
+              : '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
+            state.saveFeedbackEn = isWpSaved
+              ? '✓ Profile saved to your account.'
+              : '✓ Family profile saved to your account.';
           } catch (_autoSaveErr) {
             state.profile = loadedProfile;
             state.profileDirty = true;
@@ -4514,6 +5015,7 @@
         state.profileDirty = false;
       }
 
+      syncPlanningModeUi();
       renderProfileControls();
       await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
       await loadCalendarForSchoolYear(refIso);
@@ -4528,7 +5030,9 @@
     syncProfileStateFromDom();
     const destCodes = getSelectedDestinationCodes();
     const selectHolidayEl = document.getElementById('select-direct-holiday');
-    const holidayVal = (selectHolidayEl && selectHolidayEl.value) || 'HANUKKAH';
+    const holidayVal =
+      (selectHolidayEl && selectHolidayEl.value) ||
+      (isWorkplaceModeProfile(state.profile) ? 'PESACH' : 'HANUKKAH');
     const selectedHolidayOpt =
       selectHolidayEl && selectHolidayEl.selectedOptions && selectHolidayEl.selectedOptions[0];
     const yearVal =
@@ -4609,6 +5113,8 @@
       const res = await apiSend('POST', '/api/v1/vacations/search', payload);
       if (mySearchSeq !== latestSearchSeq) return;
       state.lastSearchQuery = res.query || payload || null;
+      state.lastSearchCalendarMode =
+        res.calendar_mode || (inlineChildren.length === 0 ? 'WORKPLACE' : 'MOE');
       state.lastSearchProfile = {
         adults_count: payload.inline_profile.adults_count,
         matmid_points_balance: matmidBalanceVal,
@@ -4692,7 +5198,16 @@
         state.userEditedMaxNights = false;
         const opt = selectHolidayEl.selectedOptions && selectHolidayEl.selectedOptions[0];
         const days = opt && opt.dataset ? Number(opt.dataset.days || 7) : 7;
-        applyHolidayDurationDefault(days);
+        const recDays =
+          opt && opt.dataset && opt.dataset.recDays ? Number(opt.dataset.recDays) : days;
+        const calMode =
+          (opt && opt.dataset && opt.dataset.calendarMode) ||
+          (isWorkplaceModeProfile(state.profile) ? 'WORKPLACE' : 'MOE');
+        applyHolidayDurationDefault({
+          holidayDays: days,
+          recommendedTripDays: recDays,
+          calendarMode: calMode
+        });
       });
     }
 
@@ -4866,8 +5381,11 @@
     if (btnApplyProfileSheet) {
       btnApplyProfileSheet.addEventListener('click', async () => {
         syncProfileStateFromDom();
+        syncPlanningModeUi();
         renderProfileControls();
+        renderCalendarTable();
         setProfileSheetOpen(false);
+        await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
         await runVacationSearch();
         if (typeof window !== 'undefined' && window.innerWidth < 1180) {
           state.lastActiveMobileZone = 'zone-results';
@@ -5095,10 +5613,16 @@
           saved.passenger_loyalty_wallets = [];
           state.profile = saved;
           state.profileDirty = false;
-          state.saveFeedbackHe = '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
-          state.saveFeedbackEn = '✓ Family profile saved to your account.';
+          const isWpSaved = isWorkplaceModeProfile(state.profile);
+          state.saveFeedbackHe = isWpSaved
+            ? '✓ הפרופיל נשמר בחשבון שלך.'
+            : '✓ הפרופיל המשפחתי נשמר בחשבון שלך.';
+          state.saveFeedbackEn = isWpSaved
+            ? '✓ Profile saved to your account.'
+            : '✓ Family profile saved to your account.';
+          syncPlanningModeUi();
           renderProfileControls();
-          await refreshUpcomingHolidaysFromServer(false);
+          await refreshUpcomingHolidaysFromServer(!state.userEditedMaxNights);
           await loadCalendarForSchoolYear();
           await runVacationSearch();
         } catch (err) {
@@ -5112,8 +5636,13 @@
           state.proposals = [];
           state.lastSearchProfile = null;
           state.showAllProposals = false;
-          state.validationErrorHe = `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
-          state.validationErrorEn = `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
+          const isWpErr = isWorkplaceModeProfile(state.profile);
+          state.validationErrorHe = isWpErr
+            ? `לא ניתן לשמור את הפרופיל — בדקו שמספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`
+            : `לא ניתן לשמור את פרופיל המשפחה — בדקו שגילאי הילדים (0–18), מספר המבוגרים (1–6) ויתרת המתמיד תקינים.${detailSuffixHe}`;
+          state.validationErrorEn = isWpErr
+            ? `Could not save profile — verify adults count (1–6) and non-negative Matmid balance.${detailSuffixEn}`
+            : `Could not save family profile — verify adults count (1–6), child ages (0–18), and non-negative Matmid balance.${detailSuffixEn}`;
           if (state.isProfileSheetOpen) {
             state.profileSaveErrorHe = state.validationErrorHe;
             state.profileSaveErrorEn = state.validationErrorEn;
@@ -5148,8 +5677,10 @@
           bagrut_blackout_dates: []
         });
         state.profileDirty = true;
+        syncPlanningModeUi();
         renderProfileControls();
         refreshClientHolidaysOnProfileEdit();
+        renderCalendarTable();
       });
     }
 
@@ -5297,8 +5828,10 @@
         const idx = Number(removeChildBtn.getAttribute('data-remove-child'));
         state.profile.children.splice(idx, 1);
         state.profileDirty = true;
+        syncPlanningModeUi();
         renderProfileControls();
         refreshClientHolidaysOnProfileEdit();
+        renderCalendarTable();
       }
     });
 

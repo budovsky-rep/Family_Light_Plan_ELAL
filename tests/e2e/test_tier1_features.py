@@ -5344,6 +5344,473 @@ class TestTier1F31WebUiAndResponsiveBiDi(Tier1BaseTestCase):
             itin_s["elal_google_flights_url"],
         )
 
+    def test_f31_12_run18_workplace_mode_zero_children_and_css_contracts(
+        self,
+    ) -> None:
+        """Run 18 (Feature F8) Tier 1 static, API & DB integrity contracts:
+        - Section A: `app.css` zero `left`/`right`/`ellipsis`/`max-width`, strictly ascending
+          `@media (min-width: ...)` breakpoints, preserved travelers `clamp(520px, 40vw, 580px)`
+          inside `@media (min-width: 1180px)`, and Run 18 workplace CSS rules.
+        - Section B: All 5 client assets (`index.html`, `app.js`, `app.css`, `domain.ts`,
+          `manifest.webmanifest`) free of standalone `'בוגרים'`, hardcoded identity strings,
+          and Run 11 forbidden price substrings, with Run 18 HTML/JS/TS/manifest hooks present.
+        - Section C: Live isolated-DB backend contracts for `/api/v1/workplace-calendar/upcoming`,
+          `/api/v1/moe-calendar/upcoming?calendar_mode=workplace`, default 11-holiday MoE endpoint,
+          `422` validation, `POST /api/v1/vacations/search` workday-efficiency ranking for `0`
+          children (`PESACH`, `ROSH_HASHANAH` 0-workday trip, `SPECIFIC_DATES` Pesach vs regular),
+          school-free & Run 11-clean responses, and `>= 1`-child `MOE` regression preservation.
+        - Section D: Read-only SHA-256 lock on `data/vacation_planner.db`.
+        """
+        import hashlib
+        import re as _re
+        from bs4 import BeautifulSoup
+
+        html_txt = (PROJECT_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        js_txt = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text(encoding="utf-8")
+        css_txt = (PROJECT_ROOT / "frontend" / "src" / "styles" / "app.css").read_text(encoding="utf-8")
+        ts_txt = (PROJECT_ROOT / "frontend" / "src" / "types" / "domain.ts").read_text(encoding="utf-8")
+        manifest_txt = (
+            PROJECT_ROOT / "frontend" / "public" / "manifest.webmanifest"
+        ).read_text(encoding="utf-8")
+
+        # ---- Section A: app.css guardrails & Run 18 workplace CSS hooks ----
+        self.assertIsNone(
+            _re.search(r"(?i)(left|right|ellipsis)", css_txt),
+            "app.css must contain zero occurrences of left, right, or ellipsis (including comments)",
+        )
+        self.assertIsNone(
+            _re.search(r"@media[^{]*max-width", css_txt, _re.IGNORECASE),
+            "app.css must contain zero @media ... max-width rules",
+        )
+        min_width_matches = list(
+            _re.finditer(r"@media\s*\(\s*min-width:\s*(\d+)px\s*\)", css_txt)
+        )
+        widths = [int(m.group(1)) for m in min_width_matches]
+        self.assertGreaterEqual(len(widths), 10)
+        self.assertTrue(
+            all(widths[i] < widths[i + 1] for i in range(len(widths) - 1)),
+            f"@media (min-width: ...) breakpoints must be strictly ascending: {widths}",
+        )
+        blocks_by_width: dict[int, str] = {}
+        for idx, m in enumerate(min_width_matches):
+            w = int(m.group(1))
+            start = m.start()
+            end = (
+                min_width_matches[idx + 1].start()
+                if idx + 1 < len(min_width_matches)
+                else len(css_txt)
+            )
+            blocks_by_width[w] = css_txt[start:end]
+        self.assertIn(1180, blocks_by_width)
+        self.assertIsNotNone(
+            _re.search(
+                r'#zone-profile\[data-sheet-view="travelers"\]\s*\{[^}]*width:\s*clamp\(520px,\s*40vw,\s*580px\);',
+                blocks_by_width[1180],
+            ),
+            "Travelers sheet clamp(520px, 40vw, 580px) must remain inside @media (min-width: 1180px)",
+        )
+        for req_css in (
+            '[data-planning-mode="workplace"] .children-empty-hint',
+            '[data-planning-mode="workplace"] #active-mode-badge',
+            ".kpi-efficiency-pill",
+            ".kpi-efficiency-pill-zero",
+            ".kpi-saved-paren",
+            '#zone-calendar[data-calendar-mode="workplace"] #calendar-col-moe',
+            '#zone-calendar[data-calendar-mode="workplace"] .calendar-dual-grid',
+            '#zone-calendar.is-calendar-open[data-calendar-mode="workplace"]',
+        ):
+            self.assertIn(req_css, css_txt, f"Missing Run 18 CSS hook: {req_css}")
+
+        # ---- Section B: Client assets terminology, identity, Run 11 copy & hooks ----
+        bogrim_re = _re.compile(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])")
+        self.assertIsNone(
+            bogrim_re.search("מבוגרים"),
+            "bogrim_re must not false-flag legitimate 'מבוגרים'",
+        )
+        yoni_he_re = _re.compile(r"(?<![א-ת])יוני(?![א-ת])")
+        r11_non_dollar = (
+            "חיסכון",
+            "¢",
+            "הערכת",
+            "מזומן",
+            "Est. Cash",
+            "נקודות:",
+            "לא מחייב",
+            "non-binding",
+        )
+        for asset_name, asset_txt in (
+            ("index.html", html_txt),
+            ("app.js", js_txt),
+            ("app.css", css_txt),
+            ("domain.ts", ts_txt),
+            ("manifest.webmanifest", manifest_txt),
+        ):
+            self.assertIsNone(bogrim_re.search(asset_txt), f"Forbidden standalone בוגרים in {asset_name}")
+            self.assertIsNone(yoni_he_re.search(asset_txt), f"Forbidden standalone יוני in {asset_name}")
+            low = asset_txt.lower()
+            for bad_id in ("yoni", "budovsky", "בודובסקי"):
+                self.assertNotIn(bad_id, low, f"Forbidden identity token {bad_id!r} in {asset_name}")
+            for bad_price in r11_non_dollar:
+                self.assertNotIn(bad_price, asset_txt, f"Forbidden Run 11 token {bad_price!r} in {asset_name}")
+            if asset_name == "app.js":
+                self.assertIsNone(
+                    _re.search(r"\$(?!\{)(?!/)", asset_txt),
+                    "Currency '$' forbidden in frontend/src/app.js",
+                )
+            else:
+                self.assertNotIn("$", asset_txt, f"Forbidden '$' in {asset_name}")
+
+        soup = BeautifulSoup(html_txt, "html.parser")
+        self.assertIsNotNone(soup.find(id="dashboard-shell"))
+        self.assertIsNotNone(soup.find(id="label-direct-holiday"))
+        self.assertIsNotNone(soup.find(id="profile-children-summary-title"))
+        self.assertIsNotNone(soup.find(id="zone-calendar"))
+        self.assertIsNotNone(soup.find(id="calendar-col-moe"))
+        holiday_select = soup.find(id="select-direct-holiday")
+        self.assertIsNotNone(holiday_select)
+        self.assertEqual(
+            len(holiday_select.find_all("option")),
+            11,
+            "index.html must retain all 11 static <option> tags inside #select-direct-holiday",
+        )
+
+        for req_js in (
+            "isWorkplaceModeProfile",
+            "syncPlanningModeUi",
+            "CANONICAL_WORKPLACE_ROLLING_HOLIDAYS",
+            "computeRecommendedWorkplaceWindowClient",
+            "buildUpcomingWorkplaceHolidaysClient",
+            "data-planning-mode",
+            "data-calendar-mode",
+            "data-kpi-efficiency",
+            "data-workdays-saved",
+            "data-workday-ratio",
+            "kpi-efficiency-pill",
+            "kpi-efficiency-pill-zero",
+            "/api/v1/workplace-calendar/upcoming",
+            "latestHolidayFetchSeq",
+        ):
+            self.assertIn(req_js, js_txt, f"Missing Run 18 JS symbol: {req_js}")
+
+        for req_ts in (
+            "UpcomingWorkplaceHoliday",
+            "UpcomingWorkplaceHolidaysResponse",
+            "CalendarPlanningMode",
+            "WorkplaceHolidayCode",
+            "trip_calendar_days",
+            "workdays_saved_count",
+            "workday_efficiency_ratio",
+            "workday_efficiency_score",
+            "is_zero_workday_trip",
+            "VacationSearchResponse",
+        ):
+            self.assertIn(req_ts, ts_txt, f"Missing Run 18 TS symbol: {req_ts}")
+
+        manifest_obj = json.loads(manifest_txt)
+        self.assertIsInstance(manifest_obj, dict)
+        for forbidden_manifest in ("משרד החינוך", "מקסום ימי חופש", "ימי החופש"):
+            self.assertNotIn(forbidden_manifest, manifest_txt)
+
+        # ---- Section C: Live backend API contracts (isolated temp DB, offline) ----
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ELAL_LIVE_FETCH_ENABLED", old_live)
+            if old_live is not None
+            else os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+        )
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        client = self.get_client(db_path)
+
+        expected_wp_codes_2026_11_28 = [
+            "PESACH",
+            "YOM_HAATZMAUT",
+            "SHAVUOT",
+            "ROSH_HASHANAH",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "SUKKOT",
+        ]
+        expected_wp_keys = {
+            "holiday_code",
+            "name_he",
+            "name_en",
+            "target_year",
+            "school_year",
+            "start_date",
+            "end_date",
+            "holiday_days",
+            "recommended_window_start",
+            "recommended_window_end",
+            "recommended_trip_days",
+            "recommended_workdays_cost",
+            "recommended_workdays_saved",
+            "recommended_efficiency_ratio",
+            "workplace_workdays_cost",
+            "official_holiday_days",
+            "chol_hamoed_days",
+            "is_ongoing",
+            "calendar_mode",
+            "label_he",
+            "label_en",
+        }
+        moe_only_codes = {
+            "HANUKKAH",
+            "PURIM",
+            "SUMMER_JUNE_20_30",
+            "SUMMER_JULY",
+            "SUMMER_AUGUST",
+            "LAG_BAOMER",
+            "YOM_KIPPUR",
+        }
+
+        wp_fixed = client.get("/api/v1/workplace-calendar/upcoming?as_of=2026-11-28")
+        self.assertEqual(wp_fixed.status_code, 200)
+        wp_alias = client.get(
+            "/api/v1/moe-calendar/upcoming?calendar_mode=workplace&as_of=2026-11-28"
+        )
+        self.assertEqual(wp_alias.status_code, 200)
+        wp_data = wp_fixed.json()
+        self.assertEqual(wp_data, wp_alias.json())
+        self.assertEqual(wp_data["as_of_date"], "2026-11-28")
+        self.assertEqual(wp_data["window_end_date"], "2027-11-28")
+        self.assertEqual(wp_data["calendar_mode"], "WORKPLACE")
+        self.assertEqual(wp_data["count"], 6)
+        codes_fixed = [h["holiday_code"] for h in wp_data["holidays"]]
+        self.assertEqual(codes_fixed, expected_wp_codes_2026_11_28)
+        self.assertTrue(set(codes_fixed).isdisjoint(moe_only_codes))
+        for item in wp_data["holidays"]:
+            self.assertEqual(set(item.keys()), expected_wp_keys)
+            self.assertEqual(item["calendar_mode"], "WORKPLACE")
+
+        wp_default = client.get("/api/v1/workplace-calendar/upcoming")
+        self.assertEqual(wp_default.status_code, 200)
+        wp_def_data = wp_default.json()
+        self.assertEqual(wp_def_data["calendar_mode"], "WORKPLACE")
+        self.assertEqual(wp_def_data["count"], 6)
+        self.assertEqual(
+            {h["holiday_code"] for h in wp_def_data["holidays"]},
+            set(expected_wp_codes_2026_11_28),
+        )
+
+        moe_default = client.get("/api/v1/moe-calendar/upcoming")
+        self.assertEqual(moe_default.status_code, 200)
+        self.assertEqual(moe_default.json()["count"], 11)
+
+        self.assertEqual(
+            client.get("/api/v1/moe-calendar/upcoming?calendar_mode=invalid").status_code,
+            422,
+        )
+        self.assertEqual(
+            client.get("/api/v1/workplace-calendar/upcoming?as_of=not-a-date").status_code,
+            422,
+        )
+        self.assertEqual(
+            client.get(
+                "/api/v1/moe-calendar/upcoming?calendar_mode=workplace&as_of=2027-02-30"
+            ).status_code,
+            422,
+        )
+
+        forbidden_legacy_pto_keys = (
+            "total_vacation_days",
+            "parent_pto_days_used",
+            "pto_efficiency_ratio",
+            "vacation_utilization_score",
+        )
+        inline_zero_children = {
+            "adults_count": 2,
+            "matmid_points_balance": 120000,
+            "children": [],
+        }
+
+        s_wp_pesach = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO", "ATH", "LCA"],
+                "inline_profile": inline_zero_children,
+            },
+        )
+        self.assertEqual(s_wp_pesach.status_code, 200)
+        d_wp_pesach = s_wp_pesach.json()
+        self.assertEqual(d_wp_pesach["calendar_mode"], "WORKPLACE")
+        props_pesach = d_wp_pesach["proposals"]
+        self.assertGreater(len(props_pesach), 0)
+        for prop in props_pesach:
+            self.assertEqual(prop["calendar_mode"], "WORKPLACE")
+            for req_key in (
+                "trip_calendar_days",
+                "workdays_saved_count",
+                "workday_efficiency_ratio",
+                "workday_efficiency_score",
+                "is_zero_workday_trip",
+            ):
+                self.assertIn(req_key, prop)
+            self.assertEqual(prop["holiday_alignment_score"], prop["workday_efficiency_score"])
+            for legacy_key in forbidden_legacy_pto_keys:
+                self.assertNotIn(legacy_key, prop)
+        ctos_seq = [p["combined_trip_optimization_score"] for p in props_pesach]
+        self.assertTrue(
+            all(ctos_seq[i] >= ctos_seq[i + 1] for i in range(len(ctos_seq) - 1)),
+            f"PESACH CTOS ranking not monotonically non-increasing: {ctos_seq[:10]}",
+        )
+        fbvs_100 = [p for p in props_pesach if p["flight_bonus_value_score"] == 100.0]
+        self.assertGreater(len(fbvs_100), 1)
+        eff_seq = [p["workday_efficiency_score"] for p in fbvs_100]
+        self.assertTrue(
+            all(eff_seq[i] >= eff_seq[i + 1] for i in range(len(eff_seq) - 1)),
+            f"PESACH workday_efficiency_score not monotonically non-increasing: {eff_seq[:10]}",
+        )
+        self.assertGreater(eff_seq[0], eff_seq[-1])
+
+        s_wp_rh_zero = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "ROSH_HASHANAH",
+                "direct_target_year": 2027,
+                "max_trip_nights": 3,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO", "ATH", "LCA"],
+                "inline_profile": inline_zero_children,
+            },
+        )
+        self.assertEqual(s_wp_rh_zero.status_code, 200)
+        d_wp_rh = s_wp_rh_zero.json()
+        self.assertEqual(d_wp_rh["calendar_mode"], "WORKPLACE")
+        self.assertGreater(len(d_wp_rh["proposals"]), 0)
+        top_rh = d_wp_rh["proposals"][0]
+        self.assertTrue(top_rh["is_zero_workday_trip"])
+        self.assertEqual(top_rh["workplace_vacation_days_cost"], 0.0)
+        self.assertEqual(top_rh["trip_calendar_days"], 3)
+        self.assertEqual(top_rh["workdays_saved_count"], 3.0)
+        self.assertEqual(top_rh["workday_efficiency_ratio"], 6.0)
+        self.assertEqual(top_rh["workday_efficiency_score"], 100.0)
+
+        s_wp_spec_pesach = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-04-22",
+                "specific_return_date": "2027-04-28",
+                "flex_days_plus_minus": 0,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA"],
+                "inline_profile": inline_zero_children,
+            },
+        )
+        self.assertEqual(s_wp_spec_pesach.status_code, 200)
+        p_spec_pesach = s_wp_spec_pesach.json()["proposals"][0]
+        self.assertEqual(p_spec_pesach["calendar_mode"], "WORKPLACE")
+        self.assertEqual(p_spec_pesach["trip_calendar_days"], 7)
+        self.assertEqual(p_spec_pesach["official_holiday_workdays_saved_count"], 2)
+        self.assertEqual(p_spec_pesach["weekend_days_count"], 2)
+        self.assertEqual(p_spec_pesach["chol_hamoed_workdays_count"], 3)
+        self.assertEqual(p_spec_pesach["regular_workdays_count"], 0)
+        self.assertEqual(p_spec_pesach["workplace_vacation_days_cost"], 1.5)
+        self.assertEqual(p_spec_pesach["workdays_saved_count"], 5.5)
+        self.assertEqual(p_spec_pesach["workday_efficiency_ratio"], 4.67)
+        self.assertEqual(p_spec_pesach["workday_efficiency_score"], 82.5)
+        self.assertFalse(p_spec_pesach["is_zero_workday_trip"])
+
+        s_wp_spec_regular = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "SPECIFIC_DATES",
+                "specific_departure_date": "2027-04-11",
+                "specific_return_date": "2027-04-18",
+                "flex_days_plus_minus": 0,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["LCA"],
+                "inline_profile": inline_zero_children,
+            },
+        )
+        self.assertEqual(s_wp_spec_regular.status_code, 200)
+        p_spec_regular = s_wp_spec_regular.json()["proposals"][0]
+        self.assertEqual(p_spec_regular["calendar_mode"], "WORKPLACE")
+        self.assertEqual(p_spec_regular["trip_calendar_days"], 8)
+        self.assertEqual(p_spec_regular["workplace_vacation_days_cost"], 6.0)
+        self.assertEqual(p_spec_regular["workdays_saved_count"], 2.0)
+        self.assertEqual(p_spec_regular["workday_efficiency_ratio"], 1.33)
+        self.assertEqual(p_spec_regular["workday_efficiency_score"], 20.0)
+        self.assertFalse(p_spec_regular["is_zero_workday_trip"])
+        self.assertGreater(
+            p_spec_pesach["workday_efficiency_score"],
+            p_spec_regular["workday_efficiency_score"],
+        )
+        self.assertGreater(
+            p_spec_pesach["combined_trip_optimization_score"],
+            p_spec_regular["combined_trip_optimization_score"],
+        )
+
+        # Workplace responses must contain zero school/MoE terms and zero Run 11 price tokens
+        school_re = _re.compile(
+            r"(בי״ס|בית ספר|מוסדות החינוך|משרד החינוך|חופשת בית ספר|חיסור|ניצנים|\bMoE\b|school break|Nitzanim)",
+            _re.IGNORECASE,
+        )
+        r11_all = ("$",) + r11_non_dollar
+        for resp_name, resp_obj in (
+            ("workplace-calendar/upcoming", wp_fixed),
+            ("search-pesach-workplace", s_wp_pesach),
+            ("search-rosh-hashanah-zero", s_wp_rh_zero),
+            ("search-spec-pesach", s_wp_spec_pesach),
+            ("search-spec-regular", s_wp_spec_regular),
+        ):
+            self.assertIsNone(
+                school_re.search(resp_obj.text),
+                f"School/MoE term leaked in {resp_name}",
+            )
+            for tok in r11_all:
+                self.assertNotIn(
+                    tok,
+                    resp_obj.text,
+                    f"Forbidden Run 11 token {tok!r} leaked in {resp_name}",
+                )
+
+        # Regression preservation: >= 1 child retains MOE mode & 100.0 MoE alignment
+        s_family_pesach = client.post(
+            "/api/v1/vacations/search",
+            json={
+                "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                "direct_holiday_code": "PESACH",
+                "direct_target_year": 2027,
+                "airline_selection_mode": "EL_AL_ONLY",
+                "destination_iatas": ["FCO", "ATH", "LCA"],
+                "inline_profile": {
+                    "adults_count": 2,
+                    "matmid_points_balance": 120000,
+                    "children": [
+                        {
+                            "id": "c1",
+                            "child_name": "ילד",
+                            "child_age_years": 8,
+                            "framework_type": "ELEMENTARY_1_3",
+                        }
+                    ],
+                },
+            },
+        )
+        self.assertEqual(s_family_pesach.status_code, 200)
+        d_fam = s_family_pesach.json()
+        self.assertEqual(d_fam["calendar_mode"], "MOE")
+        self.assertGreater(len(d_fam["proposals"]), 0)
+        for prop in d_fam["proposals"]:
+            self.assertEqual(prop["calendar_mode"], "MOE")
+        self.assertEqual(d_fam["proposals"][0]["holiday_alignment_score"], 100.0)
+        self.assertEqual(d_fam["proposals"][0]["combined_trip_optimization_score"], 100.0)
+
+        # ---- Section D: Read-only repository DB SHA-256 lock ----
+        repo_db = PROJECT_ROOT / "data" / "vacation_planner.db"
+        self.assertTrue(repo_db.exists())
+        self.assertEqual(
+            hashlib.sha256(repo_db.read_bytes()).hexdigest(),
+            "0e85a5235b0633860f991ff23de6e22e3e90f503e5bc2c2aa8f92f6a3d99cd67",
+        )
+
+
 
 # ============================================================================
 # Feature F32: Installable PWA & Preservation of 7 Specification Docs (5 tests)

@@ -1607,18 +1607,35 @@ class TestTier2F15CalendarScoringEngineBoundaries(Tier2BoundaryTestBase):
     def test_f15_05_adult_only_or_null_framework_children_sap_zero_and_ccg_fallback(self) -> None:
         cal = MoECalendarService(self.shared_repo)
         maximizer = VacationMaximizerEngine(cal)
-        for prof in (
-            FamilyProfile(id="p_no_ch", adults_count=2, children=[]),
-            FamilyProfile(
-                id="p_null_fw",
-                adults_count=2,
-                children=[ChildFramework(id="c1", child_age_years=6, framework_type=None)],
-            ),
-        ):
-            win = maximizer.evaluate_window(prof, date(2027, 4, 11), date(2027, 4, 18))
-            self.assertEqual(win.school_absence_penalty, 0.0)
-            self.assertEqual(win.childcare_coverage_gain, 1.0)
-            self.assertEqual(win.holiday_alignment_score, 80.0)
+
+        # 0 children -> Israeli workplace workday-efficiency mode (zero MoE dependency)
+        p_no_ch = FamilyProfile(id="p_no_ch", adults_count=2, children=[])
+        win_no_ch = maximizer.evaluate_window(p_no_ch, date(2027, 4, 11), date(2027, 4, 18))
+        self.assertEqual(win_no_ch.calendar_mode, "WORKPLACE")
+        self.assertEqual(win_no_ch.school_absence_penalty, 0.0)
+        self.assertEqual(win_no_ch.childcare_coverage_gain, 1.0)
+        self.assertEqual(win_no_ch.workplace_vacation_days_cost, 6.0)
+        self.assertEqual(win_no_ch.workday_efficiency_ratio, 1.33)
+        self.assertEqual(win_no_ch.workday_efficiency_score, 20.0)
+        self.assertEqual(win_no_ch.holiday_alignment_score, 20.0)
+        win_pesach_wp = maximizer.evaluate_window(p_no_ch, date(2027, 4, 22), date(2027, 4, 28))
+        self.assertEqual(win_pesach_wp.calendar_mode, "WORKPLACE")
+        self.assertEqual(win_pesach_wp.workplace_vacation_days_cost, 1.5)
+        self.assertEqual(win_pesach_wp.workday_efficiency_ratio, 4.67)
+        self.assertEqual(win_pesach_wp.workday_efficiency_score, 82.5)
+        self.assertGreater(win_pesach_wp.holiday_alignment_score, win_no_ch.holiday_alignment_score)
+
+        # >= 1 child with framework_type=None -> preserves MoE fallback (80.0) unchanged
+        p_null_fw = FamilyProfile(
+            id="p_null_fw",
+            adults_count=2,
+            children=[ChildFramework(id="c1", child_age_years=6, framework_type=None)],
+        )
+        win_null_fw = maximizer.evaluate_window(p_null_fw, date(2027, 4, 11), date(2027, 4, 18))
+        self.assertEqual(win_null_fw.calendar_mode, "MOE")
+        self.assertEqual(win_null_fw.school_absence_penalty, 0.0)
+        self.assertEqual(win_null_fw.childcare_coverage_gain, 1.0)
+        self.assertEqual(win_null_fw.holiday_alignment_score, 80.0)
 
 
 class TestTier2F16PreSeededDatasetBoundaries(Tier2BoundaryTestBase):

@@ -1251,5 +1251,427 @@ class TestRun14WorkplaceHolidayCalendarAndCost(unittest.TestCase):
                 repo.close()
 
 
+class TestRun18WorkplaceCalendarAndMaximizer(unittest.TestCase):
+    """Run 18 F1–F4: Child-free (`0` children) Israeli workplace calendar, workday-efficiency scoring & zero-DDL reload."""
+
+    _FORBIDDEN_SCHOOL_AND_COPY_TOKENS = (
+        "בוגרים",
+        "חיסכון",
+        "$",
+        "¢",
+        "הערכת",
+        "מזומן",
+        "Est. Cash",
+        "נקודות:",
+        "בי״ס",
+        'בי"ס',
+        "בית ספר",
+        "מוסדות החינוך",
+        "משרד החינוך",
+        "חיסור",
+        "ניצנים",
+        "יוני",
+    )
+
+    def test_run18_rolling_workplace_holidays_and_bridge_expansion_multi_year(self) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        expected_codes = {
+            "ROSH_HASHANAH",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "SUKKOT",
+            "PESACH",
+            "YOM_HAATZMAUT",
+            "SHAVUOT",
+        }
+        expected_keys = {
+            "holiday_code",
+            "name_he",
+            "name_en",
+            "target_year",
+            "school_year",
+            "start_date",
+            "end_date",
+            "holiday_days",
+            "recommended_window_start",
+            "recommended_window_end",
+            "recommended_trip_days",
+            "recommended_workdays_cost",
+            "recommended_workdays_saved",
+            "recommended_efficiency_ratio",
+            "workplace_workdays_cost",
+            "official_holiday_days",
+            "chol_hamoed_days",
+            "is_ongoing",
+            "calendar_mode",
+            "label_he",
+            "label_en",
+        }
+
+        for as_of in (
+            "2026-11-28",
+            "2027-04-25",
+            "2027-05-12",
+            "2027-05-13",
+            "2028-02-29",
+            "2036-01-01",
+        ):
+            items = IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                as_of_date=as_of
+            )
+            self.assertEqual(len(items), 6, f"Expected 6 workplace holidays for {as_of}")
+            self.assertEqual({it["holiday_code"] for it in items}, expected_codes)
+            # Strictly chronological
+            sort_keys = [
+                (it["start_date"], it["end_date"], it["holiday_days"], it["holiday_code"])
+                for it in items
+            ]
+            self.assertEqual(sort_keys, sorted(sort_keys))
+            for it in items:
+                self.assertEqual(set(it.keys()), expected_keys)
+                self.assertEqual(it["calendar_mode"], "WORKPLACE")
+                self.assertGreaterEqual(it["end_date"], as_of)
+                if it["holiday_code"] in ("ROSH_HASHANAH", "YOM_HAATZMAUT", "SHAVUOT"):
+                    self.assertIn(it["recommended_trip_days"], (4, 5), it)
+                text_blob = f"{it['name_he']} {it['name_en']} {it['label_he']} {it['label_en']}"
+                for bad in self._FORBIDDEN_SCHOOL_AND_COPY_TOKENS:
+                    self.assertNotIn(bad, text_blob, f"Forbidden token {bad!r} in {text_blob!r}")
+
+        # Exact Pesach 2027 contract check
+        nov_items = {
+            it["holiday_code"]: it
+            for it in IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                "2026-11-28"
+            )
+        }
+        pes27 = nov_items["PESACH"]
+        self.assertEqual(pes27["target_year"], 2027)
+        self.assertEqual(pes27["start_date"], "2027-04-22")
+        self.assertEqual(pes27["end_date"], "2027-04-28")
+        self.assertEqual(pes27["holiday_days"], 7)
+        self.assertEqual(pes27["official_holiday_days"], 2)
+        self.assertEqual(pes27["chol_hamoed_days"], 5)
+        self.assertEqual(pes27["workplace_workdays_cost"], 1.5)
+        self.assertEqual(pes27["recommended_trip_days"], 7)
+        self.assertEqual(pes27["recommended_workdays_cost"], 1.5)
+        self.assertEqual(pes27["recommended_workdays_saved"], 5.5)
+        self.assertEqual(pes27["recommended_efficiency_ratio"], 4.67)
+        self.assertFalse(pes27["is_ongoing"])
+
+        # Mid-Pesach & Yom HaAtzmaut ongoing / rollover checks
+        mid_pes = {
+            it["holiday_code"]: it
+            for it in IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                "2027-04-25"
+            )
+        }
+        self.assertTrue(mid_pes["PESACH"]["is_ongoing"])
+        self.assertEqual(mid_pes["PESACH"]["target_year"], 2027)
+
+        on_atz = {
+            it["holiday_code"]: it
+            for it in IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                "2027-05-12"
+            )
+        }
+        self.assertTrue(on_atz["YOM_HAATZMAUT"]["is_ongoing"])
+        self.assertEqual(on_atz["YOM_HAATZMAUT"]["target_year"], 2027)
+
+        after_atz = {
+            it["holiday_code"]: it
+            for it in IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                "2027-05-13"
+            )
+        }
+        self.assertFalse(after_atz["YOM_HAATZMAUT"]["is_ongoing"])
+        self.assertEqual(after_atz["YOM_HAATZMAUT"]["target_year"], 2028)
+
+    def test_run18_resolve_workplace_holiday_span_and_erev_chag_preserved(self) -> None:
+        from backend.app.calendar_engine.moe_calendar_service import (
+            IsraeliWorkplaceCalendarService,
+        )
+
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span("PESACH", 2027),
+            (date(2027, 4, 22), date(2027, 4, 28)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span("ROSH_HASHANAH", 2026),
+            (date(2026, 9, 12), date(2026, 9, 13)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span("YOM_HAATZMAUT", 2027),
+            (date(2027, 5, 12), date(2027, 5, 12)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span("SHAVUOT", 2027),
+            (date(2027, 6, 11), date(2027, 6, 11)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span("SUKKOT", 2027),
+            (date(2027, 10, 16), date(2027, 10, 23)),
+        )
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span(
+                "YOM_KIPPUR_SUKKOT_BRIDGE", 2027
+            ),
+            (date(2027, 10, 11), date(2027, 10, 23)),
+        )
+        for moe_only in ("HANUKKAH", "PURIM", "SUMMER_JULY", "LAG_BAOMER"):
+            self.assertIsNone(
+                IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span(moe_only, 2027)
+            )
+
+        # Erev Chag remains REGULAR_WORKDAY (1.0)
+        self.assertEqual(
+            IsraeliWorkplaceCalendarService.classify_workday_date(date(2027, 4, 21)),
+            ("REGULAR_WORKDAY", 1.0),
+        )
+
+        # MoECalendarService delegation matches IsraeliWorkplaceCalendarService
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        try:
+            cal = MoECalendarService(repo)
+            self.assertEqual(
+                cal.get_upcoming_workplace_holidays_for_rolling_year("2026-11-28"),
+                IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+                    "2026-11-28"
+                ),
+            )
+            self.assertEqual(
+                cal.resolve_workplace_holiday_span("PESACH", 2027),
+                (date(2027, 4, 22), date(2027, 4, 28)),
+            )
+            occ = cal.resolve_upcoming_workplace_holiday_occurrence(
+                "YOM_KIPPUR_SUKKOT", as_of_date="2026-11-28"
+            )
+            self.assertIsNotNone(occ)
+            self.assertEqual(occ["target_year"], 2027)
+        finally:
+            repo.close()
+
+    def test_run18_workday_efficiency_monotonic_scoring_and_zero_workday_edge(self) -> None:
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        try:
+            cal = MoECalendarService(repo)
+            maximizer = VacationMaximizerEngine(cal)
+            p0 = FamilyProfile(id="run18-p0", adults_count=2, children=[])
+
+            w_reg = maximizer.evaluate_window(p0, date(2026, 11, 8), date(2026, 11, 12))
+            w_pre_pes = maximizer.evaluate_window(p0, date(2027, 4, 11), date(2027, 4, 18))
+            w_atz = maximizer.evaluate_window(p0, date(2027, 5, 12), date(2027, 5, 15))
+            w_pes = maximizer.evaluate_window(p0, date(2027, 4, 22), date(2027, 4, 28))
+            w_zero = maximizer.evaluate_window(p0, date(2026, 9, 11), date(2026, 9, 13))
+            w_yk = maximizer.evaluate_window(p0, date(2027, 10, 11), date(2027, 10, 16))
+            w_shift = maximizer.evaluate_window(
+                p0,
+                date(2027, 4, 22),
+                date(2027, 4, 28),
+                window_set_type="SPECIFIC_USER_WINDOW",
+                mode1_shift_days=2,
+            )
+
+            self.assertEqual(w_reg.workday_efficiency_score, 0.0)
+            self.assertEqual(w_pre_pes.workday_efficiency_score, 20.0)
+            self.assertEqual(w_atz.workday_efficiency_score, 75.0)
+            self.assertEqual(w_pes.workday_efficiency_score, 82.5)
+            self.assertEqual(w_zero.workday_efficiency_score, 100.0)
+            self.assertTrue(w_zero.is_zero_workday_trip)
+            self.assertEqual(w_zero.workplace_vacation_days_cost, 0.0)
+            self.assertEqual(w_zero.workday_efficiency_ratio, 6.0)
+            self.assertEqual(w_yk.workday_efficiency_score, 0.0)
+            self.assertEqual(w_yk.holiday_alignment_score, 0.0)
+            self.assertEqual(w_shift.workday_efficiency_score, 79.5)
+            self.assertEqual(w_shift.holiday_alignment_score, 79.5)
+
+            # Strictly monotonic ordering
+            self.assertLess(w_reg.holiday_alignment_score, w_pre_pes.holiday_alignment_score)
+            self.assertLess(w_pre_pes.holiday_alignment_score, w_atz.holiday_alignment_score)
+            self.assertLess(w_atz.holiday_alignment_score, w_pes.holiday_alignment_score)
+            self.assertLess(w_pes.holiday_alignment_score, w_zero.holiday_alignment_score)
+
+            for w in (w_reg, w_pre_pes, w_atz, w_pes, w_zero, w_shift):
+                self.assertEqual(w.calendar_mode, "WORKPLACE")
+                self.assertEqual(w.holiday_alignment_score, w.workday_efficiency_score)
+                for bad in self._FORBIDDEN_SCHOOL_AND_COPY_TOKENS:
+                    self.assertNotIn(bad, w.explanation_summary_he)
+        finally:
+            repo.close()
+
+    def test_run18_zero_moe_db_dependency_for_zero_children(self) -> None:
+        repo = SQLiteRepository(":memory:", auto_seed=False)
+        try:
+            with repo.connection() as conn:
+                conn.execute("DELETE FROM moe_vacation_windows")
+            cal = MoECalendarService(repo)
+
+            def _forbid(*_args, **_kwargs):
+                raise AssertionError("MoE calendar DB/methods must NOT be called for 0 children!")
+
+            cal.get_calendar_windows = _forbid  # type: ignore[method-assign]
+            cal.get_child_day_status = _forbid  # type: ignore[method-assign]
+            cal.resolve_upcoming_holiday_occurrence = _forbid  # type: ignore[method-assign]
+
+            maximizer = VacationMaximizerEngine(cal)
+            p0 = FamilyProfile(id="run18-nodb", adults_count=2, children=[])
+
+            # Mode 1 SPECIFIC_DATES
+            m1_wins = maximizer.generate_candidate_windows(
+                {
+                    "date_selection_mode": "SPECIFIC_DATES",
+                    "specific_departure_date": "2027-04-22",
+                    "specific_return_date": "2027-04-28",
+                    "flex_days_plus_minus": 2,
+                },
+                p0,
+            )
+            self.assertGreater(len(m1_wins), 0)
+            self.assertTrue(all(w.calendar_mode == "WORKPLACE" for w in m1_wins))
+
+            # Mode 3 across all 6 canonical workplace holidays + legacy MoE codes
+            for h_code, yr, min_n, max_n in (
+                ("ROSH_HASHANAH", 2027, 2, 5),
+                ("YOM_KIPPUR_SUKKOT_BRIDGE", 2027, 4, 14),
+                ("SUKKOT", 2027, 4, 9),
+                ("PESACH", 2027, 4, 8),
+                ("YOM_HAATZMAUT", 2027, 2, 5),
+                ("SHAVUOT", 2027, 2, 5),
+                ("HANUKKAH", 2026, 3, 7),
+                ("PURIM", 2027, 2, 5),
+                ("SUMMER_JULY", 2027, 4, 8),
+            ):
+                wins = maximizer.generate_candidate_windows(
+                    {
+                        "date_selection_mode": "HOLIDAY_DIRECT_INTENT",
+                        "direct_holiday_code": h_code,
+                        "direct_target_year": yr,
+                        "min_trip_nights": min_n,
+                        "max_trip_nights": max_n,
+                    },
+                    p0,
+                )
+                self.assertGreater(len(wins), 0, f"No windows for {h_code} {yr}")
+                for w in wins[:5]:
+                    self.assertEqual(w.calendar_mode, "WORKPLACE")
+                    for bad in self._FORBIDDEN_SCHOOL_AND_COPY_TOKENS:
+                        self.assertNotIn(bad, w.explanation_summary_he)
+        finally:
+            repo.close()
+
+    def test_run18_zero_ddl_sqlite_reload_preserves_workplace_fields_and_shift_penalty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = SQLiteRepository(db_path=Path(tmpdir) / "run18_reload.db", auto_seed=False)
+            try:
+                q = FlightSearchQuery(
+                    id="run18-q1",
+                    family_profile_id=None,
+                    origin_iata="TLV",
+                    destination_iatas=["FCO"],
+                )
+                itin_shift = FlightItinerary(
+                    id="run18-itin-shift",
+                    search_query_id="run18-q1",
+                    destination_iata="FCO",
+                    destination_city_he="רומא",
+                    departure_date=date(2027, 4, 22),
+                    return_date=date(2027, 4, 28),
+                    trip_nights=6,
+                )
+                prop_shift = VacationOptionProposal(
+                    id="run18-prop-shift",
+                    search_query_id="run18-q1",
+                    itinerary_id="run18-itin-shift",
+                    associated_holiday_codes=["PESACH"],
+                    window_set_type="SPECIFIC_USER_WINDOW",
+                    holiday_alignment_score=79.5,
+                    flight_bonus_value_score=100.0,
+                    combined_trip_optimization_score=88.7,
+                    explanation_summary_he="רומא (FCO) | ציונים: יעילות ימי חופש=79.5/100, FBVS=100.0, CTOS=88.7",
+                    itinerary=itin_shift,
+                    calendar_mode="WORKPLACE",
+                    workday_efficiency_score=79.5,
+                )
+
+                itin_zero = FlightItinerary(
+                    id="run18-itin-zero",
+                    search_query_id="run18-q1",
+                    destination_iata="ATH",
+                    destination_city_he="אתונה",
+                    departure_date=date(2026, 9, 11),
+                    return_date=date(2026, 9, 13),
+                    trip_nights=2,
+                )
+                prop_zero = VacationOptionProposal(
+                    id="run18-prop-zero",
+                    search_query_id="run18-q1",
+                    itinerary_id="run18-itin-zero",
+                    associated_holiday_codes=["ROSH_HASHANAH"],
+                    window_set_type="STRICT_INTERSECTION",
+                    holiday_alignment_score=100.0,
+                    flight_bonus_value_score=90.0,
+                    combined_trip_optimization_score=95.5,
+                    explanation_summary_he="אתונה (ATH) | ציונים: יעילות ימי חופש=100.0/100, FBVS=90.0, CTOS=95.5",
+                    itinerary=itin_zero,
+                    calendar_mode="WORKPLACE",
+                    workday_efficiency_score=100.0,
+                )
+
+                repo.save_search_results(q, [prop_shift, prop_zero])
+                reloaded_shift = repo.get_proposal_by_id("run18-prop-shift")
+                reloaded_zero = repo.get_proposal_by_id("run18-prop-zero")
+                self.assertIsNotNone(reloaded_shift)
+                self.assertIsNotNone(reloaded_zero)
+
+                self.assertEqual(reloaded_shift.calendar_mode, "WORKPLACE")
+                self.assertEqual(reloaded_shift.trip_calendar_days, 7)
+                self.assertEqual(reloaded_shift.workdays_saved_count, 5.5)
+                self.assertEqual(reloaded_shift.workday_efficiency_ratio, 4.67)
+                self.assertEqual(reloaded_shift.workday_efficiency_score, 79.5)
+                self.assertFalse(reloaded_shift.is_zero_workday_trip)
+
+                self.assertEqual(reloaded_zero.calendar_mode, "WORKPLACE")
+                self.assertEqual(reloaded_zero.trip_calendar_days, 3)
+                self.assertEqual(reloaded_zero.workdays_saved_count, 3.0)
+                self.assertEqual(reloaded_zero.workday_efficiency_ratio, 6.0)
+                self.assertEqual(reloaded_zero.workday_efficiency_score, 100.0)
+                self.assertTrue(reloaded_zero.is_zero_workday_trip)
+
+                for d in (reloaded_shift.to_dict(), reloaded_zero.to_dict()):
+                    for forbidden in (
+                        "total_vacation_days",
+                        "parent_pto_days_used",
+                        "pto_efficiency_ratio",
+                        "vacation_utilization_score",
+                    ):
+                        self.assertNotIn(forbidden, d)
+            finally:
+                repo.close()
+
+    def test_run18_one_or_more_children_preserves_moe_regression(self) -> None:
+        repo = SQLiteRepository(":memory:", auto_seed=True)
+        try:
+            cal = MoECalendarService(repo)
+            maximizer = VacationMaximizerEngine(cal)
+
+            p_null_fw = FamilyProfile(
+                id="run18-null-fw",
+                adults_count=2,
+                children=[ChildFramework(id="c1", child_age_years=6, framework_type=None)],
+            )
+            w_null = maximizer.evaluate_window(p_null_fw, date(2027, 4, 11), date(2027, 4, 18))
+            self.assertEqual(w_null.calendar_mode, "MOE")
+            self.assertEqual(w_null.holiday_alignment_score, 80.0)
+
+            examples = maximizer.evaluate_worked_examples()
+            for key, win in examples.items():
+                self.assertEqual(win.calendar_mode, "MOE", key)
+            self.assertEqual(examples["EX1_KIPPUR_SUKKOT_MEGA_BRIDGE"].holiday_alignment_score, 100.0)
+            self.assertEqual(examples["EX4B_PESACH_UNCOVERED_WEEK"].holiday_alignment_score, 100.0)
+        finally:
+            repo.close()
+
+
 if __name__ == "__main__":
     unittest.main()

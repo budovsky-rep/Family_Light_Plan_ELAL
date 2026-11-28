@@ -7001,6 +7001,619 @@ class TestTier4RealWorldApplicationScenarios(Tier4ScenariosTestBase):
             self.assertNotIn("elal.com", str(req.get("url", "")).lower())
         self.assertEqual(browser.js_errors(), [])
 
+    def test_scenario_31_run18_workplace_holiday_mode_and_bidirectional_switch_e2e(
+        self,
+    ) -> None:
+        """Scenario 31 (Run 18): Real headless-Chrome CDP end-to-end verification of:
+        - Flow A: Clean 0-children guest boot into Israeli Workplace Holiday mode across
+          desktop (1440x900) and mobile (390x844) in both Hebrew RTL and English LTR,
+          including short-holiday bridge duration auto-init (SHAVUOT, ROSH_HASHANAH 0-workday
+          pill), PESACH workday-efficiency ranked search, workdays-cost leverage pill & tooltip,
+          workplace-only calendar modal, zero horizontal overflow, and zero visible MoE/school copy.
+        - Flow B: Automatic bidirectional 0 -> 1 -> 0 children switching via #zone-profile,
+          verifying full restoration of MoE 11-holiday family mode (dual calendar + paired
+          school-fit/workdays KPIs) on 0 -> 1 and clean automatic return to workplace mode
+          with zero residual MoE/school mentions on 1 -> 0.
+        """
+        db_path, _repo = self.make_isolated_env(auto_seed=True)
+        old_live = os.environ.get("ELAL_LIVE_FETCH_ENABLED")
+        os.environ["ELAL_LIVE_FETCH_ENABLED"] = "0"
+        self.addCleanup(
+            lambda: os.environ.__setitem__("ELAL_LIVE_FETCH_ENABLED", old_live)
+            if old_live is not None
+            else os.environ.pop("ELAL_LIVE_FETCH_ENABLED", None)
+        )
+
+        client = self.get_client(db_path)
+        browser = _Run13ChromeSession(self, client, reference_date="2026-11-28")
+
+        # Verify V8 script syntax of frontend/src/app.js directly in Chromium
+        js_src = (PROJECT_ROOT / "frontend" / "src" / "app.js").read_text("utf-8")
+        compile_res = browser.call(
+            "Runtime.compileScript",
+            {"expression": js_src, "sourceURL": "app.js", "persistScript": False},
+        )
+        self.assertNotIn("exceptionDetails", compile_res, f"app.js syntax error: {compile_res}")
+
+        def set_dpr2_vp(w: int, h: int, is_mob: bool) -> None:
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": is_mob},
+            )
+            browser.pump(80)
+
+        forbidden_he = (
+            re.compile(r"משרד החינוך"),
+            re.compile(r'בי"ס'),
+            re.compile(r"בי״ס"),
+            re.compile(r"בית ספר"),
+            re.compile(r"מוסדות החינוך"),
+            re.compile(r"חופשת בית ספר"),
+            re.compile(r"חופשות לימודים"),
+            re.compile(r"חיסור"),
+            re.compile(r"ניצנים"),
+            re.compile(r"קייטנ"),
+            re.compile(r"(?<![א-ת])(?:של\s+)?(?:ה|ל|ב|ו|ש|כ)?בוגרים(?![א-ת])"),
+            re.compile(r"חיסכון"),
+        )
+        forbidden_en = (
+            re.compile(r"\bMoE\b", re.IGNORECASE),
+            re.compile(r"\bschool break", re.IGNORECASE),
+            re.compile(r"\bschool vacation", re.IGNORECASE),
+            re.compile(r"\bschool day", re.IGNORECASE),
+            re.compile(r"\bNitzanim\b", re.IGNORECASE),
+            re.compile(r"\bclassroom\b", re.IGNORECASE),
+            re.compile(r"\bmissed\b", re.IGNORECASE),
+        )
+        expected_workplace_codes = [
+            "PESACH",
+            "YOM_HAATZMAUT",
+            "SHAVUOT",
+            "ROSH_HASHANAH",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "SUKKOT",
+        ]
+        expected_moe_codes = [
+            "HANUKKAH",
+            "PURIM",
+            "PESACH",
+            "YOM_HAATZMAUT",
+            "SHAVUOT",
+            "SUMMER_JUNE_20_30",
+            "SUMMER_JULY",
+            "SUMMER_AUGUST",
+            "ROSH_HASHANAH",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "SUKKOT",
+        ]
+
+        def assert_no_forbidden(text_val: str, lang_dir: str, ctx: str) -> None:
+            patterns = forbidden_he if lang_dir == "rtl" else forbidden_en
+            for pat in patterns:
+                m = pat.search(text_val or "")
+                if m is not None:
+                    self.fail(
+                        f"Forbidden pattern {pat.pattern!r} matched {m.group(0)!r} in {ctx}"
+                    )
+
+        # ---- Flow A: Full 0-children Workplace Holiday Workflow ----
+        # 1. Clean guest boot at desktop 1440x900 (he RTL)
+        set_dpr2_vp(1440, 900, False)
+        browser.mount()
+
+        wp_boot_reqs = browser.requests("GET", "/api/v1/workplace-calendar/upcoming")
+        self.assertGreaterEqual(len(wp_boot_reqs), 1)
+        self.assertEqual(wp_boot_reqs[0]["status"], 200)
+
+        # Install test-local fetch response spy to inspect search response payloads
+        browser.eval(
+            """(() => {
+              window.__r18SearchResponses = [];
+              const origFetch = window.fetch.bind(window);
+              window.fetch = async function(input, init) {
+                const resp = await origFetch(input, init);
+                try {
+                  const urlStr = typeof input === 'string' ? input : (input && input.url) || '';
+                  const method = ((init && init.method) || 'GET').toUpperCase();
+                  if (method === 'POST' && urlStr.indexOf('/api/v1/vacations/search') !== -1) {
+                    const cloned = resp.clone();
+                    const data = await cloned.json();
+                    window.__r18SearchResponses.push({
+                      status: resp.status,
+                      calendar_mode: data.calendar_mode || null,
+                      proposals: Array.isArray(data.proposals) ? data.proposals.map(p => ({
+                        ctos: p.combined_trip_optimization_score,
+                        eff_score: p.workday_efficiency_score,
+                        has: p.holiday_alignment_score,
+                        wcost: p.workplace_vacation_days_cost,
+                        saved: p.workdays_saved_count,
+                        ratio: p.workday_efficiency_ratio,
+                        is_zero: Boolean(p.is_zero_workday_trip),
+                        cal_mode: p.calendar_mode || null,
+                      })) : [],
+                    });
+                  }
+                } catch (_err) {
+                  // Ignore non-JSON or aborted responses
+                }
+                return resp;
+              };
+            })()"""
+        )
+
+        boot_snap = browser.eval(
+            """(() => {
+              const shell = document.getElementById('dashboard-shell');
+              const cal = document.getElementById('zone-calendar');
+              const sel = document.getElementById('select-direct-holiday');
+              return {
+                dir: document.documentElement.getAttribute('dir'),
+                planningMode: shell ? shell.getAttribute('data-planning-mode') : null,
+                calendarMode: cal ? cal.getAttribute('data-calendar-mode') : null,
+                title: document.title,
+                headerTitle: (document.getElementById('header-title-local')?.textContent || '').trim(),
+                headerSub: (document.getElementById('header-subtitle')?.textContent || '').trim(),
+                calBtn: (document.getElementById('btn-toggle-calendar')?.textContent || '').trim(),
+                heroHeadline: (document.getElementById('hero-headline')?.textContent || '').trim(),
+                modeBadge: (document.getElementById('active-mode-badge')?.textContent || '').trim(),
+                holLabel: (document.getElementById('label-direct-holiday')?.textContent || '').trim(),
+                runBtn: (document.getElementById('btn-run-search')?.textContent || '').trim(),
+                holOpts: sel ? Array.from(sel.options).map(o => o.value) : [],
+                bodyInner: document.body.innerText || '',
+              };
+            })()"""
+        )
+        self.assertEqual(boot_snap["dir"], "rtl")
+        self.assertEqual(boot_snap["planningMode"], "workplace")
+        self.assertEqual(boot_snap["calendarMode"], "workplace")
+        self.assertIn("חגי המשק", boot_snap["title"])
+        self.assertNotIn("משרד החינוך", boot_snap["title"])
+        self.assertEqual(boot_snap["headerTitle"], "מתכנן חופשות חכם")
+        self.assertIn("חגי המשק", boot_snap["headerSub"])
+        self.assertEqual(boot_snap["calBtn"], "📅 לוח חגי המשק")
+        self.assertEqual(
+            boot_snap["heroHeadline"],
+            "הפכו כל חג במשק לחופשה ארוכה במינימום ימי חופש",
+        )
+        self.assertEqual(boot_snap["modeBadge"], "תאריכים ידניים (±גמישות)")
+        self.assertEqual(boot_snap["holLabel"], "חג במשק בשנה הקרובה:")
+        self.assertEqual(boot_snap["runBtn"], "✈️ חפש אפשרויות חופשה וכרטיסי בונוס")
+        self.assertEqual(boot_snap["holOpts"], expected_workplace_codes)
+        for moe_only in ("HANUKKAH", "PURIM", "SUMMER_JUNE_20_30", "SUMMER_JULY", "SUMMER_AUGUST"):
+            self.assertNotIn(moe_only, boot_snap["holOpts"])
+        assert_no_forbidden(boot_snap["bodyInner"], "rtl", "clean guest boot body")
+
+        # 2. Switch to holiday tab, test short-holiday bridge duration auto-init,
+        #    ROSH_HASHANAH 0-workday pill, and PESACH workday-efficiency ranked search
+        browser.real_click("#tab-mode-holiday", after_ms=100)
+        self.assertEqual(browser.text("#active-mode-badge"), "חגי משק · יעילות ימי חופש")
+
+        browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              sel.value = 'SHAVUOT';
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            })()"""
+        )
+        browser.pump(80)
+        self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), "2")
+        self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), "4")
+
+        browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              sel.value = 'ROSH_HASHANAH';
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            })()"""
+        )
+        browser.pump(80)
+        self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), "2")
+        self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), "4")
+        browser.real_click("#btn-run-search", after_ms=100)
+        browser.wait_until(
+            "window.__r18SearchResponses.length >= 1 && document.querySelectorAll('#zone-results .proposal-card').length >= 1",
+            "ROSH_HASHANAH workplace search completed",
+        )
+        browser.settle()
+        rh_resp = browser.eval("window.__r18SearchResponses[0]")
+        self.assertEqual(rh_resp["status"], 200)
+        self.assertEqual(rh_resp["calendar_mode"], "WORKPLACE")
+        self.assertGreater(len(rh_resp["proposals"]), 0)
+        self.assertTrue(rh_resp["proposals"][0]["is_zero"])
+        rh_zero_pill = browser.eval(
+            """(() => {
+              const pill = document.querySelector('#zone-results .proposal-card .kpi-efficiency-pill-zero');
+              return pill ? pill.textContent.replace(/\\s+/g, ' ').trim() : '';
+            })()"""
+        )
+        self.assertIn("0 ימי חופש", rh_zero_pill)
+
+        # Select PESACH -> verify 4..7 nights auto-init and run workplace search
+        browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              sel.value = 'PESACH';
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            })()"""
+        )
+        browser.pump(80)
+        self.assertEqual(browser.eval("document.getElementById('input-min-nights').value"), "4")
+        self.assertEqual(browser.eval("document.getElementById('input-max-nights').value"), "7")
+        browser.real_click("#btn-run-search", after_ms=100)
+        browser.wait_until(
+            "window.__r18SearchResponses.length >= 2 && document.querySelectorAll('#zone-results .proposal-card').length >= 1",
+            "PESACH workplace search completed",
+        )
+        browser.settle()
+
+        pesach_resp = browser.eval("window.__r18SearchResponses[1]")
+        self.assertEqual(pesach_resp["status"], 200)
+        self.assertEqual(pesach_resp["calendar_mode"], "WORKPLACE")
+        p_props = pesach_resp["proposals"]
+        self.assertGreaterEqual(len(p_props), 6)
+        for p in p_props:
+            self.assertEqual(p["cal_mode"], "WORKPLACE")
+        self.assertTrue(
+            all(p_props[i]["ctos"] >= p_props[i + 1]["ctos"] for i in range(len(p_props) - 1)),
+            "PESACH workplace CTOS must be monotonically non-increasing",
+        )
+        self.assertGreater(p_props[0]["eff_score"], p_props[-1]["eff_score"])
+        self.assertGreater(p_props[0]["ratio"], p_props[-1]["ratio"])
+
+        # 3. Responsive bilingual workplace verification across 1440x900 & 390x844 in he RTL & en LTR
+        for vp_w, vp_h, is_mob, cal_trig in (
+            (1440, 900, False, "#btn-toggle-calendar"),
+            (390, 844, True, "#btn-mobile-dock-calendar"),
+        ):
+            set_dpr2_vp(vp_w, vp_h, is_mob)
+            for target_dir in ("rtl", "ltr"):
+                cur_dir = browser.eval("document.documentElement.getAttribute('dir')")
+                if cur_dir != target_dir:
+                    browser.real_click("#btn-toggle-locale", after_ms=120)
+                ctx_label = f"{vp_w}x{vp_h} {target_dir}"
+                self.assertEqual(
+                    browser.eval("document.documentElement.getAttribute('dir')"),
+                    target_dir,
+                    f"dir mismatch in {ctx_label}",
+                )
+
+                view_snap = browser.eval(
+                    """(() => {
+                      const docEl = document.documentElement;
+                      const cards = Array.from(document.querySelectorAll('#zone-results .proposal-card'));
+                      const workdaysCells = document.querySelectorAll('#zone-results .proposal-card [data-kpi="workdays-cost"]');
+                      const effPills = Array.from(document.querySelectorAll('#zone-results .proposal-card [data-kpi-efficiency="true"]'));
+                      const savedEls = Array.from(document.querySelectorAll('#zone-results .proposal-card [data-workdays-saved]'));
+                      const schoolFit = document.querySelectorAll('#zone-results .proposal-card [data-kpi="school-fit"]');
+                      const resEl = document.getElementById('zone-results');
+                      const attrTexts = resEl
+                        ? Array.from(resEl.querySelectorAll('[title],[aria-label]'))
+                            .map(el => (el.getAttribute('title') || '') + ' ' + (el.getAttribute('aria-label') || ''))
+                            .join(' ')
+                        : '';
+                      return {
+                        scrollWidth: docEl.scrollWidth,
+                        clientWidth: docEl.clientWidth,
+                        planningMode: document.getElementById('dashboard-shell')?.getAttribute('data-planning-mode'),
+                        title: document.title,
+                        headerTitle: (document.getElementById('header-title-local')?.textContent || '').trim(),
+                        headerSub: (document.getElementById('header-subtitle')?.textContent || '').trim(),
+                        calBtn: (document.getElementById('btn-toggle-calendar')?.textContent || '').trim(),
+                        modeBadge: (document.getElementById('active-mode-badge')?.textContent || '').trim(),
+                        holLabel: (document.getElementById('label-direct-holiday')?.textContent || '').trim(),
+                        runBtn: (document.getElementById('btn-run-search')?.textContent || '').trim(),
+                        cardCount: cards.length,
+                        workdaysCount: workdaysCells.length,
+                        effPillCount: effPills.length,
+                        topRatioAttr: effPills[0] ? effPills[0].getAttribute('data-workday-ratio') : '',
+                        topRatioText: effPills[0] ? effPills[0].textContent.trim() : '',
+                        savedCount: savedEls.length,
+                        topSavedText: savedEls[0] ? savedEls[0].textContent.trim() : '',
+                        schoolFitCount: schoolFit.length,
+                        bodyInner: document.body.innerText || '',
+                        resultsText: resEl ? (resEl.textContent || '') : '',
+                        resultsAttrs: attrTexts,
+                      };
+                    })()"""
+                )
+                self.assertEqual(view_snap["planningMode"], "workplace", ctx_label)
+                self.assertLessEqual(
+                    view_snap["scrollWidth"],
+                    view_snap["clientWidth"],
+                    f"Horizontal overflow in {ctx_label}: {view_snap['scrollWidth']} > {view_snap['clientWidth']}",
+                )
+                self.assertGreaterEqual(view_snap["cardCount"], 1, ctx_label)
+                self.assertEqual(view_snap["schoolFitCount"], 0, ctx_label)
+                self.assertEqual(view_snap["workdaysCount"], view_snap["cardCount"], ctx_label)
+                self.assertEqual(view_snap["effPillCount"], view_snap["cardCount"], ctx_label)
+                self.assertEqual(view_snap["savedCount"], view_snap["cardCount"], ctx_label)
+                self.assertIn("×5.0", view_snap["topRatioText"], ctx_label)
+                if target_dir == "rtl":
+                    self.assertIn("נחסכו", view_snap["topSavedText"], ctx_label)
+                    self.assertEqual(view_snap["modeBadge"], "חגי משק · יעילות ימי חופש", ctx_label)
+                else:
+                    self.assertIn("Workplace Holiday", view_snap["title"], ctx_label)
+                    self.assertEqual(view_snap["headerTitle"], "Smart Vacation Planner", ctx_label)
+                    self.assertIn("Israeli workplace holidays", view_snap["headerSub"], ctx_label)
+                    self.assertEqual(view_snap["modeBadge"], "Workplace Holidays · Max Leverage", ctx_label)
+                    self.assertEqual(
+                        view_snap["holLabel"],
+                        "Upcoming Workplace Holiday (Next 12 Months):",
+                        ctx_label,
+                    )
+                    self.assertEqual(view_snap["runBtn"], "✈️ Search Award Vacations", ctx_label)
+                    if not is_mob:
+                        self.assertEqual(view_snap["calBtn"], "📅 Workplace Holidays", ctx_label)
+                    self.assertIn("saved", view_snap["topSavedText"], ctx_label)
+
+                assert_no_forbidden(view_snap["bodyInner"], target_dir, f"body ({ctx_label})")
+                assert_no_forbidden(view_snap["resultsText"], target_dir, f"results text ({ctx_label})")
+                assert_no_forbidden(view_snap["resultsAttrs"], target_dir, f"results attrs ({ctx_label})")
+
+                # Open workdays-cost tooltip on card 0, verify viewport bounds & content, then close
+                tip_snap = browser.eval(
+                    """(() => {
+                      const c0 = document.querySelector('#zone-results .proposal-card');
+                      c0.scrollIntoView({ behavior: 'instant', block: 'center' });
+                      const wCell = c0.querySelector('[data-kpi="workdays-cost"]');
+                      wCell.click();
+                      const tip = wCell.querySelector('.kpi-tooltip[role="tooltip"]');
+                      const cs = tip ? getComputedStyle(tip) : null;
+                      const rect = tip ? tip.getBoundingClientRect() : null;
+                      const res = {
+                        display: cs ? cs.display : '',
+                        left: rect ? rect.left : -1,
+                        right: rect ? rect.right : 99999,
+                        innerWidth: window.innerWidth,
+                        text: tip ? (tip.innerText || tip.textContent || '') : '',
+                      };
+                      wCell.click();
+                      return res;
+                    })()"""
+                )
+                self.assertEqual(tip_snap["display"], "flex", f"tooltip did not open in {ctx_label}")
+                self.assertGreaterEqual(tip_snap["left"], 0, f"tooltip clipped start in {ctx_label}")
+                self.assertLessEqual(
+                    tip_snap["right"],
+                    tip_snap["innerWidth"] + 1,
+                    f"tooltip clipped end in {ctx_label}",
+                )
+                if target_dir == "rtl":
+                    self.assertIn("איך חושב:", tip_snap["text"], ctx_label)
+                    self.assertIn("משמעות:", tip_snap["text"], ctx_label)
+                else:
+                    self.assertIn("How calculated:", tip_snap["text"], ctx_label)
+                    self.assertIn("Meaning:", tip_snap["text"], ctx_label)
+                assert_no_forbidden(tip_snap["text"], target_dir, f"workdays tooltip ({ctx_label})")
+
+                # Open workplace calendar popup -> verify MoE hidden, workplace visible (10 rows), zero leaks, zero overflow
+                browser.real_click(cal_trig, after_ms=100)
+                cal_snap = browser.eval(
+                    """(() => {
+                      const cal = document.getElementById('zone-calendar');
+                      const moeCol = document.getElementById('calendar-col-moe');
+                      const wpCol = document.getElementById('calendar-col-workplace');
+                      const wpRows = document.querySelectorAll('#workplace-calendar-tbody tr');
+                      const rate0 = document.querySelectorAll('#workplace-calendar-tbody tr[data-workday-rate="0"]');
+                      const rateHalf = document.querySelectorAll('#workplace-calendar-tbody tr[data-workday-rate="0.5"]');
+                      return {
+                        hidden: cal.hasAttribute('hidden'),
+                        calMode: cal.getAttribute('data-calendar-mode'),
+                        moeVis: moeCol ? moeCol.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : null,
+                        moeAriaHidden: moeCol ? moeCol.getAttribute('aria-hidden') : null,
+                        wpVis: wpCol ? wpCol.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : null,
+                        wpRowCount: wpRows.length,
+                        rate0Count: rate0.length,
+                        rateHalfCount: rateHalf.length,
+                        calInnerText: cal.innerText || '',
+                        scrollWidth: document.documentElement.scrollWidth,
+                        clientWidth: document.documentElement.clientWidth,
+                      };
+                    })()"""
+                )
+                self.assertFalse(cal_snap["hidden"], f"calendar did not open in {ctx_label}")
+                self.assertEqual(cal_snap["calMode"], "workplace", ctx_label)
+                self.assertFalse(cal_snap["moeVis"], f"#calendar-col-moe must be hidden in {ctx_label}")
+                self.assertEqual(cal_snap["moeAriaHidden"], "true", ctx_label)
+                self.assertTrue(cal_snap["wpVis"], f"#calendar-col-workplace must be visible in {ctx_label}")
+                self.assertEqual(cal_snap["wpRowCount"], 10, ctx_label)
+                self.assertEqual(cal_snap["rate0Count"], 8, ctx_label)
+                self.assertEqual(cal_snap["rateHalfCount"], 2, ctx_label)
+                self.assertLessEqual(
+                    cal_snap["scrollWidth"],
+                    cal_snap["clientWidth"],
+                    f"Calendar horizontal overflow in {ctx_label}",
+                )
+                assert_no_forbidden(cal_snap["calInnerText"], target_dir, f"calendar ({ctx_label})")
+
+                browser.real_click("#btn-close-calendar", after_ms=100)
+                self.assertTrue(
+                    browser.eval("document.getElementById('zone-calendar').hasAttribute('hidden')"),
+                    f"calendar failed to close in {ctx_label}",
+                )
+
+        # ---- Flow B: Automatic Bidirectional 0 -> 1 -> 0 Children Switch ----
+        set_dpr2_vp(1440, 900, False)
+        if browser.eval("document.documentElement.getAttribute('dir')") != "rtl":
+            browser.real_click("#btn-toggle-locale", after_ms=120)
+
+        pre_family_count = browser.eval("window.__r18SearchResponses.length")
+
+        # 1. Switch 0 -> 1 child via #zone-profile -> automatic Family / MoE Mode
+        browser.real_click("#btn-open-profile-sheet", after_ms=120)
+        prof_wp_snap = browser.eval(
+            """(() => {
+              const p = document.getElementById('zone-profile');
+              const hint = p.querySelector('.children-empty-hint');
+              return {
+                hintVis: hint ? hint.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+                innerText: p.innerText || '',
+              };
+            })()"""
+        )
+        self.assertTrue(prof_wp_snap["hintVis"], ".children-empty-hint must be visible in 0-child workplace mode")
+        assert_no_forbidden(prof_wp_snap["innerText"], "rtl", "0-child profile sheet")
+
+        browser.real_click("#btn-add-child", after_ms=100)
+        browser.real_click("#btn-apply-profile-sheet", after_ms=100)
+        browser.wait_until(
+            f"window.__r18SearchResponses.length > {pre_family_count} && "
+            "document.querySelectorAll('#zone-results [data-kpi=\"school-fit\"]').length >= 1",
+            "0 -> 1 child family mode search & MoE cards rendered",
+        )
+        browser.settle()
+
+        fam_resp = browser.eval("window.__r18SearchResponses[window.__r18SearchResponses.length - 1]")
+        self.assertEqual(fam_resp["status"], 200)
+        self.assertEqual(fam_resp["calendar_mode"], "MOE")
+        self.assertGreaterEqual(len(fam_resp["proposals"]), 6)
+
+        fam_dom = browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              const res = document.getElementById('zone-results');
+              return {
+                planningMode: document.getElementById('dashboard-shell')?.getAttribute('data-planning-mode'),
+                modeBadge: (document.getElementById('active-mode-badge')?.textContent || '').trim(),
+                holOpts: Array.from(sel.options).map(o => o.value),
+                maxNights: document.getElementById('input-max-nights').value,
+                pairedGrids: document.querySelectorAll('#zone-results .stub-kpi-grid[data-paired-vacation="true"]').length,
+                workdaysCount: document.querySelectorAll('#zone-results [data-kpi="workdays-cost"]').length,
+                schoolFitCount: document.querySelectorAll('#zone-results [data-kpi="school-fit"]').length,
+                effPillCount: document.querySelectorAll('#zone-results [data-kpi-efficiency="true"]').length,
+                resultsText: res ? (res.textContent || '') : '',
+              };
+            })()"""
+        )
+        self.assertEqual(fam_dom["planningMode"], "family")
+        self.assertEqual(fam_dom["modeBadge"], "תכנון לפי חג (שנה קדימה)")
+        self.assertEqual(fam_dom["holOpts"], expected_moe_codes)
+        self.assertEqual(fam_dom["maxNights"], "16")
+        self.assertGreaterEqual(fam_dom["pairedGrids"], 1)
+        self.assertEqual(fam_dom["workdaysCount"], fam_dom["schoolFitCount"])
+        self.assertEqual(fam_dom["effPillCount"], 0)
+        self.assertIn('התאמה לחופשת בי"ס', fam_dom["resultsText"])
+
+        # Open #zone-calendar in Family Mode -> verify dual MoE (17 rows) + Workplace (10 rows) ledgers
+        browser.real_click("#btn-toggle-calendar", after_ms=100)
+        fam_cal = browser.eval(
+            """(() => {
+              const cal = document.getElementById('zone-calendar');
+              const moeCol = document.getElementById('calendar-col-moe');
+              const wpCol = document.getElementById('calendar-col-workplace');
+              return {
+                calMode: cal.getAttribute('data-calendar-mode'),
+                moeVis: moeCol ? moeCol.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+                moeAriaHidden: moeCol ? moeCol.getAttribute('aria-hidden') : 'missing',
+                moeRows: document.querySelectorAll('#moe-calendar-tbody tr').length,
+                wpVis: wpCol ? wpCol.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
+                wpRows: document.querySelectorAll('#workplace-calendar-tbody tr').length,
+              };
+            })()"""
+        )
+        self.assertEqual(fam_cal["calMode"], "family")
+        self.assertTrue(fam_cal["moeVis"])
+        self.assertIsNone(fam_cal["moeAriaHidden"])
+        self.assertEqual(fam_cal["moeRows"], 17)
+        self.assertTrue(fam_cal["wpVis"])
+        self.assertEqual(fam_cal["wpRows"], 10)
+        browser.real_click("#btn-close-calendar", after_ms=100)
+
+        # 2. Switch 1 -> 0 children -> clean automatic restoration of Workplace Mode
+        pre_revert_count = browser.eval("window.__r18SearchResponses.length")
+        browser.real_click("#btn-open-profile-sheet", after_ms=120)
+        browser.real_click('[data-remove-child="0"]', after_ms=100)
+        browser.real_click("#btn-apply-profile-sheet", after_ms=100)
+        browser.wait_until(
+            f"window.__r18SearchResponses.length > {pre_revert_count} && "
+            "document.querySelectorAll('#zone-results [data-kpi=\"school-fit\"]').length === 0 && "
+            "document.querySelectorAll('#zone-results [data-kpi-efficiency=\"true\"]').length >= 1",
+            "1 -> 0 children workplace mode restored",
+        )
+        browser.settle()
+
+        rev_resp = browser.eval("window.__r18SearchResponses[window.__r18SearchResponses.length - 1]")
+        self.assertEqual(rev_resp["status"], 200)
+        self.assertEqual(rev_resp["calendar_mode"], "WORKPLACE")
+        self.assertGreaterEqual(len(rev_resp["proposals"]), 6)
+
+        rev_dom = browser.eval(
+            """(() => {
+              const sel = document.getElementById('select-direct-holiday');
+              return {
+                planningMode: document.getElementById('dashboard-shell')?.getAttribute('data-planning-mode'),
+                calendarMode: document.getElementById('zone-calendar')?.getAttribute('data-calendar-mode'),
+                headerTitle: (document.getElementById('header-title-local')?.textContent || '').trim(),
+                heroHeadline: (document.getElementById('hero-headline')?.textContent || '').trim(),
+                calBtn: (document.getElementById('btn-toggle-calendar')?.textContent || '').trim(),
+                modeBadge: (document.getElementById('active-mode-badge')?.textContent || '').trim(),
+                holOpts: Array.from(sel.options).map(o => o.value),
+                maxNights: document.getElementById('input-max-nights').value,
+                schoolFitCount: document.querySelectorAll('#zone-results [data-kpi="school-fit"]').length,
+                workdaysCount: document.querySelectorAll('#zone-results [data-kpi="workdays-cost"]').length,
+                effPillCount: document.querySelectorAll('#zone-results [data-kpi-efficiency="true"]').length,
+                savedCount: document.querySelectorAll('#zone-results [data-workdays-saved]').length,
+                bodyInner: document.body.innerText || '',
+              };
+            })()"""
+        )
+        self.assertEqual(rev_dom["planningMode"], "workplace")
+        self.assertEqual(rev_dom["calendarMode"], "workplace")
+        self.assertEqual(rev_dom["headerTitle"], "מתכנן חופשות חכם")
+        self.assertEqual(
+            rev_dom["heroHeadline"],
+            "הפכו כל חג במשק לחופשה ארוכה במינימום ימי חופש",
+        )
+        self.assertEqual(rev_dom["calBtn"], "📅 לוח חגי המשק")
+        self.assertEqual(rev_dom["modeBadge"], "חגי משק · יעילות ימי חופש")
+        self.assertEqual(rev_dom["holOpts"], expected_workplace_codes)
+        self.assertEqual(rev_dom["maxNights"], "7")
+        self.assertEqual(rev_dom["schoolFitCount"], 0)
+        self.assertGreaterEqual(rev_dom["workdaysCount"], 1)
+        self.assertEqual(rev_dom["effPillCount"], rev_dom["workdaysCount"])
+        self.assertEqual(rev_dom["savedCount"], rev_dom["workdaysCount"])
+        assert_no_forbidden(rev_dom["bodyInner"], "rtl", "post-revert he body")
+
+        # Re-open #zone-calendar after revert -> confirm MoE hidden again & 10 workplace rows clean
+        browser.real_click("#btn-toggle-calendar", after_ms=100)
+        rev_cal = browser.eval(
+            """(() => {
+              const cal = document.getElementById('zone-calendar');
+              const moeCol = document.getElementById('calendar-col-moe');
+              const wpCol = document.getElementById('calendar-col-workplace');
+              return {
+                calMode: cal.getAttribute('data-calendar-mode'),
+                moeVis: moeCol ? moeCol.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : null,
+                moeAriaHidden: moeCol ? moeCol.getAttribute('aria-hidden') : null,
+                wpVis: wpCol ? wpCol.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : null,
+                wpRows: document.querySelectorAll('#workplace-calendar-tbody tr').length,
+                calInnerText: cal.innerText || '',
+              };
+            })()"""
+        )
+        self.assertEqual(rev_cal["calMode"], "workplace")
+        self.assertFalse(rev_cal["moeVis"])
+        self.assertEqual(rev_cal["moeAriaHidden"], "true")
+        self.assertTrue(rev_cal["wpVis"])
+        self.assertEqual(rev_cal["wpRows"], 10)
+        assert_no_forbidden(rev_cal["calInnerText"], "rtl", "post-revert he calendar")
+        browser.real_click("#btn-close-calendar", after_ms=100)
+
+        # Toggle to English LTR once more after round-trip -> assert zero residual EN MoE/school mentions
+        browser.real_click("#btn-toggle-locale", after_ms=120)
+        self.assertEqual(browser.eval("document.documentElement.getAttribute('dir')"), "ltr")
+        assert_no_forbidden(
+            browser.eval("document.body.innerText || ''"),
+            "ltr",
+            "post-revert en body",
+        )
+
+        # Confirm zero elal.com outbound requests and zero JS errors
+        for req in browser.fetch_log:
+            req_target = f"{req.get('url', '')} {req.get('path', '')}".lower()
+            self.assertNotIn("elal.com", req_target)
+        self.assertEqual(browser.js_errors(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

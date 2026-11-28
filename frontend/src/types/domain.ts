@@ -22,6 +22,16 @@ export type DateSelectionMode =
   | 'SPECIFIC_DATES'
   | 'HOLIDAY_DIRECT_INTENT';
 
+export type CalendarPlanningMode = 'MOE' | 'WORKPLACE';
+
+export type WorkplaceHolidayCode =
+  | 'ROSH_HASHANAH'
+  | 'YOM_KIPPUR_SUKKOT_BRIDGE'
+  | 'SUKKOT'
+  | 'PESACH'
+  | 'YOM_HAATZMAUT'
+  | 'SHAVUOT';
+
 export type DirectHolidayCode =
   | 'ROSH_HASHANAH'
   | 'YOM_KIPPUR_SUKKOT_BRIDGE'
@@ -234,6 +244,38 @@ export interface WorkplaceHolidayPeriod {
   status_badge_en: string;
 }
 
+export interface UpcomingWorkplaceHoliday {
+  holiday_code: WorkplaceHolidayCode;
+  name_he: string;
+  name_en: string;
+  target_year: number;
+  school_year: string;
+  start_date: string;
+  end_date: string;
+  holiday_days: number;
+  recommended_window_start: string;
+  recommended_window_end: string;
+  recommended_trip_days: number;
+  recommended_workdays_cost: number;
+  recommended_workdays_saved: number;
+  recommended_efficiency_ratio: number;
+  workplace_workdays_cost: number;
+  official_holiday_days: number;
+  chol_hamoed_days: number;
+  is_ongoing: boolean;
+  calendar_mode: 'WORKPLACE';
+  label_he: string;
+  label_en: string;
+}
+
+export interface UpcomingWorkplaceHolidaysResponse {
+  as_of_date: string;
+  window_end_date: string;
+  calendar_mode: 'WORKPLACE';
+  count: number;
+  holidays: UpcomingWorkplaceHoliday[];
+}
+
 export interface VacationOptionProposal {
   id: string;
   search_query_id: string;
@@ -254,5 +296,24 @@ export interface VacationOptionProposal {
   official_holiday_workdays_saved_count: number;
   weekend_days_count: number;
   holiday_or_weekend_days_count: number;
+  calendar_mode?: CalendarPlanningMode;
+  trip_calendar_days?: number;
+  workdays_saved_count?: number;
+  workday_efficiency_ratio?: number;
+  workday_efficiency_score?: number;
+  is_zero_workday_trip?: boolean;
+  explanation_summary_he?: string;
   itinerary: FlightItinerary | null;
+}
+
+export interface VacationSearchResponse {
+  query: FlightSearchQuery;
+  calendar_mode: CalendarPlanningMode;
+  expanded_destinations: string[];
+  count: number;
+  live_fetch_mode: boolean;
+  status_message_he: string | null;
+  status_message_en: string | null;
+  weather_fallback_message_he: string | null;
+  proposals: VacationOptionProposal[];
 }

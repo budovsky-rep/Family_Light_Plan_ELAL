@@ -564,6 +564,27 @@ class IsraeliWorkplaceCalendarService:
     _YEAR_HOLIDAYS_CACHE: dict[int, tuple[frozenset[date], frozenset[date]]] = {}
     _SCHOOL_YEAR_PERIODS_CACHE: dict[str, tuple[dict[str, Any], ...]] = {}
 
+    CANONICAL_WORKPLACE_ROLLING_HOLIDAYS: tuple[tuple[str, str, str], ...] = (
+        ("ROSH_HASHANAH", "ראש השנה", "Rosh Hashanah"),
+        ("YOM_KIPPUR_SUKKOT_BRIDGE", "גשר כיפור–סוכות", "Yom Kippur–Sukkot Bridge"),
+        ("SUKKOT", "סוכות וחול המועד", "Sukkot & Chol HaMoed"),
+        ("PESACH", "פסח וחול המועד", "Passover & Chol HaMoed"),
+        ("YOM_HAATZMAUT", "יום העצמאות (גשר סופ״ש)", "Independence Day Bridge"),
+        ("SHAVUOT", "חג השבועות (סופ״ש ארוך)", "Shavuot Long Weekend"),
+    )
+    _AUTUMN_WORKPLACE_CODES: frozenset[str] = frozenset(
+        {
+            "ROSH_HASHANAH",
+            "YOM_KIPPUR",
+            "YOM_KIPPUR_SUKKOT",
+            "YOM_KIPPUR_SUKKOT_BRIDGE",
+            "SUKKOT",
+            "SUKKOT_I",
+            "CHOL_HAMOED_SUKKOT",
+            "SIMCHAT_TORAH",
+        }
+    )
+
     @staticmethod
     def _coerce_date(val: date | datetime | str) -> date:
         if isinstance(val, datetime):
@@ -726,6 +747,211 @@ class IsraeliWorkplaceCalendarService:
         cls._SCHOOL_YEAR_PERIODS_CACHE[norm_year] = tuple(entries)
         return [dict(item) for item in entries]
 
+    @classmethod
+    def resolve_workplace_holiday_span(
+        cls, holiday_code: str, target_year: int
+    ) -> Optional[tuple[date, date]]:
+        """Resolve a statutory Israeli workplace holiday code & Gregorian target year to `(start_date, end_date)`."""
+        code = str(holiday_code or "").strip().upper()
+        if not code:
+            return None
+        yr = int(target_year)
+        heb_year = (yr + 3761) if code in cls._AUTUMN_WORKPLACE_CODES else (yr + 3760)
+        rh1 = HebrewCalendarRuleProjector.rosh_hashanah_date(heb_year)
+        pes1 = HebrewCalendarRuleProjector.pesach_first_day(heb_year)
+        atz = HebrewCalendarRuleProjector.yom_haatzmaut_date(heb_year)
+
+        if code == "ROSH_HASHANAH":
+            return (rh1, rh1 + timedelta(days=1))
+        if code == "YOM_KIPPUR":
+            return (rh1 + timedelta(days=9), rh1 + timedelta(days=9))
+        if code in ("YOM_KIPPUR_SUKKOT_BRIDGE", "YOM_KIPPUR_SUKKOT"):
+            return (rh1 + timedelta(days=9), rh1 + timedelta(days=21))
+        if code == "SUKKOT":
+            return (rh1 + timedelta(days=14), rh1 + timedelta(days=21))
+        if code == "SUKKOT_I":
+            return (rh1 + timedelta(days=14), rh1 + timedelta(days=14))
+        if code == "CHOL_HAMOED_SUKKOT":
+            return (rh1 + timedelta(days=15), rh1 + timedelta(days=20))
+        if code == "SIMCHAT_TORAH":
+            return (rh1 + timedelta(days=21), rh1 + timedelta(days=21))
+        if code == "PESACH":
+            return (pes1, pes1 + timedelta(days=6))
+        if code == "PESACH_I":
+            return (pes1, pes1)
+        if code == "CHOL_HAMOED_PESACH":
+            return (pes1 + timedelta(days=1), pes1 + timedelta(days=5))
+        if code == "PESACH_VII":
+            return (pes1 + timedelta(days=6), pes1 + timedelta(days=6))
+        if code == "YOM_HAATZMAUT":
+            return (atz, atz)
+        if code == "SHAVUOT":
+            return (pes1 + timedelta(days=50), pes1 + timedelta(days=50))
+        return None
+
+    @classmethod
+    def compute_recommended_workplace_window(
+        cls, start_date: date | str, end_date: date | str
+    ) -> tuple[date, date]:
+        """Compute the recommended bridge/trip window for a statutory workplace holiday span.
+
+        Multi-day holidays (`>= 4` calendar days such as Pesach, Sukkot, Kippur–Sukkot bridge)
+        use their core statutory span directly. Short 1–2 day holidays (`ROSH_HASHANAH`,
+        `YOM_HAATZMAUT`, `SHAVUOT`) expand to the highest-efficiency 4–5 day weekend bridge
+        containing the holiday.
+        """
+        s_date = cls._coerce_date(start_date)
+        e_date = cls._coerce_date(end_date)
+        core_days = (e_date - s_date).days + 1
+        if core_days >= 4:
+            return (s_date, e_date)
+
+        best_key: Optional[tuple[float, float, int, int, int, int]] = None
+        best_span: tuple[date, date] = (s_date, e_date)
+        for length in (4, 5):
+            for offset in range(length - core_days + 1):
+                ws = s_date - timedelta(days=offset)
+                we = ws + timedelta(days=length - 1)
+                if we < e_date:
+                    continue
+                ev = cls.evaluate_trip_workdays_cost(ws, we)
+                cost = float(ev["workplace_vacation_days_cost"])
+                ratio = round(length / max(0.5, cost), 2)
+                wknd_end_bonus = 1 if we.weekday() in (5, 6) else 0
+                non_fri_start = 1 if ws.weekday() != 4 else 0
+                key = (ratio, -cost, length, wknd_end_bonus, non_fri_start, -offset)
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_span = (ws, we)
+        return best_span
+
+    @classmethod
+    def get_upcoming_workplace_holidays_for_rolling_year(
+        cls, as_of_date: Optional[date | str] = None
+    ) -> list[dict[str, Any]]:
+        """Return all 6 canonical statutory Israeli workplace holidays within the rolling 1-year window.
+
+        Computed purely from `HebrewCalendarRuleProjector` (zero dependency on `moe_vacation_windows`),
+        sorted chronologically by `(start_date, end_date, holiday_days, holiday_code)`.
+        """
+        ref_date = (
+            datetime.now(UTC).date()
+            if as_of_date is None
+            else cls._coerce_date(as_of_date)
+        )
+        y1 = ref_date.year if ref_date.month >= 9 else ref_date.year - 1
+
+        upcoming: list[dict[str, Any]] = []
+        for canon_code, name_he, name_en in cls.CANONICAL_WORKPLACE_ROLLING_HOLIDAYS:
+            chosen_entry: Optional[dict[str, Any]] = None
+            for i in range(3):
+                sy_y1 = y1 + i
+                sy = f"{sy_y1}-{sy_y1 + 1}"
+                heb_y = sy_y1 + 3761
+                target_yr = (
+                    sy_y1 if canon_code in cls._AUTUMN_WORKPLACE_CODES else (sy_y1 + 1)
+                )
+                span = cls.resolve_workplace_holiday_span(canon_code, target_yr)
+                if span is None:
+                    continue
+                s_date, e_date = span
+                if e_date >= ref_date:
+                    holiday_days = max(1, (e_date - s_date).days + 1)
+                    off_set, chol_set = cls.get_year_holiday_sets(heb_y)
+                    official_holiday_days = sum(
+                        1
+                        for k in range(holiday_days)
+                        if (s_date + timedelta(days=k)) in off_set
+                    )
+                    chol_hamoed_days = sum(
+                        1
+                        for k in range(holiday_days)
+                        if (s_date + timedelta(days=k)) in chol_set
+                    )
+                    core_eval = cls.evaluate_trip_workdays_cost(s_date, e_date)
+                    rec_s, rec_e = cls.compute_recommended_workplace_window(
+                        s_date, e_date
+                    )
+                    rec_days = max(1, (rec_e - rec_s).days + 1)
+                    rec_eval = cls.evaluate_trip_workdays_cost(rec_s, rec_e)
+                    rec_cost = float(rec_eval["workplace_vacation_days_cost"])
+                    rec_saved = round(max(0.0, rec_days - rec_cost), 1)
+                    rec_ratio = round(rec_days / max(0.5, rec_cost), 2)
+
+                    cost_str = f"{rec_cost:g}"
+                    cost_unit_he = "יום חופש" if rec_cost == 1.0 else "ימי חופש"
+                    cost_unit_en = "workday" if rec_cost == 1.0 else "workdays"
+                    day_word_he = "יום" if rec_days == 1 else "ימים"
+                    day_word_en = "day" if rec_days == 1 else "days"
+                    label_he = (
+                        f"{name_he} {s_date.year} "
+                        f"({rec_days} {day_word_he} · {cost_str} {cost_unit_he})"
+                    )
+                    label_en = (
+                        f"{name_en} {s_date.year} "
+                        f"({rec_days} {day_word_en} · {cost_str} {cost_unit_en})"
+                    )
+                    chosen_entry = {
+                        "holiday_code": canon_code,
+                        "name_he": name_he,
+                        "name_en": name_en,
+                        "target_year": s_date.year,
+                        "school_year": sy,
+                        "start_date": s_date.isoformat(),
+                        "end_date": e_date.isoformat(),
+                        "holiday_days": holiday_days,
+                        "recommended_window_start": rec_s.isoformat(),
+                        "recommended_window_end": rec_e.isoformat(),
+                        "recommended_trip_days": rec_days,
+                        "recommended_workdays_cost": rec_cost,
+                        "recommended_workdays_saved": rec_saved,
+                        "recommended_efficiency_ratio": rec_ratio,
+                        "workplace_workdays_cost": float(
+                            core_eval["workplace_vacation_days_cost"]
+                        ),
+                        "official_holiday_days": official_holiday_days,
+                        "chol_hamoed_days": chol_hamoed_days,
+                        "is_ongoing": s_date <= ref_date <= e_date,
+                        "calendar_mode": "WORKPLACE",
+                        "label_he": label_he,
+                        "label_en": label_en,
+                    }
+                    break
+            if chosen_entry is not None:
+                upcoming.append(chosen_entry)
+
+        upcoming.sort(
+            key=lambda item: (
+                str(item["start_date"]),
+                str(item["end_date"]),
+                int(item["holiday_days"]),
+                str(item["holiday_code"]),
+            )
+        )
+        return upcoming
+
+    @classmethod
+    def resolve_upcoming_workplace_holiday_occurrence(
+        cls,
+        holiday_code: str,
+        as_of_date: Optional[date | str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a statutory workplace holiday code to its upcoming rolling-year occurrence."""
+        norm_code = str(holiday_code or "").strip().upper()
+        if not norm_code:
+            return None
+        lookup_code = (
+            "YOM_KIPPUR_SUKKOT_BRIDGE"
+            if norm_code == "YOM_KIPPUR_SUKKOT"
+            else norm_code
+        )
+        for item in cls.get_upcoming_workplace_holidays_for_rolling_year(
+            as_of_date=as_of_date
+        ):
+            if item["holiday_code"] == lookup_code:
+                return {**item, "holiday_code": norm_code}
+        return None
+
 
 class MoECalendarAutoUpdaterService:
     """Annual MoE Calendar Auto-Updater (`Layer 1` Bundled/Remote + `Layer 2` Hebrew Rule Projector)."""
@@ -857,6 +1083,32 @@ class MoECalendarService:
         """Evaluate inclusive `[start_date, end_date]` per-person Israeli workplace vacation-days cost."""
         return IsraeliWorkplaceCalendarService.evaluate_trip_workdays_cost(
             start_date, end_date
+        )
+
+    def get_upcoming_workplace_holidays_for_rolling_year(
+        self, as_of_date: Optional[date | str] = None
+    ) -> list[dict[str, Any]]:
+        """Return all 6 canonical statutory Israeli workplace holidays within the rolling 1-year window."""
+        return IsraeliWorkplaceCalendarService.get_upcoming_workplace_holidays_for_rolling_year(
+            as_of_date=as_of_date
+        )
+
+    def resolve_workplace_holiday_span(
+        self, holiday_code: str, target_year: int
+    ) -> Optional[tuple[date, date]]:
+        """Resolve a statutory Israeli workplace holiday code & target year to `(start_date, end_date)`."""
+        return IsraeliWorkplaceCalendarService.resolve_workplace_holiday_span(
+            holiday_code=holiday_code, target_year=target_year
+        )
+
+    def resolve_upcoming_workplace_holiday_occurrence(
+        self,
+        holiday_code: str,
+        as_of_date: Optional[date | str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a statutory workplace holiday code to its upcoming rolling-year occurrence."""
+        return IsraeliWorkplaceCalendarService.resolve_upcoming_workplace_holiday_occurrence(
+            holiday_code=holiday_code, as_of_date=as_of_date
         )
 
     def get_upcoming_holidays_for_rolling_year(
